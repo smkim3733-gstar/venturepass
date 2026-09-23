@@ -1,0 +1,25 @@
+# Publish only the application and product planning documents.
+/*
+!/.gitignore
+!/.gitattributes
+!/README.md
+!/web/
+!/기획/
+
+# Local credentials, uploaded documents, databases and tool state never belong in Git.
+**/.env*
+!**/.env.example
+**/.venture-pass/
+**/node_modules/
+**/.next/
+**/.pnpm-store/
+**/.codex/
+**/.agents/
+**/*.sqlite
+**/*.sqlite-*
+**/*.db
+**/*.db-*
+**/*.pem
+**/*.key
+**/*.log
+**/*.tsbuildinfo
