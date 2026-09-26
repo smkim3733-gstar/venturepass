@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import {
@@ -278,6 +279,25 @@ export function ApplicationWorkspace() {
           브라우저 저장
         </Badge>
       </div>
+
+      <section
+        className="flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-primary/20 bg-primary/[.035] p-5"
+        aria-label="기업별 사전진단 작업공간"
+      >
+        <div className="max-w-2xl space-y-2">
+          <h2 className="font-semibold">우리 회사 혁신성장유형 사전진단</h2>
+          <p className="text-sm leading-6 text-muted-foreground">
+            기업 작업공간에서 회사 자료와 근거를 연결하고 진단 결과·보강 과제를 보관합니다. 이
+            페이지의 브라우저 기록은 그대로 유지되며 기업별 검토 근거로 자동 반영되지 않습니다.
+          </p>
+        </div>
+        <Button asChild>
+          <Link href="/studio">
+            기업 작업공간 열기
+            <ArrowRight />
+          </Link>
+        </Button>
+      </section>
 
       {hydrated && hydrationProblem && (
         <p

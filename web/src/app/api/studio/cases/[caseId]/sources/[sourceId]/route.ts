@@ -8,7 +8,7 @@ export function GET(
 ) {
   return studioRoute(request, async () => {
     const { caseId, sourceId } = await context.params;
-    const { source, buffer } = getStudioStore().original(caseId, sourceId);
+    const { source, buffer } = getStudioStore().originalForVentureInput(caseId, sourceId);
     return new Response(new Uint8Array(buffer), {
       headers: attachmentHeaders(source.originalName!, "application/octet-stream"),
     });

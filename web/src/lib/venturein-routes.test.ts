@@ -18,6 +18,7 @@ const state = vi.hoisted(() => ({
   save: vi.fn(),
   remove: vi.fn(),
   start: vi.fn(),
+  continueLogin: vi.fn(),
   stop: vi.fn(),
   resume: vi.fn(),
 }));
@@ -42,6 +43,7 @@ vi.mock("@/lib/venturein-runner", () => ({
     updatedAt: null,
   }),
   startVentureSession: state.start,
+  continueVentureSession: state.continueLogin,
   stopVentureSession: state.stop,
   resumeVentureSession: state.resume,
 }));
@@ -62,7 +64,15 @@ describe("벤처인 계정 API 경계", () => {
     state.store = new StudioStore(directory);
     caseId = state.store.create({ ...emptyProfile(), companyName: "연결 시험용 가상기업" }).id;
     state.account = { saved: false, maskedLoginId: null, updatedAt: null, revision: 0 };
-    for (const fn of [state.read, state.save, state.remove, state.start, state.stop, state.resume])
+    for (const fn of [
+      state.read,
+      state.save,
+      state.remove,
+      state.start,
+      state.continueLogin,
+      state.stop,
+      state.resume,
+    ])
       fn.mockReset();
     state.read.mockResolvedValue({ loginId: "test-only-id", password: "test-only-secret" });
     state.save.mockImplementation(async () => {
@@ -104,6 +114,7 @@ describe("벤처인 계정 API 경계", () => {
     });
     expect(state.read).not.toHaveBeenCalled();
     expect(state.start).not.toHaveBeenCalled();
+    expect(state.continueLogin).not.toHaveBeenCalled();
   });
   it("다른 출처 요청은 저장·복호화 이전에 거부한다", async () => {
     expect(
@@ -159,30 +170,84 @@ describe("벤처인 계정 API 경계", () => {
     expect(state.start).not.toHaveBeenCalled();
     expect(state.save).not.toHaveBeenCalled();
   });
-  it("실행에는 저장 계정을 사용하고 처리 후 참조를 비운다", async () => {
-    const credentials = { loginId: "test-only-id", password: "test-only-secret" };
-    state.read.mockResolvedValue(credentials);
-    let received: unknown;
-    state.start.mockImplementation(async (_id, value) => {
-      received = { ...value };
-    });
+  it.each(["start", "continue"] as const)(
+    "%s는 저장 계정을 사용하고 처리 후 참조를 비운다",
+    async (action) => {
+      const credentials = { loginId: "test-only-id", password: "test-only-secret" };
+      state.read.mockResolvedValue(credentials);
+      let received: unknown;
+      const runner = action === "start" ? state.start : state.continueLogin;
+      runner.mockImplementation(async (_id, value) => {
+        received = { ...value };
+      });
+      const response = await POST(request("POST", { action, accountRevision: 0 }), context());
+      expect(response.status).toBe(200);
+      expect(received).toEqual({ loginId: "test-only-id", password: "test-only-secret" });
+      expect(credentials).toEqual({ loginId: "", password: "" });
+      expect(runner).toHaveBeenCalledOnce();
+      expect(action === "start" ? state.continueLogin : state.start).not.toHaveBeenCalled();
+      expect(state.stop).not.toHaveBeenCalled();
+      expect(await response.text()).not.toContain("test-only-secret");
+    },
+  );
+  it.each(["start", "continue"] as const)(
+    "%s 오류에도 비밀 참조를 비우고 원문을 노출하지 않는다",
+    async (action) => {
+      const credentials = { loginId: "test-only-id", password: "test-only-secret" };
+      state.read.mockResolvedValue(credentials);
+      (action === "start" ? state.start : state.continueLogin).mockRejectedValue(
+        new Error("test-only-secret leaked by upstream"),
+      );
+      const response = await POST(request("POST", { action, accountRevision: 0 }), context());
+      expect(response.status).toBe(500);
+      expect(await response.text()).not.toContain("test-only-secret");
+      expect(credentials).toEqual({ loginId: "", password: "" });
+    },
+  );
+  it("상태 확인은 계정을 복호화하거나 로그인을 재시도하지 않는다", async () => {
     const response = await POST(
-      request("POST", { action: "start", accountRevision: 0 }),
+      request("POST", { action: "resume", accountRevision: 0 }),
       context(),
     );
     expect(response.status).toBe(200);
-    expect(received).toEqual({ loginId: "test-only-id", password: "test-only-secret" });
-    expect(credentials).toEqual({ loginId: "", password: "" });
-    expect(await response.text()).not.toContain("test-only-secret");
+    expect(state.resume).toHaveBeenCalledWith(caseId);
+    expect(state.read).not.toHaveBeenCalled();
+    expect(state.start).not.toHaveBeenCalled();
+    expect(state.continueLogin).not.toHaveBeenCalled();
   });
-  it("실행기 오류에 비밀이 있더라도 응답에는 원문을 노출하지 않는다", async () => {
-    state.start.mockRejectedValue(new Error("test-only-secret leaked by upstream"));
+  it("이어서 로그인 요청도 이전 계정 버전과 외부 출처를 거부한다", async () => {
+    state.account.revision = 2;
+    expect(
+      (await POST(request("POST", { action: "continue", accountRevision: 1 }), context())).status,
+    ).toBe(409);
+    expect(
+      (
+        await POST(
+          request(
+            "POST",
+            { action: "continue", accountRevision: 2 },
+            { origin: "https://evil.example" },
+          ),
+          context(),
+        )
+      ).status,
+    ).toBe(403);
+    expect(state.read).not.toHaveBeenCalled();
+    expect(state.continueLogin).not.toHaveBeenCalled();
+  });
+  it("복호화 도중 계정 버전이 바뀌면 재개하지 않고 비밀 참조를 비운다", async () => {
+    const credentials = { loginId: "test-only-id", password: "test-only-secret" };
+    state.read.mockImplementation(async () => {
+      state.account.revision = 1;
+      return credentials;
+    });
     const response = await POST(
-      request("POST", { action: "start", accountRevision: 0 }),
+      request("POST", { action: "continue", accountRevision: 0 }),
       context(),
     );
-    expect(response.status).toBe(500);
-    expect(await response.text()).not.toContain("test-only-secret");
+    expect(response.status).toBe(409);
+    expect(state.continueLogin).not.toHaveBeenCalled();
+    expect(credentials).toEqual({ loginId: "", password: "" });
   });
   it("연결 시작 중 계정 삭제 경합을 막고 이후 잠금을 해제한다", async () => {
     let release!: (value: { loginId: string; password: string }) => void;

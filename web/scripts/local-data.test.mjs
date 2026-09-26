@@ -1,0 +1,258 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import {
+  mkdtempSync,
+  mkdirSync,
+  writeFileSync,
+  readFileSync,
+  rmSync,
+  linkSync,
+  symlinkSync,
+  readdirSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { randomUUID } from "node:crypto";
+import { syncBuiltinESMExports } from "node:module";
+import { DatabaseSync } from "node:sqlite";
+import { readSafe, safePath, sha } from "./local-data-files.mjs";
+import { inspectDatabase, openReadOnly } from "./local-data-store.mjs";
+import { verifyLocalData } from "./local-data.mjs";
+
+function fixture(t, beforeCleanup = () => {}) {
+  const root = mkdtempSync(join(tmpdir(), "venture-data-unit-"));
+  t.after(() => {
+    beforeCleanup();
+    const target = resolve(root);
+    assert.ok(
+      target.startsWith(resolve(tmpdir()) + "\\venture-data-unit-") ||
+        target.startsWith(resolve(tmpdir()) + "/venture-data-unit-"),
+    );
+    rmSync(target, { recursive: true, force: true });
+  });
+  return root;
+}
+function database(t) {
+  let db;
+  const root = fixture(t, () => db.close());
+  db = new DatabaseSync(join(root, "test.sqlite"));
+  db.exec(
+    "CREATE TABLE studio_cases(id TEXT PRIMARY KEY,revision INTEGER,evidence_revision INTEGER,body TEXT); CREATE TABLE venture_accounts(case_id TEXT PRIMARY KEY,encrypted_payload BLOB,masked_login_id TEXT,revision INTEGER,updated_at TEXT); CREATE TABLE venture_workflows(case_id TEXT PRIMARY KEY,revision INTEGER,body TEXT,updated_at TEXT);",
+  );
+  return db;
+}
+function addCase(db, changes = {}) {
+  const record = { id: randomUUID(), revision: 0, sources: [], plans: [], tasks: [], ...changes };
+  db.prepare("INSERT INTO studio_cases VALUES(?,?,?,?)").run(
+    record.id,
+    record.revision,
+    0,
+    JSON.stringify(record),
+  );
+  return record;
+}
+test("bounded safe copy preserves exact bytes and uses exclusive output creation", (t) => {
+  const root = fixture(t);
+  const source = join(root, "source");
+  const target = join(root, "target");
+  writeFileSync(source, "synthetic payload");
+  const result = readSafe(source, 1024, target);
+  assert.equal(result.sha256, sha(Buffer.from("synthetic payload")));
+  assert.equal(result.sizeBytes, 17);
+  assert.equal(readFileSync(target, "utf8"), "synthetic payload");
+  assert.throws(() => readSafe(source, 1024, target), { code: "EEXIST" });
+  assert.throws(() => readSafe(source, 2), { code: "FILE_LIMIT" });
+});
+test("hardlinked source and directory junctions are rejected before reading", (t) => {
+  const root = fixture(t);
+  const source = join(root, "source");
+  const other = join(root, "other");
+  writeFileSync(source, "payload");
+  linkSync(source, other);
+  assert.throws(() => readSafe(other, 1024), { code: "UNSAFE_PATH" });
+  const actual = join(root, "actual");
+  const alias = join(root, "alias");
+  mkdirSync(actual);
+  writeFileSync(join(actual, "data"), "payload");
+  symlinkSync(actual, alias, "junction");
+  assert.throws(() => safePath(join(alias, "data")), { code: "UNSAFE_PATH" });
+});
+test("same-sized writes during a read invalidate the observation", (t) => {
+  const root = fixture(t);
+  const source = join(root, "source");
+  writeFileSync(source, "aaaa");
+  const original = fs.readSync;
+  let changed = false;
+  t.mock.method(fs, "readSync", (...args) => {
+    const count = original(...args);
+    if (!changed) {
+      changed = true;
+      writeFileSync(source, "bbbb");
+    }
+    return count;
+  });
+  syncBuiltinESMExports();
+  t.after(() => {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+  });
+  assert.throws(() => readSafe(source, 1024), { code: "FILE_CHANGED" });
+});
+test("full SQL snapshot changes when content changes without a revision increment", (t) => {
+  const db = database(t);
+  const record = addCase(db);
+  const before = inspectDatabase(db);
+  record.extra = "synthetic changed value";
+  db.prepare("UPDATE studio_cases SET body=? WHERE id=?").run(JSON.stringify(record), record.id);
+  const after = inspectDatabase(db);
+  assert.notEqual(before.digest, after.digest);
+  assert.equal(after.companies, 1);
+});
+test("full SQL snapshot includes encrypted account and workflow rows without logging them", (t) => {
+  const db = database(t);
+  const record = addCase(db);
+  const before = inspectDatabase(db);
+  db.prepare("INSERT INTO venture_accounts VALUES(?,?,?,?,?)").run(
+    record.id,
+    Buffer.from("fixture ciphertext"),
+    "f***",
+    1,
+    "time",
+  );
+  db.prepare("INSERT INTO venture_workflows VALUES(?,?,?,?)").run(record.id, 1, "{}", "time");
+  const after = inspectDatabase(db);
+  assert.equal(after.accounts, 1);
+  assert.equal(after.workflows, 1);
+  assert.notEqual(before.digest, after.digest);
+  assert.equal(JSON.stringify(after).includes("fixture"), false);
+});
+test("case/source ownership and logical revisions fail closed", (t) => {
+  const db = database(t);
+  const record = addCase(db);
+  const mutate = (body) =>
+    db.prepare("UPDATE studio_cases SET body=? WHERE id=?").run(JSON.stringify(body), record.id);
+  mutate({ ...record, id: randomUUID() });
+  assert.throws(() => inspectDatabase(db), { code: "DATABASE_INVALID" });
+  mutate({ ...record, revision: 10 });
+  assert.throws(() => inspectDatabase(db), { code: "DATABASE_INVALID" });
+  const source = { id: randomUUID(), originalName: "fixture.pdf" };
+  mutate({ ...record, sources: [source, source] });
+  assert.throws(() => inspectDatabase(db), { code: "DATABASE_INVALID" });
+  mutate({ ...record, sources: [{ ...source, id: "../../private" }] });
+  assert.throws(() => inspectDatabase(db), { code: "DATABASE_INVALID" });
+  mutate(record);
+  db.prepare("INSERT INTO venture_workflows VALUES(?,?,?,?)").run(randomUUID(), 1, "{}", "time");
+  assert.throws(() => inspectDatabase(db), { code: "DATABASE_INVALID" });
+});
+test("unknown schema, views and triggers are not silently included as restorable data", (t) => {
+  const db = database(t);
+  addCase(db);
+  db.exec("CREATE TABLE extra(secret TEXT)");
+  assert.throws(() => inspectDatabase(db), { code: "DATABASE_SCHEMA_UNSUPPORTED" });
+  db.exec("DROP TABLE extra; CREATE VIEW hidden AS SELECT body FROM studio_cases");
+  assert.throws(() => inspectDatabase(db), { code: "DATABASE_SCHEMA_UNSUPPORTED" });
+  db.exec(
+    "DROP VIEW hidden; CREATE TRIGGER hidden AFTER DELETE ON studio_cases BEGIN DELETE FROM venture_accounts; END",
+  );
+  assert.throws(() => inspectDatabase(db), { code: "DATABASE_SCHEMA_UNSUPPORTED" });
+});
+test("snapshot records originals by case/source UUID only", (t) => {
+  const db = database(t);
+  const id = randomUUID();
+  const record = addCase(db, {
+    sources: [
+      { id, originalName: "PRIVATE_SOURCE_NAME.pdf" },
+      { id: randomUUID(), originalName: null },
+    ],
+  });
+  const snapshot = inspectDatabase(db);
+  assert.deepEqual(snapshot.originals, [`originals/${record.id}/${id}.bin`]);
+  assert.equal(JSON.stringify(snapshot).includes("PRIVATE_SOURCE_NAME"), false);
+});
+test("unfinished original checkpoint requires app recovery before a complete backup", (t) => {
+  const db = database(t);
+  const intake = { id: randomUUID(), sourceId: randomUUID(), phase: "storing_original" };
+  const record = addCase(db, { sourceIntakes: [intake] });
+  assert.throws(() => inspectDatabase(db), { code: "SOURCE_INTAKE_RECOVERY_REQUIRED" });
+  // The same checkpoint must fail even if a source row is already present.
+  record.sources = [{ id: intake.sourceId, originalName: "SYNTHETIC_PRIVATE.pdf" }];
+  db.prepare("UPDATE studio_cases SET body=? WHERE id=?").run(JSON.stringify(record), record.id);
+  assert.throws(() => inspectDatabase(db), { code: "SOURCE_INTAKE_RECOVERY_REQUIRED" });
+  record.sourceIntakes[0].phase = "awaiting_review";
+  db.prepare("UPDATE studio_cases SET body=? WHERE id=?").run(JSON.stringify(record), record.id);
+  const resumed = inspectDatabase(db);
+  assert.deepEqual(resumed.originals, [`originals/${record.id}/${intake.sourceId}.bin`]);
+  assert.equal(JSON.stringify(resumed).includes("SYNTHETIC_PRIVATE"), false);
+});
+test("unuploaded reservations and unreviewed extraction changes remain in the snapshot digest", (t) => {
+  const db = database(t);
+  const record = addCase(db, {
+    sourceIntakes: [{ id: randomUUID(), phase: "awaiting_original", result: null }],
+  });
+  const initial = inspectDatabase(db);
+  assert.deepEqual(initial.originals, []);
+  record.sourceIntakes[0].result = { text: "SYNTHETIC_UNREVIEWED_PRIVATE_TEXT" };
+  db.prepare("UPDATE studio_cases SET body=? WHERE id=?").run(JSON.stringify(record), record.id);
+  const changed = inspectDatabase(db);
+  assert.notEqual(changed.digest, initial.digest);
+  assert.equal(JSON.stringify(changed).includes("SYNTHETIC_UNREVIEWED_PRIVATE_TEXT"), false);
+});
+test("malformed intake collections fail before original inventory is accepted", (t) => {
+  const db = database(t);
+  const record = addCase(db);
+  for (const sourceIntakes of [
+    null,
+    {},
+    [null],
+    [{}],
+    Array(101).fill({ phase: "awaiting_original" }),
+  ]) {
+    db.prepare("UPDATE studio_cases SET body=? WHERE id=?").run(
+      JSON.stringify({ ...record, sourceIntakes }),
+      record.id,
+    );
+    assert.throws(() => inspectDatabase(db), { code: "DATABASE_INVALID" });
+  }
+});
+test("closed WAL source without sidecars is rejected without initializing them", (t) => {
+  const root = fixture(t);
+  const db = new DatabaseSync(join(root, "studio.sqlite"));
+  db.exec("PRAGMA journal_mode=WAL; CREATE TABLE fixture(value TEXT)");
+  db.close();
+  const before = readdirSync(root);
+  assert.throws(() => openReadOnly(root), { code: "SOURCE_WAL_NOT_READY" });
+  assert.deepEqual(readdirSync(root), before);
+});
+test("verify rejects WAL-header backup before SQLite can create sidecars", (t) => {
+  const root = fixture(t);
+  const file = join(root, "studio.sqlite");
+  const db = new DatabaseSync(file);
+  db.exec("CREATE TABLE fixture(value TEXT)");
+  db.close();
+  const bytes = readFileSync(file);
+  bytes[18] = 2;
+  bytes[19] = 2;
+  writeFileSync(file, bytes);
+  const manifest = Buffer.from(
+    JSON.stringify({
+      format: "venturepass-local-backup",
+      version: 1,
+      createdAt: new Date().toISOString(),
+      logicalDigest: "0".repeat(64),
+      companies: 0,
+      accounts: 0,
+      workflows: 0,
+      files: [{ path: "studio.sqlite", sizeBytes: bytes.length, sha256: sha(bytes) }],
+    }),
+  );
+  writeFileSync(join(root, "backup-manifest.json"), manifest);
+  writeFileSync(
+    join(root, "COMPLETE.json"),
+    JSON.stringify({ format: "venturepass-local-backup-complete", manifestSha256: sha(manifest) }),
+  );
+  const before = readdirSync(root);
+  assert.throws(() => verifyLocalData(root), { code: "BACKUP_JOURNAL_UNSUPPORTED" });
+  assert.deepEqual(readdirSync(root), before);
+  assert.deepEqual(readFileSync(file), bytes);
+});

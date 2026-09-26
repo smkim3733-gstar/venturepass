@@ -1,5 +1,11 @@
 import OpenAI, { toFile } from "openai";
 import { getAiStatus } from "@/lib/studio-engine";
+import {
+  normalizeSourceLocations,
+  pageSourceLocationSegments,
+  subtitleSourceLocations,
+} from "./studio-source-location";
+import type { SourceLocationMetadata, SourceLocationSegment } from "./studio-source-location-types";
 
 export const MAX_UPLOAD_BYTES = 12 * 1024 * 1024;
 export const MAX_SOURCE_TEXT = 100000;
@@ -24,7 +30,12 @@ export const supportedFiles = [
   ".webm",
   ".ogg",
 ];
-type Extraction = { text: string; extraction: "local" | "ai"; warnings: string[] };
+type Extraction = {
+  text: string;
+  extraction: "local" | "ai";
+  warnings: string[];
+  locations?: SourceLocationMetadata;
+};
 
 export class SourceExtractionError extends Error {
   readonly status = 422;
@@ -176,7 +187,7 @@ async function readWithAi(
 /** Original bytes are retained separately by the upload route; no hidden truncation. */
 export async function extractSource(
   file: File,
-  { allowAi }: { allowAi: boolean },
+  { allowAi, preserveLocations = false }: { allowAi: boolean; preserveLocations?: boolean },
 ): Promise<Extraction> {
   if (file.size === 0) fail("비어 있는 파일입니다.");
   if (file.size > MAX_UPLOAD_BYTES) fail("파일은 12MB 이하로 올려 주세요.");
@@ -191,7 +202,13 @@ export async function extractSource(
       const decoded = decodeText(buffer);
       if (decoded.text.includes("\u0000"))
         fail("텍스트 파일에서 바이너리 데이터가 발견됐습니다. 파일 형식을 확인해 주세요.");
-      return finish(decoded.text, "local", decoded.warning ? [decoded.warning] : []);
+      const result = finish(decoded.text, "local", decoded.warning ? [decoded.warning] : []);
+      if (preserveLocations && (extension === ".srt" || extension === ".vtt"))
+        result.locations = subtitleSourceLocations(
+          result.text,
+          extension === ".srt" ? "srt" : "vtt",
+        );
+      return result;
     }
     if (extension === ".pdf") {
       if (!buffer.subarray(0, 1024).includes(Buffer.from("%PDF-")))
@@ -210,11 +227,18 @@ export async function extractSource(
               `텍스트가 적거나 없는 페이지 ${emptyPages}개가 있습니다. 스캔·도표의 내용은 원본을 확인하고 필요한 내용을 추가해 주세요.`,
             ]
           : [];
-        return finish(
-          result.pages.map((page) => `[페이지 ${page.num}]\n${page.text}`).join("\n\n"),
-          "local",
-          warnings,
-        );
+        const raw = result.pages.map((page) => `[페이지 ${page.num}]\n${page.text}`).join("\n\n");
+        const extracted = finish(raw, "local", warnings);
+        if (preserveLocations)
+          extracted.locations = normalizeSourceLocations(
+            raw,
+            extracted.text,
+            pageSourceLocationSegments(
+              result.pages.map((page) => ({ pageNumber: page.num, text: page.text })),
+              "pdf-page",
+            ),
+          );
+        return extracted;
       } finally {
         await parser.destroy();
       }
@@ -238,23 +262,49 @@ export async function extractSource(
       if (workbook.worksheets.length > 30)
         fail("시트가 30개를 초과합니다. 필요한 시트만 별도 파일로 올려 주세요.");
       const lines: string[] = [];
+      const segments: SourceLocationSegment[] = [];
+      let rawLength = 0;
+      const appendLine = (line: string) => {
+        lines.push(line);
+        rawLength += line.length + 1;
+      };
       let cellCount = 0;
       let formulas = 0;
-      for (const sheet of workbook.worksheets) {
-        lines.push(`[시트: ${sheet.name}]`);
+      for (const [sheetIndex, sheet] of workbook.worksheets.entries()) {
+        appendLine(`[시트: ${sheet.name}]`);
         sheet.eachRow((row, rowNumber) => {
           const cells: string[] = [];
+          let rowLength = `행 ${rowNumber}: `.length;
           row.eachCell((cell) => {
             if (++cellCount > 20000)
               fail("데이터가 2만 셀을 초과합니다. 필요한 표만 별도 파일로 올려 주세요.");
             if (cell.type === ExcelJS.ValueType.Formula) formulas++;
-            cells.push(`${cell.address}=${cell.text}`);
+            const value = cell.text;
+            const prefix = `${cell.address}=`;
+            if (cells.length) rowLength += 3;
+            const start = rawLength + rowLength + prefix.length;
+            if (preserveLocations && value.length)
+              segments.push({
+                start,
+                end: start + value.length,
+                coordinate: {
+                  kind: "spreadsheet-cell",
+                  sheetIndex: sheetIndex + 1,
+                  sheetName: sheet.name,
+                  row: rowNumber,
+                  column: Number(cell.col),
+                  address: cell.address,
+                },
+              });
+            cells.push(`${prefix}${value}`);
+            rowLength += prefix.length + value.length;
           });
-          if (cells.length) lines.push(`행 ${rowNumber}: ${cells.join(" | ")}`);
+          if (cells.length) appendLine(`행 ${rowNumber}: ${cells.join(" | ")}`);
         });
       }
-      return finish(
-        lines.join("\n"),
+      const raw = lines.join("\n");
+      const extracted = finish(
+        raw,
         "local",
         formulas
           ? [
@@ -262,6 +312,9 @@ export async function extractSource(
             ]
           : [],
       );
+      if (preserveLocations)
+        extracted.locations = normalizeSourceLocations(raw, extracted.text, segments);
+      return extracted;
     }
     if ([".png", ".jpg", ".jpeg", ".webp"].includes(extension)) {
       let mime = "";

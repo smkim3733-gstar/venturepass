@@ -1,6 +1,11 @@
 import type { BusinessPlan, StudioCase } from "./studio-schema";
 
-export function exportPlanMarkdown(record: StudioCase, plan: BusinessPlan, current: boolean) {
+export function exportPlanMarkdown(
+  record: StudioCase,
+  plan: BusinessPlan,
+  current: boolean,
+  options?: { sourceListIds?: readonly string[] },
+) {
   const lines = [
     `# ${plan.content.title}`,
     "",
@@ -56,6 +61,7 @@ export function exportPlanMarkdown(record: StudioCase, plan: BusinessPlan, curre
   );
   lines.push("", "## 입력자료 목록", "");
   for (const source of record.sources) {
+    if (options?.sourceListIds && !options.sourceListIds.includes(source.id)) continue;
     lines.push(`- ${source.name} · ID: ${source.id} · 최종 수정: ${source.updatedAt}`);
     for (const warning of source.warnings) lines.push(`  - 추출 확인사항: ${warning}`);
   }

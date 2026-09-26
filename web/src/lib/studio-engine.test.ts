@@ -1,3 +1,4 @@
+import { emptyDiagnosisAnswers } from "./studio-diagnosis-types";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
@@ -55,6 +56,28 @@ function fixture(): StudioCase {
     plans: [],
     tasks: [],
     stage: "preparing",
+    stageHistory: [],
+    agencyRecords: [],
+    sourceOcrReviews: [],
+    diagnosisAnswers: emptyDiagnosisAnswers(),
+    diagnoses: [],
+    preparationRuns: [],
+    appealPreparations: [],
+    applications: [],
+    applicationEvents: [],
+    responsePreparations: [],
+    visitAnswers: [],
+    planReviewDecisions: [],
+    numericChecks: [],
+    candidateSelections: [],
+    companyContacts: [],
+    claimReviews: [],
+    sourceIntakes: [],
+    sourceSuggestionAdoptions: [],
+    applicationProcedures: [],
+    criteriaVersions: [],
+    applicationCriteriaBindings: [],
+    preparationAutomation: { caseId: null, settings: [], events: [], batches: [], overflow: null },
     revision: 1,
     createdAt: "2026-09-22",
     updatedAt: "2026-09-22",
@@ -81,6 +104,7 @@ function aiAnalysis(value = fixture()): AnalysisContent {
     candidates: [
       {
         id: "candidate-1",
+        classification: "unknown",
         title: "금형 냉각 유로 설계",
         problem: "고객 문제 확인 필요",
         solution: value.profile.technologySummary,
@@ -132,6 +156,14 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllEnvs());
 
 describe("assisted company analysis and plan assembly", () => {
+  it("keeps local extraction unclassified instead of inferring current capability from keywords", async () => {
+    const value = fixture();
+    value.profile.technologySummary = "등록 특허 기술 개발 완료 및 향후 계획이라는 기업 설명";
+    const result = await analyzeCompany(value, "assisted");
+    expect(result.candidates[0].classification).toBe("unknown");
+    expect(value.analysis).toBeNull();
+    expect(constructorMock).not.toHaveBeenCalled();
+  });
   it("uses actual company statements and valid citations without making an AI request", async () => {
     const value = fixture();
     const result = await analyzeCompany(value, "assisted");
@@ -202,6 +234,59 @@ describe("assisted company analysis and plan assembly", () => {
     expect(
       reviewPlan(value, content).filter((finding) => finding.category === "invalid-reference"),
     ).toHaveLength(0);
+  });
+});
+
+describe("candidate recommendation classification", () => {
+  it.each(["unknown", "current", "evidence-needed", "future-proposal"] as const)(
+    "preserves an AI recommendation %s without confirming facts",
+    async (classification) => {
+      vi.stubEnv("OPENAI_API_KEY", "synthetic-key");
+      const value = fixture();
+      const before = structuredClone(value);
+      const reply = aiAnalysis(value);
+      reply.candidates[0].classification = classification;
+      parseMock.mockResolvedValueOnce({ status: "completed", output_parsed: reply });
+      const output = await analyzeCompany(value, "ai");
+      expect(output.candidates[0].classification).toBe(classification);
+      expect(output.facts[0].status).toBe("reported");
+      expect(value).toEqual(before);
+      const schema = parseMock.mock.calls[0][0].text.format.schema;
+      expect(schema.properties.candidates.items.required).toContain("classification");
+      expect(parseMock.mock.calls[0][0].input[0].content).toContain(
+        "추천 분류이며 사실·기관 적합성·사용자 검토 완료를 뜻하지 않는다",
+      );
+    },
+  );
+  it.each([undefined, "confirmed", "accepted"])(
+    "rejects missing or invalid AI classifications %s",
+    async (classification) => {
+      vi.stubEnv("OPENAI_API_KEY", "synthetic-key");
+      const reply = aiAnalysis() as unknown as { candidates: Array<Record<string, unknown>> };
+      reply.candidates[0].classification = classification;
+      parseMock.mockResolvedValueOnce({ status: "completed", output_parsed: reply });
+      await expect(analyzeCompany(fixture(), "ai")).rejects.toMatchObject({
+        code: "AI_REQUEST_FAILED",
+      });
+    },
+  );
+  it("sends future proposals as unverified plans without altering saved candidate data", async () => {
+    vi.stubEnv("OPENAI_API_KEY", "synthetic-key");
+    const value = fixture();
+    const candidate = {
+      ...aiAnalysis(value).candidates[0],
+      classification: "future-proposal" as const,
+    };
+    const before = structuredClone(candidate);
+    parseMock.mockResolvedValueOnce({ status: "completed", output_parsed: validPlan(value) });
+    parseMock.mockResolvedValueOnce({ status: "completed", output_parsed: { findings: [] } });
+    await generatePlan(value, candidate, "ai");
+    const request = parseMock.mock.calls[0][0];
+    expect(JSON.parse(request.input[1].content).selectedCandidate.classification).toBe(
+      "future-proposal",
+    );
+    expect(request.input[0].content).toContain("이미 수행한 활동·보유기술·성과로 바꾸지 않는다");
+    expect(candidate).toEqual(before);
   });
 });
 

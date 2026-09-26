@@ -87,11 +87,40 @@ describe("로컬 기업 저장소", () => {
     record = store.saveAnalysis(record.id, record.revision, analysis, "assisted");
     record = store.mutate(
       record.id,
-      { action: "select-candidate", revision: record.revision, candidateId: "sensor" },
+      {
+        action: "select-candidate",
+        revision: record.revision,
+        clientRequestId: randomUUID(),
+        candidateId: "sensor",
+        analysisGeneratedAt: record.analysis!.generatedAt,
+        analysisSourceRevision: record.analysis!.sourceRevision,
+        expectedSelectedCandidateId: record.selectedCandidateId,
+        reason: "합성 후보 선택 근거",
+      },
       review,
     );
     return store.saveGeneratedPlan(record.id, record.revision, "sensor", content, [], "assisted");
   }
+  it("최초 초안 생성의 단계 변경은 기관 확인이 아닌 앱 자동 이력으로 보존한다", () => {
+    const record = withPlan();
+    expect(record.stageHistory).toHaveLength(1);
+    expect(record.stageHistory[0]).toMatchObject({
+      from: "preparing",
+      to: "drafting",
+      origin: "plan-created",
+      occurredOn: "",
+    });
+    const next = store.saveGeneratedPlan(
+      record.id,
+      record.revision,
+      "sensor",
+      content,
+      [],
+      "assisted",
+    );
+    expect(next.stageHistory).toEqual(record.stageHistory);
+    expect(next.plans).toHaveLength(2);
+  });
   it("재시작 후 기업과 자료를 복구한다", () => {
     let record = store.create(profile);
     record = store.mutate(
@@ -107,6 +136,65 @@ describe("로컬 기업 저장소", () => {
       sourceCount: 1,
       revision: 1,
     });
+  });
+  it("신규 필드가 없는 기존 기업은 메모를 보존하고 자본금·결산월을 별도로 저장한다", () => {
+    const financials = "2024년 결산 기준. 납입자본금과 결산월은 증빙 확인 후 별도 입력.";
+    const original = store.create({ ...profile, financials });
+    const legacy = {
+      ...original,
+      profile: { ...original.profile } as Record<string, unknown>,
+    };
+    delete legacy.profile.paidInCapital;
+    delete legacy.profile.closingMonth;
+    const database = new DatabaseSync(join(directory, "studio.sqlite"));
+    try {
+      database
+        .prepare("UPDATE studio_cases SET body = ? WHERE id = ?")
+        .run(JSON.stringify(legacy), original.id);
+    } finally {
+      database.close();
+    }
+    store.close();
+    store = new StudioStore(directory);
+    const restored = store.get(original.id);
+    expect(restored.profile).toEqual({ ...original.profile, paidInCapital: "", closingMonth: "" });
+    expect(restored.revision).toBe(original.revision);
+    expect(store.list()[0].companyName).toBe(profile.companyName);
+    const saved = store.mutate(
+      restored.id,
+      {
+        action: "profile",
+        revision: restored.revision,
+        profile: { ...restored.profile, paidInCapital: "10000000", closingMonth: "12" },
+      },
+      review,
+    );
+    store.close();
+    store = new StudioStore(directory);
+    expect(store.get(saved.id)).toEqual(saved);
+    expect(saved.profile).toMatchObject({
+      paidInCapital: "10000000",
+      closingMonth: "12",
+      financials,
+    });
+  });
+  it.each([
+    { paidInCapital: "9007199254740992", closingMonth: "12" },
+    { paidInCapital: "10000000", closingMonth: "13" },
+  ])("잘못된 구조화 금액·월 저장은 기존 메모와 버전을 변경하지 않는다", (invalid) => {
+    const record = store.create({ ...profile, financials: "이 메모를 유지합니다." });
+    expect(() =>
+      store.mutate(
+        record.id,
+        {
+          action: "profile",
+          revision: record.revision,
+          profile: { ...record.profile, ...invalid } as typeof record.profile,
+        },
+        review,
+      ),
+    ).toThrow();
+    expect(store.get(record.id)).toEqual(record);
   });
   it("별도 연결의 오래된 수정 및 삭제로 최신 내용을 덮어쓰지 않는다", () => {
     const record = store.create(profile);
@@ -282,7 +370,16 @@ describe("로컬 기업 저장소", () => {
     );
     record = store.mutate(
       record.id,
-      { action: "select-candidate", revision: record.revision, candidateId: "sensor" },
+      {
+        action: "select-candidate",
+        revision: record.revision,
+        clientRequestId: randomUUID(),
+        candidateId: "sensor",
+        analysisGeneratedAt: record.analysis!.generatedAt,
+        analysisSourceRevision: record.analysis!.sourceRevision,
+        expectedSelectedCandidateId: record.selectedCandidateId,
+        reason: "합성 후보 선택 근거",
+      },
       review,
     );
     expect(store.isPlanCurrent(record.id, old)).toBe(false);
@@ -358,10 +455,19 @@ describe("로컬 기업 저장소", () => {
     expect(() =>
       store.mutate(
         record.id,
-        { action: "select-candidate", revision: record.revision, candidateId: "forged" },
+        {
+          action: "select-candidate",
+          revision: record.revision,
+          clientRequestId: randomUUID(),
+          candidateId: "forged",
+          analysisGeneratedAt: record.analysis!.generatedAt,
+          analysisSourceRevision: record.analysis!.sourceRevision,
+          expectedSelectedCandidateId: record.selectedCandidateId,
+          reason: "합성 후보 선택 근거",
+        },
         review,
       ),
-    ).toThrow("추천");
+    ).toThrow(expect.objectContaining({ code: "INVALID_CANDIDATE" }));
     expect(() =>
       store.mutate(
         record.id,

@@ -1,0 +1,417 @@
+import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { createHash, randomUUID } from "node:crypto";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
+import test from "node:test";
+import { fileURLToPath } from "node:url";
+
+const script = fileURLToPath(new URL("./local-data.mjs", import.meta.url));
+const sha = (value) => createHash("sha256").update(value).digest("hex");
+const secret = "SYNTHETIC_SECRET_NEVER_PRINT_THIS";
+
+function fixture(root) {
+  mkdirSync(root);
+  const database = new DatabaseSync(path.join(root, "studio.sqlite"));
+  database.exec(
+    "PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; PRAGMA foreign_keys=ON; CREATE TABLE studio_cases (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, evidence_revision INTEGER NOT NULL, body TEXT NOT NULL); CREATE TABLE venture_accounts (case_id TEXT PRIMARY KEY REFERENCES studio_cases(id) ON DELETE CASCADE, encrypted_payload BLOB, masked_login_id TEXT, revision INTEGER NOT NULL CHECK (revision > 0), updated_at TEXT NOT NULL, CHECK ((encrypted_payload IS NULL AND masked_login_id IS NULL) OR (encrypted_payload IS NOT NULL AND masked_login_id IS NOT NULL))); CREATE TABLE venture_workflows (case_id TEXT PRIMARY KEY REFERENCES studio_cases(id) ON DELETE CASCADE, revision INTEGER NOT NULL CHECK (revision > 0), body TEXT NOT NULL, updated_at TEXT NOT NULL);",
+  );
+  const now = "2026-09-25T00:00:00.000Z";
+  const id = randomUUID();
+  const sourceId = randomUUID();
+  const original = Buffer.from(`%PDF-1.7\n${secret}\nSYNTHETIC ORIGINAL`);
+  const attemptId = randomUUID();
+  const resultId = randomUUID();
+  const unreviewedText = `UNREVIEWED ${secret}`;
+  const record = {
+    id,
+    profile: {
+      companyName: "SYNTHETIC_COMPANY_NEVER_PRINT",
+      businessNumber: "",
+      industry: "",
+      foundedOn: "",
+      paidInCapital: "",
+      closingMonth: "",
+      applicationDate: "",
+      applicationKind: "new",
+      technologySummary: "",
+      customers: "",
+      team: "",
+      financials: "",
+      developmentPlan: "",
+      patents: "",
+    },
+    sources: [
+      {
+        id: sourceId,
+        name: "SYNTHETIC_SOURCE_NEVER_PRINT",
+        kind: "technology",
+        text: "",
+        originalName: "synthetic-private.pdf",
+        mimeType: "application/pdf",
+        extraction: "pending",
+        warnings: [],
+        createdAt: now,
+        updatedAt: now,
+      },
+    ],
+    analysis: null,
+    selectedCandidateId: null,
+    plans: [],
+    tasks: [],
+    stage: "preparing",
+    stageHistory: [],
+    agencyRecords: [],
+    sourceOcrReviews: [],
+    sourceIntakes: [
+      {
+        id: randomUUID(),
+        batchId: randomUUID(),
+        clientFileId: randomUUID(),
+        sourceId,
+        version: 4,
+        declared: {
+          originalName: "synthetic-private.pdf",
+          kind: "technology",
+          sizeBytes: original.length,
+        },
+        original: {
+          originalName: "synthetic-private.pdf",
+          mimeType: "application/pdf",
+          sizeBytes: original.length,
+          sha256: sha(original),
+          sourceUpdatedAt: now,
+        },
+        phase: "awaiting_review",
+        attempts: [
+          {
+            id: attemptId,
+            engine: "local-document",
+            startedAt: now,
+            finishedAt: now,
+            originalSha256: sha(original),
+            sourceUpdatedAt: now,
+            externalRequestStarted: false,
+            status: "completed",
+            code: null,
+            resultId,
+          },
+        ],
+        result: {
+          id: resultId,
+          attemptId,
+          engine: "local-document",
+          generatedAt: now,
+          originalSha256: sha(original),
+          sourceUpdatedAt: now,
+          textSha256: sha(unreviewedText),
+          content: { kind: "plain", text: unreviewedText },
+          warnings: [],
+          reviewStatus: "unreviewed",
+          discardedAt: null,
+        },
+        previousResults: [],
+        adoption: null,
+        requests: [],
+        createdAt: now,
+        updatedAt: now,
+        code: null,
+      },
+    ],
+    diagnoses: [],
+    preparationRuns: [],
+    revision: 7,
+    createdAt: now,
+    updatedAt: now,
+  };
+  database
+    .prepare("INSERT INTO studio_cases (id, revision, evidence_revision, body) VALUES (?, ?, ?, ?)")
+    .run(id, 7, 4, JSON.stringify(record));
+  database
+    .prepare(
+      "INSERT INTO venture_accounts (case_id, encrypted_payload, masked_login_id, revision, updated_at) VALUES (?, ?, ?, ?, ?)",
+    )
+    .run(id, Buffer.from(secret), "SYNTHETIC_MASK_NEVER_PRINT", 1, now);
+  database
+    .prepare(
+      "INSERT INTO venture_workflows (case_id, revision, body, updated_at) VALUES (?, ?, ?, ?)",
+    )
+    .run(id, 1, JSON.stringify({ synthetic: secret }), now);
+  const relative = path.join("originals", id, `${sourceId}.bin`);
+  mkdirSync(path.dirname(path.join(root, relative)), { recursive: true });
+  writeFileSync(path.join(root, relative), original);
+  return { database, record, relative, original };
+}
+
+function snapshot(database) {
+  return ["studio_cases", "venture_accounts", "venture_workflows"].map((table) =>
+    database.prepare(`SELECT * FROM ${table} ORDER BY 1`).all(),
+  );
+}
+
+function cli(args, temporaryRoot, forbidden, ok = true) {
+  const result = spawnSync(process.execPath, [script, ...args], {
+    cwd: path.dirname(script),
+    windowsHide: true,
+    timeout: 150_000,
+    maxBuffer: 8192,
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      VENTURE_DATA_DIR: path.join(temporaryRoot, "must-not-be-accessed"),
+      OPENAI_API_KEY: secret,
+      NODE_NO_WARNINGS: "1",
+    },
+  });
+  assert.equal(result.error, undefined, "CLI must finish within its bounded timeout");
+  assert.equal(result.status, ok ? 0 : 1);
+  const output = result.stdout + result.stderr;
+  for (const value of forbidden)
+    assert.equal(
+      output.includes(value),
+      false,
+      "CLI output must contain only fixed status codes and counts",
+    );
+  assert.equal(existsSync(path.join(temporaryRoot, "must-not-be-accessed")), false);
+  const payload = JSON.parse((ok ? result.stdout : result.stderr).trim());
+  if (ok) {
+    assert.equal(result.stderr, "");
+    assert.deepEqual(payload, {
+      ok: true,
+      action: args[0],
+      companies: 1,
+      originals: 1,
+      accounts: 1,
+      scope: "structure-and-bytes-only",
+      credentials: "same-windows-user-may-be-required",
+      switched: false,
+    });
+  } else {
+    assert.equal(result.stdout, "");
+    assert.equal(payload.ok, false);
+    assert.equal(payload.completed, false);
+    assert.equal(payload.overwritten, false);
+  }
+  return payload;
+}
+
+test(
+  "synthetic child CLI: live WAL snapshot, readonly verification, new-directory restore, and refusal boundaries",
+  { timeout: 300_000 },
+  async (t) => {
+    const temporaryRoot = mkdtempSync(path.join(tmpdir(), "venture-local-data-audit-"));
+    const source = path.join(temporaryRoot, "source");
+    const backup = path.join(temporaryRoot, "backup");
+    const restored = path.join(temporaryRoot, "restored");
+    const data = fixture(source);
+    const forbidden = [
+      temporaryRoot,
+      source,
+      backup,
+      restored,
+      secret,
+      data.record.id,
+      data.record.profile.companyName,
+      data.record.sources[0].id,
+      data.record.sources[0].name,
+      data.record.sources[0].originalName,
+      "SYNTHETIC_MASK_NEVER_PRINT",
+    ];
+    const before = snapshot(data.database);
+    try {
+      await t.test(
+        "backup includes committed live WAL data without changing source DB or originals",
+        () => {
+          assert.ok(existsSync(path.join(source, "studio.sqlite-wal")));
+          cli(["backup", "--source", source, "--destination", backup], temporaryRoot, forbidden);
+          assert.deepEqual(snapshot(data.database), before);
+          assert.deepEqual(readFileSync(path.join(source, data.relative)), data.original);
+          assert.deepEqual(
+            readdirSync(backup).sort(),
+            ["COMPLETE.json", "backup-manifest.json", "originals", "studio.sqlite"].sort(),
+          );
+          assert.equal(existsSync(path.join(backup, "studio.sqlite-wal")), false);
+          const db = new DatabaseSync(path.join(backup, "studio.sqlite"), { readOnly: true });
+          try {
+            assert.deepEqual(snapshot(db), before);
+          } finally {
+            db.close();
+          }
+        },
+      );
+      await t.test("verify preserves every backup byte and manifest hash", () => {
+        const files = ["studio.sqlite", "backup-manifest.json", "COMPLETE.json", data.relative];
+        const initial = files.map((file) => sha(readFileSync(path.join(backup, file))));
+        cli(["verify", "--source", backup], temporaryRoot, forbidden);
+        assert.deepEqual(
+          files.map((file) => sha(readFileSync(path.join(backup, file)))),
+          initial,
+        );
+      });
+      await t.test(
+        "restore creates only a new destination and retains all three tables plus exact original",
+        () => {
+          cli(["restore", "--source", backup, "--destination", restored], temporaryRoot, forbidden);
+          const db = new DatabaseSync(path.join(restored, "studio.sqlite"), { readOnly: true });
+          try {
+            assert.deepEqual(snapshot(db), before);
+          } finally {
+            db.close();
+          }
+          assert.deepEqual(readFileSync(path.join(restored, data.relative)), data.original);
+          cli(["verify", "--source", restored], temporaryRoot, forbidden);
+          assert.deepEqual(snapshot(data.database), before);
+        },
+      );
+      await t.test("existing restore directory is never overwritten", () => {
+        const initial = sha(readFileSync(path.join(restored, "studio.sqlite")));
+        const result = cli(
+          ["restore", "--source", backup, "--destination", restored],
+          temporaryRoot,
+          forbidden,
+          false,
+        );
+        assert.equal(result.code, "DESTINATION_EXISTS");
+        assert.equal(sha(readFileSync(path.join(restored, "studio.sqlite"))), initial);
+      });
+      await t.test(
+        "incomplete intake checkpoint blocks backup without changing source or reporting completion",
+        () => {
+          const blocked = path.join(temporaryRoot, "intake-must-not-backup");
+          const unfinished = structuredClone(data.record);
+          unfinished.sourceIntakes[0].phase = "storing_original";
+          data.database
+            .prepare("UPDATE studio_cases SET body=? WHERE id=?")
+            .run(JSON.stringify(unfinished), unfinished.id);
+          const checkpoint = snapshot(data.database);
+          try {
+            const result = cli(
+              ["backup", "--source", source, "--destination", blocked],
+              temporaryRoot,
+              forbidden,
+              false,
+            );
+            assert.equal(result.code, "SOURCE_INTAKE_RECOVERY_REQUIRED");
+            assert.equal(existsSync(path.join(blocked, "COMPLETE.json")), false);
+            assert.deepEqual(snapshot(data.database), checkpoint);
+            assert.deepEqual(readFileSync(path.join(source, data.relative)), data.original);
+          } finally {
+            data.database
+              .prepare("UPDATE studio_cases SET body=? WHERE id=?")
+              .run(JSON.stringify(data.record), data.record.id);
+          }
+          assert.deepEqual(snapshot(data.database), before);
+        },
+      );
+      await t.test(
+        "same-size original tampering invalidates verify and prevents creating a restore directory",
+        () => {
+          writeFileSync(path.join(backup, data.relative), Buffer.alloc(data.original.length, 0x41));
+          assert.equal(
+            cli(["verify", "--source", backup], temporaryRoot, forbidden, false).code,
+            "FILE_CHANGED",
+          );
+          const blocked = path.join(temporaryRoot, "must-not-restore");
+          assert.equal(
+            cli(
+              ["restore", "--source", backup, "--destination", blocked],
+              temporaryRoot,
+              forbidden,
+              false,
+            ).code,
+            "FILE_CHANGED",
+          );
+          assert.equal(existsSync(blocked), false);
+          assert.deepEqual(snapshot(data.database), before);
+          assert.deepEqual(readFileSync(path.join(source, data.relative)), data.original);
+        },
+      );
+    } finally {
+      data.database.close();
+      const resolved = path.resolve(temporaryRoot);
+      const boundary = path.relative(path.resolve(tmpdir()), resolved);
+      if (
+        path.isAbsolute(boundary) ||
+        boundary.startsWith("..") ||
+        !path.basename(resolved).startsWith("venture-local-data-audit-")
+      )
+        throw new Error("Unsafe synthetic cleanup target");
+      rmSync(resolved, { recursive: true, force: true });
+    }
+  },
+);
+
+test(
+  "synthetic child CLI: cleanly closed WAL backs up through scratch and restores without changing source directory or bytes",
+  { timeout: 180_000 },
+  () => {
+    const temporaryRoot = mkdtempSync(path.join(tmpdir(), "venture-local-data-audit-"));
+    const source = path.join(temporaryRoot, "cold-source");
+    const backup = path.join(temporaryRoot, "cold-backup");
+    const restored = path.join(temporaryRoot, "cold-restored");
+    const data = fixture(source);
+    const expectedRows = snapshot(data.database);
+    data.database.close();
+    const originalDatabase = readFileSync(path.join(source, "studio.sqlite"));
+    const originalNames = readdirSync(source, { recursive: true }).sort();
+    const forbidden = [
+      temporaryRoot,
+      source,
+      backup,
+      restored,
+      secret,
+      data.record.id,
+      data.record.profile.companyName,
+      data.record.sources[0].id,
+      data.record.sources[0].name,
+      data.record.sources[0].originalName,
+      "SYNTHETIC_MASK_NEVER_PRINT",
+    ];
+    try {
+      assert.equal(originalDatabase[18], 2);
+      assert.equal(originalDatabase[19], 2);
+      for (const suffix of ["-wal", "-shm", "-journal"])
+        assert.equal(existsSync(path.join(source, `studio.sqlite${suffix}`)), false);
+
+      cli(["backup", "--source", source, "--destination", backup], temporaryRoot, forbidden);
+      cli(["verify", "--source", backup], temporaryRoot, forbidden);
+      cli(["restore", "--source", backup, "--destination", restored], temporaryRoot, forbidden);
+      cli(["verify", "--source", restored], temporaryRoot, forbidden);
+
+      const restoredDatabase = new DatabaseSync(path.join(restored, "studio.sqlite"), {
+        readOnly: true,
+      });
+      try {
+        assert.deepEqual(snapshot(restoredDatabase), expectedRows);
+      } finally {
+        restoredDatabase.close();
+      }
+      assert.deepEqual(readFileSync(path.join(restored, data.relative)), data.original);
+      assert.deepEqual(readdirSync(source, { recursive: true }).sort(), originalNames);
+      assert.deepEqual(readFileSync(path.join(source, "studio.sqlite")), originalDatabase);
+      assert.deepEqual(readFileSync(path.join(source, data.relative)), data.original);
+      for (const suffix of ["-wal", "-shm", "-journal"])
+        assert.equal(existsSync(path.join(source, `studio.sqlite${suffix}`)), false);
+    } finally {
+      const resolved = path.resolve(temporaryRoot);
+      const boundary = path.relative(path.resolve(tmpdir()), resolved);
+      if (
+        path.isAbsolute(boundary) ||
+        boundary.startsWith("..") ||
+        !path.basename(resolved).startsWith("venture-local-data-audit-")
+      )
+        throw new Error("Unsafe synthetic cleanup target");
+      rmSync(resolved, { recursive: true, force: true });
+    }
+  },
+);

@@ -10,6 +10,7 @@ import {
   saveVentureAccount,
 } from "@/lib/venturein-vault";
 import {
+  continueVentureSession,
   resumeVentureSession,
   startVentureSession,
   stopVentureSession,
@@ -27,7 +28,7 @@ async function readSmallJson(request: Request) {
 const revisionSchema = z.object({ revision: z.number().int().nonnegative() }).strict();
 const commandSchema = z
   .object({
-    action: z.enum(["start", "resume", "stop"]),
+    action: z.enum(["start", "continue", "resume", "stop"]),
     accountRevision: z.number().int().nonnegative(),
   })
   .strict();
@@ -80,11 +81,15 @@ export function POST(request: Request, context: Context) {
     return withVentureLock(caseId, async () => {
       const store = getStudioStore();
       checkRevision(caseId, input.accountRevision);
-      if (input.action === "start") {
+      if (input.action === "start" || input.action === "continue") {
         const credentials = await readVentureAccount(store, caseId);
-        checkRevision(caseId, input.accountRevision);
         try {
-          await startVentureSession(caseId, credentials);
+          checkRevision(caseId, input.accountRevision);
+          if (input.action === "continue") {
+            await continueVentureSession(caseId, credentials);
+          } else {
+            await startVentureSession(caseId, credentials);
+          }
         } finally {
           credentials.loginId = "";
           credentials.password = "";

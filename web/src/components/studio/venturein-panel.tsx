@@ -16,6 +16,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
+import { VentureinWorkflowPanel } from "./venturein-workflow-panel";
 import {
   ventureinUrls,
   type VentureConnectionStatus,
@@ -36,6 +37,7 @@ const sessionLabels: Record<VentureSessionState, string> = {
   idle: "연결 전",
   starting: "로그인 연결 중",
   awaiting_setup: "보안 프로그램 설치 필요",
+  awaiting_login: "로그인 화면 준비 대기",
   awaiting_auth: "로그인·추가 인증 확인 대기",
   connected_unmapped: "로그인 표시 확인 · 제출 연결 미검증",
   login_failed: "연결 확인 필요",
@@ -48,8 +50,9 @@ export function VentureinPanel({ company, setDirty }: PanelProps) {
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
+  const [workflowDirty, setWorkflowDirty] = useState(false);
   const endpoint = `/api/studio/cases/${company.id}/venturein`;
-  useDirty(Boolean(loginId || password || busy), setDirty);
+  useDirty(Boolean(loginId || password || busy || workflowDirty), setDirty);
   useEffect(() => {
     let active = true;
     studioFetch<VentureConnectionStatus>(endpoint)
@@ -82,25 +85,21 @@ export function VentureinPanel({ company, setDirty }: PanelProps) {
     setError(message);
     toast.error(message);
   }
-  async function command(action: "start" | "resume" | "stop" | "restart", current = connection) {
+  async function command(action: "start" | "continue" | "resume" | "stop", current = connection) {
     if (!current) return;
     setBusy(
-      action === "start" || action === "restart"
+      action === "start"
         ? "별도 Edge 창에서 벤처인 로그인을 시작하고 있습니다"
-        : "로그인 연결 상태를 확인하고 있습니다",
+        : action === "continue"
+          ? "열린 Edge 창에서 로그인을 이어가고 있습니다"
+          : "로그인 연결 상태를 확인하고 있습니다",
     );
     setError("");
     try {
-      if (action === "restart") {
-        await studioFetch<VentureConnectionStatus>(endpoint, {
-          method: "POST",
-          ...jsonBody({ action: "stop", accountRevision: current.account.revision }),
-        });
-      }
       const result = await studioFetch<VentureConnectionStatus>(endpoint, {
         method: "POST",
         ...jsonBody({
-          action: action === "restart" ? "start" : action,
+          action,
           accountRevision: current.account.revision,
         }),
       });
@@ -154,9 +153,13 @@ export function VentureinPanel({ company, setDirty }: PanelProps) {
   }
   const activeSession =
     connection &&
-    ["starting", "awaiting_setup", "awaiting_auth", "connected_unmapped"].includes(
-      connection.session.state,
-    );
+    [
+      "starting",
+      "awaiting_setup",
+      "awaiting_login",
+      "awaiting_auth",
+      "connected_unmapped",
+    ].includes(connection.session.state);
   useEffect(() => {
     if (!activeSession || busy) return;
     let active = true;
@@ -190,8 +193,9 @@ export function VentureinPanel({ company, setDirty }: PanelProps) {
         }
       />
       <Notice tone="warning">
-        현재는 계정 암호화 저장과 자동 로그인 연결을 제공합니다. 로그인 후 기업 확인·신청
-        항목·첨부·최종 제출 화면의 연결 검증이 남아 있어 실제 자동 제출은 아직 실행되지 않습니다.
+        로그인 후 신청기업을 대조하고, 공식 항목과 원고·원본 파일을 연결해 제출 전 점검을
+        진행합니다. 점검을 통과한 연결안은 정확한 값과 첨부 파일을 검토하고 전송을 승인한 뒤 한 번
+        실행할 수 있습니다. 저장·동의·제출 버튼은 자동 실행하지 않습니다.
       </Notice>
       {error && (
         <div
@@ -326,28 +330,54 @@ export function VentureinPanel({ company, setDirty }: PanelProps) {
               <div className="mt-3">
                 <Notice tone="warning">
                   열린 Edge 창에서 벤처인 공식 안내에 따라 TouchEn 보안 프로그램을 설치해 주세요.
-                  설치가 끝나면 ‘설치 완료 후 다시 연결’을 누르세요. 보안 프로그램 설치는 최초 사용
-                  PC에서 필요할 수 있으며, 계정을 다시 저장할 필요는 없습니다.
+                  설치가 끝나면 ‘설치 완료 후 로그인 계속’을 누르세요. 같은 창에서 로그인 화면을
+                  다시 확인합니다. 계정을 다시 저장할 필요는 없습니다.
                 </Notice>
               </div>
             )}
-            {connection.session.state === "awaiting_auth" && (
+            {["awaiting_login", "awaiting_auth"].includes(connection.session.state) && (
               <div className="mt-3">
                 <Notice>
-                  <p className="font-semibold">Edge에 앱·서비스 접근 권한 요청이 표시되나요?</p>
-                  <p className="mt-2">
-                    ‘이 장치에서 다른 앱 및 서비스에 액세스’는 사이트가 이 PC의 앱·서비스에
-                    연결하도록 허용하는 권한입니다. 요청 사이트가 www.smes.go.kr인지 확인하고, 이
-                    연결에 동의하면 열린 Edge 창에서 직접 ‘허용’을 선택하세요.
+                  <p className="font-semibold">
+                    {connection.session.state === "awaiting_login"
+                      ? "Edge에 앱·서비스 접근 권한 요청이 표시되나요?"
+                      : "열린 Edge 창의 안내를 확인해 주세요"}
                   </p>
+                  {connection.session.state === "awaiting_login" ? (
+                    <p className="mt-2">
+                      ‘이 장치에서 다른 앱 및 서비스에 액세스’는 사이트가 이 PC의 앱·서비스에
+                      연결하도록 허용하는 권한입니다. 요청 사이트가 www.smes.go.kr인지 확인하고, 이
+                      연결에 동의하면 열린 Edge 창에서 직접 ‘허용’을 선택하세요. 앱은 권한을 대신
+                      허용하지 않습니다.
+                    </p>
+                  ) : (
+                    <p className="mt-2">
+                      로그인 결과, 신청 준비 공지 또는 추가 인증이 표시될 수 있습니다. 열린 안내를
+                      확인한 뒤 ‘인증 완료 후 상태 확인’을 눌러 주세요.
+                    </p>
+                  )}
                   <p className="mt-2">
-                    회색 로딩 화면이 사라진 뒤 벤처인 페이지의 ‘로그인’을 누르세요. 추가 인증까지
-                    완료했다면 아래 ‘인증 완료 후 상태 확인’을 누르세요. 앱은 권한을 대신 허용하거나
-                    로그인을 자동 재시도하지 않습니다.
+                    {connection.session.state === "awaiting_login"
+                      ? "회색 로딩 화면이 사라지면 아래 ‘권한·로딩 확인 후 로그인 계속’을 누르세요. 열린 창에서 저장한 계정으로 로그인을 이어갑니다."
+                      : "로그인 화면이 그대로라면 사이트 안내를 확인하고 같은 창에서 직접 로그인한 뒤 상태를 확인하세요. 이미 시작한 로그인 요청을 자동으로 반복하지 않습니다."}
                   </p>
+                  {connection.session.state === "awaiting_auth" && (
+                    <details className="mt-3 rounded-lg border p-3">
+                      <summary className="cursor-pointer text-xs font-semibold">
+                        앱·서비스 접근 권한 요청이 실제로 표시되는 경우
+                      </summary>
+                      <p className="mt-2">
+                        Edge의 ‘이 장치에서 다른 앱 및 서비스에 액세스’ 요청은 사이트가 이 PC의
+                        앱·서비스에 연결하도록 허용하는 권한입니다. 요청 사이트가 www.smes.go.kr인지
+                        확인하고, 이 연결에 동의하면 열린 Edge 창에서 직접 ‘허용’을 선택하세요. 앱은
+                        권한을 대신 허용하지 않습니다.
+                      </p>
+                    </details>
+                  )}
                   <p className="mt-2 text-xs">
-                    현재 Edge 창을 유지해 주세요. 새로 연결하면 임시 브라우저가 바뀌므로 권한을 다시
-                    요청할 수 있습니다.
+                    {connection.session.state === "awaiting_login"
+                      ? "현재 Edge 창을 유지해 주세요. 새로 연결하면 임시 브라우저가 바뀌므로 권한을 다시 요청할 수 있습니다."
+                      : "현재 Edge 창을 유지해 주세요. 같은 창에서 안내와 로그인 결과를 확인합니다."}
                   </p>
                 </Notice>
               </div>
@@ -367,19 +397,23 @@ export function VentureinPanel({ company, setDirty }: PanelProps) {
                   ? "저장한 계정으로 다시 연결"
                   : "저장한 계정으로 로그인"}
               </Button>
-              {connection.session.state === "awaiting_auth" && (
+              {["awaiting_setup", "awaiting_login", "awaiting_auth"].includes(
+                connection.session.state,
+              ) && (
                 <Button variant="outline" onClick={() => command("resume")}>
                   <RefreshCw />
                   인증 완료 후 상태 확인
                 </Button>
               )}
-              {connection.session.state === "awaiting_setup" && (
+              {["awaiting_setup", "awaiting_login"].includes(connection.session.state) && (
                 <Button
                   disabled={!connection.account.saved || !!loginId || !!password}
-                  onClick={() => command("restart")}
+                  onClick={() => command("continue")}
                 >
                   <RefreshCw />
-                  설치 완료 후 다시 연결
+                  {connection.session.state === "awaiting_setup"
+                    ? "설치 완료 후 로그인 계속"
+                    : "권한·로딩 확인 후 로그인 계속"}
                 </Button>
               )}
               {activeSession && (
@@ -396,78 +430,12 @@ export function VentureinPanel({ company, setDirty }: PanelProps) {
               </Button>
             </div>
           </section>
-          <section aria-label="자동 제출 연결 준비" className="rounded-2xl border p-5">
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <h3 className="font-bold">신청서·첨부자료 연결 준비</h3>
-              <Badge variant="outline">실제 제출 연결 미검증</Badge>
-            </div>
-            <p className="mt-3 break-words text-sm leading-7">
-              {connection.preparation.planTitle
-                ? `v${connection.preparation.planVersion} · ${connection.preparation.planTitle}`
-                : "작성본을 준비하면 항목별 원고가 이곳에 연결됩니다."}
-            </p>
-            <ul className="mt-3 list-disc space-y-1 pl-5 text-xs leading-6 text-muted-foreground">
-              {connection.preparation.blockers.map((item, index) => (
-                <li key={index}>{item}</li>
-              ))}
-            </ul>
-            <details className="mt-4 rounded-xl border p-4">
-              <summary className="cursor-pointer text-sm font-semibold">
-                입력 원고 · {connection.preparation.sections.length}개 항목
-              </summary>
-              <p className="mt-2 text-xs leading-6 text-muted-foreground">
-                현재 앱의 작성 항목입니다. 공식 신청 화면의 항목·글자 수와 대조하기 전이며, 기관에
-                입력한 내용은 아닙니다.
-              </p>
-              <div className="mt-3 space-y-3">
-                {connection.preparation.sections.map((section) => (
-                  <details key={section.key} className="rounded-lg bg-muted/30 p-3">
-                    <summary className="cursor-pointer text-sm">
-                      {section.title}
-                      {section.needsConfirmation && " · 확인 필요"}
-                    </summary>
-                    <p className="mt-3 whitespace-pre-wrap break-words text-xs leading-6">
-                      {section.content}
-                    </p>
-                  </details>
-                ))}
-              </div>
-            </details>
-            <details className="mt-3 rounded-xl border p-4">
-              <summary className="cursor-pointer text-sm font-semibold">
-                보관 중인 원본 파일 · {connection.preparation.attachments.length}개
-              </summary>
-              <p className="mt-2 text-xs leading-6 text-muted-foreground">
-                원본 보관 목록입니다. 기업별 필수서류 완비 여부와 제출할 파일 선택은 별도 확인이
-                필요합니다.
-              </p>
-              <ul className="mt-3 space-y-2 text-sm">
-                {connection.preparation.attachments.map((file) => (
-                  <li key={file.id} className="break-all">
-                    <a
-                      className="underline underline-offset-4"
-                      href={`/api/studio/cases/${company.id}/sources/${file.id}`}
-                      download
-                    >
-                      {file.originalName}
-                    </a>
-                  </li>
-                ))}
-              </ul>
-            </details>
-            <div className="mt-4 flex flex-wrap gap-2">
-              <Button disabled>
-                <LockKeyhole />
-                자동 등록·제출 · 연결 검증 필요
-              </Button>
-              <Button asChild variant="outline">
-                <a href={ventureinUrls.application} target="_blank" rel="noreferrer">
-                  공식 신청 화면
-                  <ArrowUpRight />
-                </a>
-              </Button>
-            </div>
-          </section>
+          <VentureinWorkflowPanel
+            company={company}
+            connection={connection}
+            executionBlocked={Boolean(loginId || password || busy)}
+            onDirtyChange={setWorkflowDirty}
+          />
           <p className="text-xs leading-6 text-muted-foreground">
             벤처인 이용약관 제20조에는 계정의 제3자 이용 및 사전 승낙 없는 영리 이용에 관한 제한이
             있습니다. 상용 서비스의 자동 연동 범위를 확인해야 합니다.{" "}

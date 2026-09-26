@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "next dev --hostname 127.0.0.1",
     "build": "next build",
+    "build:local": "node scripts/build-local.mjs",
     "start": "next start --hostname 127.0.0.1",
     "lint": "eslint . --max-warnings=0",
     "typecheck": "next typegen && tsc --noEmit",
@@ -13,7 +14,9 @@
     "test:watch": "vitest",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "data:import": "node scripts/import-venture-data.mjs"
+    "data:import": "node scripts/import-venture-data.mjs",
+    "data:local": "node scripts/local-data.mjs",
+    "test:local-data": "node --test scripts/local-data.test.mjs scripts/local-data-cold.test.mjs scripts/local-data.integration.test.mjs"
   },
   "engines": {
     "node": ">=24.0.0 <25"
@@ -26,6 +29,7 @@
     "cn": "^0.3.0",
     "date-fns": "^4.4.0",
     "exceljs": "^4.4.0",
+    "jszip": "3.10.2",
     "lucide-react": "^1.47.0",
     "mammoth": "^1.12.3",
     "next": "16.3.5",

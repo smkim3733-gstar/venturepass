@@ -1,5 +1,6 @@
 import { analyzeCompany, generatePlan, reviewPlan, StudioEngineError } from "@/lib/studio-engine";
 import { generationSchema } from "@/lib/studio-schema";
+import { currentVerifiedCandidateSelection } from "@/lib/studio-candidate-selection";
 import { getStudioStore } from "@/lib/studio-storage";
 import { jsonResponse, readJson, studioRoute, StudioError } from "@/lib/studio-http";
 export const runtime = "nodejs";
@@ -38,6 +39,12 @@ export function POST(request: Request, context: { params: Promise<{ caseId: stri
           "기업을 분석한 후 신청 아이템을 선택해 주세요.",
           400,
           "CANDIDATE_REQUIRED",
+        );
+      if (!currentVerifiedCandidateSelection(record))
+        throw new StudioError(
+          "현재 분석의 후보와 선택 이유를 먼저 저장해 주세요.",
+          409,
+          "CANDIDATE_SELECTION_REQUIRED",
         );
       const content = await generatePlan(record, candidate, input.mode);
       return jsonResponse(

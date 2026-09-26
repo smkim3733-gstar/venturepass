@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ArrowLeft,
   ArrowRight,
@@ -33,6 +33,7 @@ import {
 } from "@/components/ui/dialog";
 import {
   emptyProfile,
+  caseSchema,
   stageLabels,
   type CaseSummary,
   type CompanyProfile,
@@ -40,13 +41,31 @@ import {
   type StudioCase,
   type StudioStatus,
 } from "@/lib/studio-schema";
+import { summarizeCase } from "@/lib/studio-case-summary";
 import { cn } from "@/lib/utils";
 import { ProfileEditor } from "./profile-editor";
-import { SourcesPanel } from "./sources-panel";
+import { SourcesPanel, type SourceExtractionMode } from "./sources-panel";
+import { SourceIntakesPanel } from "./source-intakes-panel";
+import { SourceSuggestionsPanel } from "./source-suggestions-panel";
+import { SourceImpactPanel, type SourceImpactNavigation } from "./source-impact-panel";
+import {
+  sourceImpactNavigationIsCurrent,
+  sourceImpactKindLabels,
+} from "@/lib/studio-source-impact";
+import { DiagnosisPanel } from "./diagnosis-panel";
+import { PreparationPanel } from "./preparation-panel";
+import { PreparationAutomationPanel } from "./preparation-automation-panel";
 import { AnalysisPanel } from "./analysis-panel";
 import { PlanEditor } from "./plan-editor";
 import { WorkflowPanel } from "./workflow-panel";
 import { VentureinPanel } from "./venturein-panel";
+import {
+  CaseAttentionCard,
+  useLocalDay,
+  selectCaseSummaries,
+  type CaseAttentionFilter,
+  type CaseAttentionSort,
+} from "./case-attention";
 import {
   EmptyPanel,
   Loading,
@@ -59,41 +78,40 @@ import {
   type StudioMutation,
 } from "./shared";
 
-type StudioTab = "profile" | "sources" | "analysis" | "plan" | "workflow" | "venturein";
+type StudioTab =
+  "profile" | "sources" | "diagnosis" | "analysis" | "plan" | "workflow" | "venturein";
 type GenerationOperation = "analyze" | "plan";
 const tabs: { value: StudioTab; title: string; icon: typeof Building2 }[] = [
   { value: "profile", title: "기업정보", icon: Building2 },
   { value: "sources", title: "자료함", icon: FolderOpen },
+  { value: "diagnosis", title: "사전진단", icon: CheckCircle2 },
   { value: "analysis", title: "아이템 분석", icon: Sparkles },
   { value: "plan", title: "사업계획서", icon: FileText },
   { value: "workflow", title: "진행 관리", icon: ListChecks },
   { value: "venturein", title: "벤처인 연결", icon: KeyRound },
 ];
-function summarize(company: StudioCase): CaseSummary {
-  return {
-    id: company.id,
-    companyName: company.profile.companyName,
-    industry: company.profile.industry,
-    stage: company.stage,
-    revision: company.revision,
-    sourceCount: company.sources.length,
-    planCount: company.plans.length,
-    pendingTaskCount: company.tasks.filter((task) => task.status === "pending").length,
-    createdAt: company.createdAt,
-    updatedAt: company.updatedAt,
-  };
-}
 
 export function StudioWorkspace() {
   const [cases, setCases] = useState<CaseSummary[]>([]);
   const [status, setStatus] = useState<StudioStatus | null>(null);
   const [company, setCompany] = useState<StudioCase | null>(null);
   const [tab, setTab] = useState<StudioTab>("profile");
-  const [dirty, setDirty] = useState(false);
+  const [impactNavigation, setImpactNavigation] = useState<SourceImpactNavigation | null>(null);
+  const [panelDirty, setDirty] = useState(false);
+  const [intakeDirty, setIntakeDirty] = useState(false);
+  const [suggestionDirty, setSuggestionDirty] = useState(false);
+  const [automationUnsettled, setAutomationUnsettled] = useState(false);
+  const [manualPreparationUnsettled, setManualPreparationUnsettled] = useState(false);
+  const editorDirty = panelDirty || intakeDirty || suggestionDirty;
+  const dirty = editorDirty || automationUnsettled || manualPreparationUnsettled;
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
   const [filter, setFilter] = useState("");
+  const [attentionFilter, setAttentionFilter] = useState<CaseAttentionFilter>("all");
+  const [attentionSort, setAttentionSort] = useState<CaseAttentionSort>("due-date");
+  const today = useLocalDay();
+  const openRequest = useRef(0);
   const [creating, setCreating] = useState(false);
   const [createName, setCreateName] = useState("");
   const [createIndustry, setCreateIndustry] = useState("");
@@ -101,6 +119,11 @@ export function StudioWorkspace() {
   const [settings, setSettings] = useState(false);
   const [generation, setGeneration] = useState<GenerationOperation | null>(null);
   const [mode, setMode] = useState<"ai" | "assisted" | null>(null);
+  useEffect(() => {
+    return () => {
+      openRequest.current += 1;
+    };
+  }, []);
   const refresh = useCallback(async () => {
     try {
       const [available, list] = await Promise.all([
@@ -179,14 +202,24 @@ export function StudioWorkspace() {
     return !dirty || window.confirm("저장하지 않은 편집을 취소하고 이동할까요?");
   }
   function switchTab(next: StudioTab) {
-    if (next === tab || !mayLeave()) return;
+    if (next === tab || !mayLeave()) return false;
+    setImpactNavigation(null);
     setDirty(false);
     setTab(next);
+    return true;
+  }
+  function navigateSourceImpact(input: SourceImpactNavigation) {
+    if (!company || !sourceImpactNavigationIsCurrent(company, input)) {
+      toast.info("자료 또는 연결 대상이 변경되었습니다. 최신 자료함에서 다시 확인해 주세요.");
+      return;
+    }
+    if (switchTab(input.destination.tab)) setImpactNavigation(input);
   }
   function accept(next: StudioCase) {
+    setImpactNavigation(null);
     setCompany(next);
     setDirty(false);
-    setCases((current) => [summarize(next), ...current.filter((item) => item.id !== next.id)]);
+    setCases((current) => [summarizeCase(next), ...current.filter((item) => item.id !== next.id)]);
   }
   async function showError(caught: unknown, id?: string) {
     const message = caught instanceof Error ? caught.message : "요청을 처리하지 못했습니다.";
@@ -200,17 +233,26 @@ export function StudioWorkspace() {
       );
     }
   }
-  async function openCase(id: string) {
+  async function openCase(id: string, nextTab: StudioTab = "profile") {
     if (!mayLeave()) return;
+    const request = ++openRequest.current;
     setBusy("기업 자료를 불러오는 중입니다");
     setError("");
     try {
-      accept(await studioFetch<StudioCase>(`/api/studio/cases/${id}`));
-      setTab("profile");
+      const parsed = caseSchema.safeParse(await studioFetch<unknown>(`/api/studio/cases/${id}`));
+      if (request !== openRequest.current) return;
+      if (
+        !parsed.success ||
+        parsed.data.id !== id ||
+        parsed.data.revision < (cases.find((item) => item.id === id)?.revision ?? 0)
+      )
+        throw new Error("요청한 기업의 최신 자료를 확인하지 못했습니다. 다시 불러와 주세요.");
+      accept(parsed.data);
+      setTab(nextTab);
     } catch (caught) {
-      await showError(caught);
+      if (request === openRequest.current) await showError(caught);
     } finally {
-      setBusy("");
+      if (request === openRequest.current) setBusy("");
     }
   }
   async function mutate(mutation: StudioMutation): Promise<StudioCase | null> {
@@ -236,22 +278,32 @@ export function StudioWorkspace() {
     file: File,
     kind: SourceDocument["kind"],
     allowAi: boolean,
+    extractionMode: SourceExtractionMode = "extract",
   ): Promise<StudioCase | null> {
     if (!company || busy) return null;
-    setBusy("자료를 읽고 보관하는 중입니다. 큰 문서와 녹음은 시간이 걸릴 수 있습니다.");
+    setBusy(
+      extractionMode === "original-only"
+        ? "본문을 추출하지 않고 원본 파일만 보관하는 중입니다."
+        : "자료를 읽고 보관하는 중입니다. 큰 문서와 녹음은 시간이 걸릴 수 있습니다.",
+    );
     setError("");
     const body = new FormData();
     body.append("file", file);
     body.append("kind", kind);
     body.append("revision", String(company.revision));
-    body.append("allowAi", String(allowAi));
+    body.append("allowAi", String(extractionMode === "original-only" ? false : allowAi));
+    body.append("extractionMode", extractionMode);
     try {
       const next = await studioFetch<StudioCase>(`/api/studio/cases/${company.id}/sources`, {
         method: "POST",
         body,
       });
       accept(next);
-      toast.success("자료를 추가했습니다. 추출 내용을 확인해 주세요.");
+      toast.success(
+        extractionMode === "original-only"
+          ? "원본만 보관했습니다. 본문 확인 전에는 분석 근거로 사용하지 않습니다."
+          : "자료를 추가했습니다. 추출 내용을 확인해 주세요.",
+      );
       return next;
     } catch (caught) {
       await showError(caught, company.id);
@@ -367,9 +419,12 @@ export function StudioWorkspace() {
       setBusy("");
     }
   }
-  const filteredCases = cases.filter((item) =>
-    `${item.companyName} ${item.industry}`.toLowerCase().includes(filter.toLowerCase()),
-  );
+  const filteredCases = selectCaseSummaries(cases, {
+    query: filter,
+    filter: attentionFilter,
+    sort: attentionSort,
+    today,
+  });
   const panelProps = company ? { company, mutate, setDirty } : null;
   return (
     <div className="space-y-6">
@@ -463,6 +518,50 @@ export function StudioWorkspace() {
               />
             </div>
           </div>
+          <div className="space-y-3 rounded-xl border bg-white p-4">
+            <div className="flex flex-wrap gap-3">
+              <div className="min-w-48 space-y-1">
+                <Label htmlFor="case-attention-filter">확인할 기업</Label>
+                <select
+                  id="case-attention-filter"
+                  className={selectClass}
+                  value={attentionFilter}
+                  disabled={!!busy}
+                  onChange={(event) =>
+                    setAttentionFilter(event.target.value as CaseAttentionFilter)
+                  }
+                >
+                  <option value="all">전체</option>
+                  <option value="overdue">기한 경과</option>
+                  <option value="due-soon">오늘~7일 내 기한</option>
+                  <option value="attention">확인 필요</option>
+                </select>
+              </div>
+              <div className="min-w-48 space-y-1">
+                <Label htmlFor="case-attention-sort">정렬</Label>
+                <select
+                  id="case-attention-sort"
+                  className={selectClass}
+                  value={attentionSort}
+                  disabled={!!busy}
+                  onChange={(event) => setAttentionSort(event.target.value as CaseAttentionSort)}
+                >
+                  <option value="due-date">미완료 업무 기한순</option>
+                  <option value="recent">최근 수정순</option>
+                </select>
+              </div>
+            </div>
+            <p className="text-xs leading-6 text-muted-foreground">
+              PC 기준일 {today || "확인 중"} · 날짜 구분은 60초마다 갱신합니다. 오늘부터 7일은 앱의
+              확인 편의 범위이며, 기한은 담당자가 입력한 값입니다. 법정기한을 자동 계산하지
+              않습니다.
+            </p>
+            <p className="text-xs leading-6 text-muted-foreground">
+              답변 발송 표시는 최신 요청·답변에 연결된 담당자 기록을 확인하는 항목입니다. 기관
+              미접수·미승인 판단이 아닙니다. 목록은 저장·불러온 시점 기준이며 기업을 열면 최신
+              내용을 확인합니다.
+            </p>
+          </div>
           {cases.length === 0 ? (
             <EmptyPanel
               title="첫 번째 기업을 등록해 주세요"
@@ -475,48 +574,19 @@ export function StudioWorkspace() {
             </EmptyPanel>
           ) : filteredCases.length === 0 ? (
             <EmptyPanel
-              title="검색 결과가 없습니다"
-              description="기업명이나 업종을 다른 단어로 검색해 주세요."
+              title="검색·필터에 맞는 기업이 없습니다"
+              description="기업명·업종 검색어나 확인 상태 필터를 바꿔 주세요."
             />
           ) : (
             <div className="grid gap-4 md:grid-cols-2 2xl:grid-cols-3">
               {filteredCases.map((item) => (
-                <button
-                  type="button"
+                <CaseAttentionCard
                   key={item.id}
-                  disabled={!!busy}
-                  onClick={() => openCase(item.id)}
-                  className="group rounded-2xl border bg-white p-5 text-left transition-all hover:border-primary/40 hover:shadow-sm disabled:opacity-60"
-                >
-                  <div className="mb-4 flex items-center justify-between">
-                    <span className="flex size-10 items-center justify-center rounded-xl bg-primary/7 text-primary">
-                      <Building2 className="size-5" />
-                    </span>
-                    <Badge variant="outline" className="font-normal">
-                      {stageLabels[item.stage]}
-                    </Badge>
-                  </div>
-                  <h3 className="text-lg font-bold group-hover:text-primary">{item.companyName}</h3>
-                  <p className="mt-1 text-xs text-muted-foreground">
-                    {item.industry || "업종 미입력"}
-                  </p>
-                  <div className="mt-5 grid grid-cols-3 divide-x rounded-xl bg-muted/40 py-3">
-                    {[
-                      ["자료", item.sourceCount],
-                      ["작성 버전", item.planCount],
-                      ["할 일", item.pendingTaskCount],
-                    ].map(([label, value]) => (
-                      <div key={label} className="text-center">
-                        <p className="text-base font-bold">{value}</p>
-                        <p className="mt-1 text-[10px] text-muted-foreground">{label}</p>
-                      </div>
-                    ))}
-                  </div>
-                  <div className="mt-4 flex items-center justify-between text-xs text-muted-foreground">
-                    <span>{formatDate(item.updatedAt)} 수정</span>
-                    <ArrowRight className="size-4 text-primary transition-transform group-hover:translate-x-1" />
-                  </div>
-                </button>
+                  item={item}
+                  today={today}
+                  busy={!!busy}
+                  onOpen={(nextTab) => void openCase(item.id, nextTab)}
+                />
               ))}
             </div>
           )}
@@ -580,6 +650,29 @@ export function StudioWorkspace() {
               </div>
             </div>
           </div>
+          <PreparationPanel
+            key={company.id}
+            company={company}
+            dirty={editorDirty}
+            busy={!!busy}
+            externalBusy={automationUnsettled}
+            onBusyChange={setBusy}
+            onCompany={accept}
+            onUnsettledChange={setManualPreparationUnsettled}
+            goTo={switchTab}
+          />
+          <PreparationAutomationPanel
+            key={`automation:${company.id}`}
+            company={company}
+            dirty={editorDirty}
+            busy={!!busy}
+            suspended={tab === "venturein" || settings || creating || generation !== null}
+            manualUnsettled={manualPreparationUnsettled}
+            onBusyChange={setBusy}
+            onCompany={accept}
+            onUnsettledChange={setAutomationUnsettled}
+            goTo={switchTab}
+          />
           <div className="overflow-hidden rounded-2xl border bg-white">
             <div
               role="tablist"
@@ -612,18 +705,83 @@ export function StudioWorkspace() {
               ))}
             </div>
             <fieldset
-              disabled={!!busy}
+              disabled={!!busy || automationUnsettled || manualPreparationUnsettled}
               className="min-w-0 p-4 sm:p-6"
-              key={`${company.id}:${company.revision}`}
+              key={`${company.id}:${tab === "sources" ? "sources" : company.revision}`}
             >
               <div role="tabpanel" id={`studio-panel-${tab}`} aria-labelledby={`studio-tab-${tab}`}>
                 {panelProps && tab === "profile" && <ProfileEditor {...panelProps} />}
+                {impactNavigation &&
+                  company.id === impactNavigation.caseId &&
+                  company.revision === impactNavigation.revision &&
+                  tab === impactNavigation.destination.tab && (
+                    <div className="mb-5">
+                      <Notice tone="warning">
+                        자료함에서 선택한 재확인 대상:{" "}
+                        {sourceImpactKindLabels[impactNavigation.destination.target.kind]} · ID{" "}
+                        <span className="break-all">{impactNavigation.destination.target.id}</span>
+                        {impactNavigation.destination.target.version !== null &&
+                          ` · v${impactNavigation.destination.target.version}`}
+                        {impactNavigation.destination.target.partId &&
+                          ` · 항목 ${impactNavigation.destination.target.partId}`}
+                        . 아래 기록의 정확한 ID·버전을 확인해 주세요. 이전 버전은 보존되며 자동으로
+                        수정하거나 최신 기록으로 대체하지 않습니다.
+                      </Notice>
+                    </div>
+                  )}
                 {panelProps && tab === "sources" && (
-                  <SourcesPanel
+                  <>
+                    <SourceIntakesPanel
+                      key={company.id}
+                      company={company}
+                      blockedReason={
+                        panelDirty || suggestionDirty
+                          ? "기존 자료 편집·OCR 검토 또는 제안 선택을 먼저 저장하거나 닫아 주세요."
+                          : ""
+                      }
+                      busy={!!busy}
+                      onCompany={accept}
+                      onBusyChange={setBusy}
+                      onDirtyChange={setIntakeDirty}
+                    />
+                    <SourceSuggestionsPanel
+                      key={`suggestions:${company.id}`}
+                      company={company}
+                      busy={!!busy}
+                      onCompany={accept}
+                      onBusyChange={setBusy}
+                      onDirtyChange={setSuggestionDirty}
+                      blockedReason={
+                        panelDirty || intakeDirty
+                          ? "자료 편집·원본 접수·판독문 교정을 먼저 마치거나 닫아 주세요."
+                          : ""
+                      }
+                    />
+                    <SourcesPanel
+                      key={`${company.id}:${company.revision}`}
+                      {...panelProps}
+                      upload={upload}
+                      supportedFiles={status?.supportedFiles || []}
+                      aiConfigured={!!status?.aiConfigured}
+                      blockedReason={
+                        intakeDirty || suggestionDirty
+                          ? "복수파일 접수·교정·제안 선택 또는 미확인 요청을 먼저 마치거나 닫아 주세요."
+                          : ""
+                      }
+                    />
+                    <SourceImpactPanel
+                      company={company}
+                      onNavigate={navigateSourceImpact}
+                      blockedReason={busy}
+                    />
+                  </>
+                )}
+                {panelProps && tab === "diagnosis" && (
+                  <DiagnosisPanel
                     {...panelProps}
-                    upload={upload}
-                    supportedFiles={status?.supportedFiles || []}
-                    aiConfigured={!!status?.aiConfigured}
+                    goToProfile={() => switchTab("profile")}
+                    goToSources={() => switchTab("sources")}
+                    goToAnalysis={() => switchTab("analysis")}
                   />
                 )}
                 {panelProps && tab === "analysis" && (
@@ -635,12 +793,31 @@ export function StudioWorkspace() {
                 )}
                 {panelProps && tab === "plan" && (
                   <PlanEditor
+                    key={impactNavigation ? JSON.stringify(impactNavigation) : "default-plan"}
                     {...panelProps}
+                    reviewTarget={
+                      impactNavigation?.caseId === company.id &&
+                      impactNavigation.revision === company.revision &&
+                      impactNavigation.destination.tab === "plan" &&
+                      impactNavigation.destination.target.planId
+                        ? {
+                            companyId: company.id,
+                            revision: company.revision,
+                            planId: impactNavigation.destination.target.planId,
+                            sectionKey: impactNavigation.destination.target.sectionKey,
+                            recordKind: impactNavigation.destination.target.kind,
+                            recordId: impactNavigation.destination.target.id,
+                          }
+                        : undefined
+                    }
+                    onBusyChange={setBusy}
                     generate={() => beginGeneration("plan")}
                     goToAnalysis={() => switchTab("analysis")}
                   />
                 )}
-                {panelProps && tab === "workflow" && <WorkflowPanel {...panelProps} />}
+                {panelProps && tab === "workflow" && (
+                  <WorkflowPanel {...panelProps} onBusyChange={setBusy} />
+                )}
                 {panelProps && tab === "venturein" && <VentureinPanel {...panelProps} />}
               </div>
             </fieldset>

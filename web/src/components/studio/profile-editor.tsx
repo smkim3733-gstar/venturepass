@@ -9,6 +9,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { companyProfileSchema, type CompanyProfile } from "@/lib/studio-schema";
 import { Notice, PanelHeading, selectClass, useDirty, type PanelProps } from "./shared";
+import { CompanyContacts } from "./company-contacts";
 
 const narrativeFields: { key: keyof CompanyProfile; label: string; placeholder: string }[] = [
   {
@@ -47,11 +48,15 @@ const narrativeFields: { key: keyof CompanyProfile; label: string; placeholder: 
 ];
 export function ProfileEditor({ company, mutate, setDirty }: PanelProps) {
   const [profile, setProfile] = useState(company.profile);
-  const dirty = JSON.stringify(profile) !== JSON.stringify(company.profile);
+  const [contactsDirty, setContactsDirty] = useState(false);
+  const profileDirty = JSON.stringify(profile) !== JSON.stringify(company.profile);
+  const dirty = profileDirty || contactsDirty;
   useDirty(dirty, setDirty);
-  const change = (key: keyof CompanyProfile, value: string) =>
-    setProfile((current) => ({ ...current, [key]: value }));
+  const change = (key: keyof CompanyProfile, value: string) => {
+    if (!contactsDirty) setProfile((current) => ({ ...current, [key]: value }));
+  };
   async function save() {
+    if (contactsDirty) return;
     const result = companyProfileSchema.safeParse(profile);
     if (!result.success) {
       toast.error(result.error.issues[0]?.message || "기업정보를 확인해 주세요.");
@@ -65,105 +70,153 @@ export function ProfileEditor({ company, mutate, setDirty }: PanelProps) {
         title="우리 기업의 출발점"
         description="기술과 사업의 현재 상황을 알려 주세요. 입력한 내용과 자료함의 증빙을 함께 분석합니다."
         actions={
-          <Button className="h-10" disabled={!dirty} onClick={save}>
+          <Button className="h-10" disabled={!profileDirty || contactsDirty} onClick={save}>
             <Save />
             기업정보 저장
           </Button>
         }
       />
-      <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
-        <div className="space-y-2">
-          <Label htmlFor="company-name">기업명 *</Label>
-          <Input
-            id="company-name"
-            maxLength={100}
-            value={profile.companyName}
-            onChange={(event) => change("companyName", event.target.value)}
-          />
-        </div>
-        <div className="space-y-2">
-          <Label htmlFor="business-number">사업자등록번호</Label>
-          <Input
-            id="business-number"
-            maxLength={30}
-            placeholder="000-00-00000"
-            value={profile.businessNumber}
-            onChange={(event) => change("businessNumber", event.target.value)}
-          />
-        </div>
-        <div className="space-y-2">
-          <Label htmlFor="industry">업종</Label>
-          <Input
-            id="industry"
-            maxLength={100}
-            placeholder="예: 산업용 장비 제조"
-            value={profile.industry}
-            onChange={(event) => change("industry", event.target.value)}
-          />
-        </div>
-        <div className="space-y-2">
-          <Label htmlFor="founded-on">설립일</Label>
-          <Input
-            id="founded-on"
-            type="date"
-            value={profile.foundedOn}
-            onInput={(event) => change("foundedOn", event.currentTarget.value)}
-            onChange={(event) => change("foundedOn", event.target.value)}
-          />
-        </div>
-        <div className="space-y-2">
-          <Label htmlFor="application-date">신청 예정일</Label>
-          <Input
-            id="application-date"
-            type="date"
-            value={profile.applicationDate}
-            onInput={(event) => change("applicationDate", event.currentTarget.value)}
-            onChange={(event) => change("applicationDate", event.target.value)}
-          />
-        </div>
-        <div className="space-y-2">
-          <Label htmlFor="application-kind">신청 구분</Label>
-          <select
-            id="application-kind"
-            className={selectClass}
-            value={profile.applicationKind}
-            onChange={(event) => change("applicationKind", event.target.value)}
-          >
-            <option value="new">신규 확인</option>
-            <option value="renewal">재확인</option>
-          </select>
-        </div>
-      </div>
-      <div className="my-6">
-        <Notice>
-          기업정보에 입력한 내용은 기업이 제공한 설명으로 취급합니다. 계약서·시험자료·특허 원문 등
-          확인 가능한 근거는 자료함에 추가해 주세요.
-        </Notice>
-      </div>
-      <div className="grid gap-5 xl:grid-cols-2">
-        {narrativeFields.map(({ key, label, placeholder }) => (
-          <div key={key} className="space-y-2">
-            <Label htmlFor={`profile-${key}`}>{label}</Label>
-            <Textarea
-              id={`profile-${key}`}
-              className="min-h-36 resize-y bg-white leading-7"
-              value={profile[key]}
-              maxLength={10000}
-              onChange={(event) => change(key, event.target.value)}
-              placeholder={placeholder}
+      <fieldset disabled={contactsDirty} className="min-w-0">
+        <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
+          <div className="space-y-2">
+            <Label htmlFor="company-name">기업명 *</Label>
+            <Input
+              id="company-name"
+              maxLength={100}
+              value={profile.companyName}
+              onChange={(event) => change("companyName", event.target.value)}
             />
-            <p className="text-right text-[11px] text-muted-foreground">
-              {profile[key].length.toLocaleString()} / 10,000
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="business-number">사업자등록번호</Label>
+            <Input
+              id="business-number"
+              maxLength={30}
+              placeholder="000-00-00000"
+              value={profile.businessNumber}
+              onChange={(event) => change("businessNumber", event.target.value)}
+            />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="industry">업종</Label>
+            <Input
+              id="industry"
+              maxLength={100}
+              placeholder="예: 산업용 장비 제조"
+              value={profile.industry}
+              onChange={(event) => change("industry", event.target.value)}
+            />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="founded-on">설립일</Label>
+            <Input
+              id="founded-on"
+              type="date"
+              value={profile.foundedOn}
+              onInput={(event) => change("foundedOn", event.currentTarget.value)}
+              onChange={(event) => change("foundedOn", event.target.value)}
+            />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="paid-in-capital">납입자본금(원)</Label>
+            <Input
+              id="paid-in-capital"
+              inputMode="numeric"
+              maxLength={16}
+              placeholder="예: 10000000"
+              aria-describedby="paid-in-capital-help"
+              value={profile.paidInCapital ?? ""}
+              onChange={(event) => change("paidInCapital", event.target.value)}
+            />
+            <p id="paid-in-capital-help" className="text-xs text-muted-foreground">
+              원 단위 정수를 쉼표 없이 입력하세요. 미확정이면 비워 두세요.
             </p>
           </div>
-        ))}
-      </div>
-      <div className="mt-6 flex justify-end">
-        <Button disabled={!dirty} onClick={save}>
-          <Save />
-          기업정보 저장
-        </Button>
-      </div>
+          <div className="space-y-2">
+            <Label htmlFor="closing-month">결산월</Label>
+            <select
+              id="closing-month"
+              className={selectClass}
+              value={profile.closingMonth ?? ""}
+              onChange={(event) => change("closingMonth", event.target.value)}
+            >
+              <option value="">미확정</option>
+              {Array.from({ length: 12 }, (_, index) => String(index + 1)).map((month) => (
+                <option key={month} value={month}>
+                  {month}월
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="application-date">신청 예정일</Label>
+            <Input
+              id="application-date"
+              type="date"
+              value={profile.applicationDate}
+              onInput={(event) => change("applicationDate", event.currentTarget.value)}
+              onChange={(event) => change("applicationDate", event.target.value)}
+            />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="application-kind">신청 구분</Label>
+            <select
+              id="application-kind"
+              className={selectClass}
+              value={profile.applicationKind}
+              onChange={(event) => change("applicationKind", event.target.value)}
+            >
+              <option value="new">신규 확인</option>
+              <option value="renewal">재확인</option>
+            </select>
+          </div>
+        </div>
+        <div className="my-6">
+          <Notice>
+            기업정보에 입력한 내용은 기업이 제공한 설명으로 취급합니다. 계약서·시험자료·특허 원문 등
+            확인 가능한 근거는 자료함에 추가해 주세요.
+          </Notice>
+        </div>
+        <div className="grid gap-5 xl:grid-cols-2">
+          {narrativeFields.map(({ key, label, placeholder }) => (
+            <div key={key} className="space-y-2">
+              <Label htmlFor={`profile-${key}`}>{label}</Label>
+              <Textarea
+                id={`profile-${key}`}
+                className="min-h-36 resize-y bg-white leading-7"
+                value={profile[key]}
+                maxLength={10000}
+                onChange={(event) => change(key, event.target.value)}
+                placeholder={placeholder}
+              />
+              <p className="text-right text-[11px] text-muted-foreground">
+                {profile[key].length.toLocaleString()} / 10,000
+              </p>
+            </div>
+          ))}
+        </div>
+        <div className="mt-6 flex justify-end">
+          <Button disabled={!profileDirty || contactsDirty} onClick={save}>
+            <Save />
+            기업정보 저장
+          </Button>
+        </div>
+      </fieldset>
+      {contactsDirty && (
+        <p className="mt-4 text-sm text-amber-900">
+          연락 메모 편집을 먼저 저장하거나 취소한 뒤 기업정보를 수정해 주세요.
+        </p>
+      )}
+      <CompanyContacts
+        company={company}
+        mutate={mutate}
+        blockedReason={
+          profileDirty
+            ? "기업정보 수정본을 먼저 저장하거나 취소한 뒤 연락 메모를 기록해 주세요."
+            : ""
+        }
+        onDirtyChange={setContactsDirty}
+      />
     </div>
   );
 }

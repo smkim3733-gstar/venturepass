@@ -50,7 +50,8 @@ describe("자료 원문 추출", () => {
       extractSource(new File(["PKgarbage"], "기술.docx"), { allowAi: false }),
     ).rejects.toThrow("손상");
   });
-  it("PDF 페이지 번호와 실제 본문을 함께 추출한다", async () => {
+  // 실제 PDF.js의 첫 모듈·worker 초기화를 포함하므로 전체 검사 중의 부하 변동을 허용한다.
+  it("PDF 페이지 번호와 실제 본문을 함께 추출한다", { timeout: 15_000 }, async () => {
     const stream = "BT /F1 12 Tf 40 200 Td (Prototype test 2026) Tj ET";
     const objects = [
       "<< /Type /Catalog /Pages 2 0 R >>",

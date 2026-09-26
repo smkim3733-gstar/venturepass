@@ -1,19 +1,41 @@
 "use client";
 
+import { useState } from "react";
 import { ArrowRight, Check, CircleHelp, Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { EmptyPanel, ModeBadge, Notice, PanelHeading, formatDate, type PanelProps } from "./shared";
+import {
+  EmptyPanel,
+  ModeBadge,
+  Notice,
+  PanelHeading,
+  formatDate,
+  useDirty,
+  type PanelProps,
+} from "./shared";
+import {
+  candidateSelectionLimits,
+  currentCandidateSelection,
+} from "@/lib/studio-candidate-selection-types";
 import { EvidenceList } from "./evidence";
 import { EvaluationFocusGuide } from "./evaluation-preparation";
+import { CandidateSelectionEditor, CandidateSelectionHistory } from "./candidate-selection";
+import { CandidateClassificationNotice } from "./candidate-classification";
 
 export function AnalysisPanel({
   company,
   mutate,
+  setDirty,
   generate,
   goToPlan,
 }: PanelProps & { generate: () => void; goToPlan: () => void }) {
   const analysis = company.analysis;
+  const [editingCandidateId, setEditingCandidateId] = useState<string | null>(null);
+  const editing = editingCandidateId !== null;
+  useDirty(editing, setDirty);
+  const selection = currentCandidateSelection(company);
+  const selectionLimit =
+    (company.candidateSelections ?? []).length >= candidateSelectionLimits.records;
   const factLabels = {
     documented: "문서 근거",
     reported: "기업 설명",
@@ -26,7 +48,13 @@ export function AnalysisPanel({
         title="우리 기업에 맞는 신청 아이템"
         description="보유기술과 고객의 문제를 연결합니다. 추천 근거와 부족한 자료를 확인한 뒤 신청 아이템을 선택하세요."
         actions={
-          <Button className="h-10" onClick={generate}>
+          <Button
+            className="h-10"
+            disabled={editing}
+            onClick={() => {
+              if (!editing) generate();
+            }}
+          >
             <Sparkles />
             {analysis ? "자료 다시 분석" : "아이템 분석 시작"}
           </Button>
@@ -64,7 +92,7 @@ export function AnalysisPanel({
               const selected = candidate.id === company.selectedCandidateId;
               return (
                 <article
-                  key={candidate.id}
+                  key={`${candidate.id}-${index}`}
                   className={`overflow-hidden rounded-2xl border ${selected ? "border-primary/70 bg-primary/[.025] shadow-sm" : "bg-white"}`}
                 >
                   <div className="flex flex-wrap items-start justify-between gap-3 border-b p-5">
@@ -76,17 +104,35 @@ export function AnalysisPanel({
                     </div>
                     <Button
                       variant={selected ? "secondary" : "outline"}
-                      disabled={selected}
-                      onClick={() =>
-                        mutate({ action: "select-candidate", candidateId: candidate.id })
+                      disabled={
+                        editing ||
+                        selectionLimit ||
+                        analysis.candidates.filter((item) => item.id === candidate.id).length !== 1
                       }
+                      onClick={() => {
+                        if (!editing) setEditingCandidateId(candidate.id);
+                      }}
                     >
                       {selected ? <Check /> : <ArrowRight />}
-                      {selected ? "선택한 아이템" : "이 아이템 선택"}
+                      {selected
+                        ? selection
+                          ? "선택 이유 추가·정정"
+                          : "선택 이유 기록"
+                        : "이유를 적고 아이템 선택"}
                     </Button>
                   </div>
+                  {editingCandidateId === candidate.id &&
+                    analysis.candidates.filter((item) => item.id === candidate.id).length === 1 && (
+                      <CandidateSelectionEditor
+                        company={company}
+                        candidateId={candidate.id}
+                        mutate={mutate}
+                        onClose={() => setEditingCandidateId(null)}
+                      />
+                    )}
                   <div className="grid gap-6 p-5 xl:grid-cols-[1fr_280px]">
                     <div className="space-y-4">
+                      <CandidateClassificationNotice candidate={candidate} />
                       {[
                         ["고객의 문제", candidate.problem],
                         ["기술과 해결방법", candidate.solution],
@@ -178,7 +224,13 @@ export function AnalysisPanel({
           )}
           {company.selectedCandidateId && (
             <div className="flex justify-end">
-              <Button className="h-10" onClick={goToPlan}>
+              <Button
+                className="h-10"
+                disabled={editing || !selection}
+                onClick={() => {
+                  if (!editing && selection) goToPlan();
+                }}
+              >
                 선택한 아이템으로 사업계획서 작성
                 <ArrowRight />
               </Button>
@@ -186,6 +238,7 @@ export function AnalysisPanel({
           )}
         </div>
       )}
+      <CandidateSelectionHistory company={company} />
     </div>
   );
 }

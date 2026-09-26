@@ -26,6 +26,7 @@ export type VentureSessionState =
   | "idle"
   | "starting"
   | "awaiting_setup"
+  | "awaiting_login"
   | "awaiting_auth"
   | "connected_unmapped"
   | "login_failed"

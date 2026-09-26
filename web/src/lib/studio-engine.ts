@@ -3,10 +3,15 @@ import "server-only";
 import OpenAI from "openai";
 import { zodTextFormat } from "openai/helpers/zod";
 import { z } from "zod";
+import {
+  candidateClassificationSchema,
+  getCandidateClassification,
+} from "./studio-candidate-classification";
 import { applicationSchema, getPreparationTrack } from "./application";
 import { evaluationFocusItems } from "./evaluation-guide";
 import {
   analysisContentSchema,
+  candidateSchema,
   planContentSchema,
   reviewSchema,
   sectionDefinitions,
@@ -22,6 +27,14 @@ import {
 type Reference = Candidate["evidence"][number];
 type SectionKey = (typeof sectionDefinitions)[number]["key"];
 type Mode = "ai" | "assisted";
+// New AI responses must provide a classification; persisted legacy analyses remain optional.
+const aiAnalysisContentSchema = analysisContentSchema.extend({
+  candidates: z
+    .array(candidateSchema.extend({ classification: candidateClassificationSchema }))
+    .max(3),
+});
+const candidateClassificationInstructions =
+  " classification은 추천 분류이며 사실·기관 적합성·사용자 검토 완료를 뜻하지 않는다. current는 현재 보유·개발 설명에 연결한 후보, evidence-needed는 관련 활동·권한·증빙을 추가 확인할 후보, future-proposal은 아직 수행하지 않은 확장 제안이다. 불명확하면 unknown을 사용한다. 미래 제안은 미래 계획·가정과 필요한 수행 조건으로만 서술하고 이미 수행한 활동·보유기술·성과로 바꾸지 않는다. current도 검증 완료가 아니며 정확한 주장의 근거를 별도로 확인한다.";
 
 export class StudioEngineError extends Error {
   constructor(
@@ -52,6 +65,8 @@ const fieldLabels: Record<keyof CompanyProfile, string> = {
   customers: "고객·시장",
   team: "인력·역량",
   financials: "재무·자금",
+  paidInCapital: "납입자본금(원)",
+  closingMonth: "결산월",
   developmentPlan: "개발계획",
   patents: "특허·지식재산",
 };
@@ -178,6 +193,7 @@ function collectReferences(value: StudioCase, key: SectionKey): Reference[] {
   const rule = sectionRules[key];
   const refs = fieldRefs(value, rule.fields);
   for (const source of value.sources) {
+    if (source.extraction === "pending") continue;
     if (!rule.kinds.includes(source.kind)) continue;
     const matching = source.text
       .split(/\n+/)
@@ -216,7 +232,10 @@ function validReference(value: StudioCase, ref: Reference): boolean {
     );
   }
   return value.sources.some(
-    (source) => source.id === ref.sourceId && source.text.includes(ref.quote),
+    (source) =>
+      source.extraction !== "pending" &&
+      source.id === ref.sourceId &&
+      source.text.includes(ref.quote),
   );
 }
 
@@ -279,6 +298,7 @@ function buildAssistedAnalysis(value: StudioCase): AnalysisContent {
     }
   }
   for (const source of value.sources) {
+    if (source.extraction === "pending") continue;
     for (const quote of excerpts(source.text, 1)) {
       facts.push({
         id: `fact-${facts.length + 1}`,
@@ -293,7 +313,10 @@ function buildAssistedAnalysis(value: StudioCase): AnalysisContent {
   }
   const directTech = fieldRefs(value, ["technologySummary"]);
   const techSource = value.sources.find(
-    (source) => ["technology", "patent"].includes(source.kind) && source.text.trim(),
+    (source) =>
+      source.extraction !== "pending" &&
+      ["technology", "patent"].includes(source.kind) &&
+      source.text.trim(),
   );
   const evidence = directTech.length
     ? directTech
@@ -325,6 +348,7 @@ function buildAssistedAnalysis(value: StudioCase): AnalysisContent {
     ? [
         {
           id: "candidate-1",
+          classification: "unknown",
           title: evidence[0].quote.replace(/\s+/g, " ").slice(0, 100),
           problem: "[확인 필요] " + sectionRules.problem.question,
           solution: evidence[0].quote,
@@ -344,7 +368,7 @@ function buildAssistedAnalysis(value: StudioCase): AnalysisContent {
       ]
     : [];
   return analysisContentSchema.parse({
-    summary: `${value.profile.companyName}의 입력자료 ${value.sources.length}건과 기업정보를 정리했습니다. ${trackContext(value)}\n자료 정리 모드는 원문 발췌와 추가 질문을 제공합니다. 기술의 우수성·권리 상태·실적의 진위를 독립적으로 검증하지 않습니다.`,
+    summary: `${value.profile.companyName}의 본문 자료 ${value.sources.filter((source) => source.extraction !== "pending" && source.text.trim()).length}건과 기업정보를 정리했습니다.${value.sources.some((source) => source.extraction === "pending") ? ` 원본만 보관한 ${value.sources.filter((source) => source.extraction === "pending").length}건은 본문 미추출 상태로 분석 근거에서 제외했습니다.` : ""} ${trackContext(value)}\n자료 정리 모드는 원문 발췌와 추가 질문을 제공합니다. 기술의 우수성·권리 상태·실적의 진위를 독립적으로 검증하지 않습니다.`,
     facts: facts.slice(0, 60),
     candidates,
     questions,
@@ -417,13 +441,17 @@ function aiInput(value: StudioCase, extra: object = {}) {
   const input = JSON.stringify({
     profile,
     preparationContext: trackContext(value),
-    sources: value.sources.map(({ id, name, kind, text, warnings }) => ({
-      sourceId: id,
-      name,
-      kind: sourceKindLabels[kind],
-      text,
-      warnings,
-    })),
+    unextractedSourceCount: value.sources.filter((source) => source.extraction === "pending")
+      .length,
+    sources: value.sources
+      .filter((source) => source.extraction !== "pending")
+      .map(({ id, name, kind, text, warnings }) => ({
+        sourceId: id,
+        name,
+        kind: sourceKindLabels[kind],
+        text,
+        warnings,
+      })),
     ...extra,
   });
   if (input.length > 240000) {
@@ -497,9 +525,10 @@ function validateEvidence(value: StudioCase, refs: Reference[]) {
 export async function analyzeCompany(value: StudioCase, mode: Mode): Promise<AnalysisContent> {
   if (mode === "assisted") return buildAssistedAnalysis(value);
   const result = await requestStructured(
-    analysisContentSchema,
+    aiAnalysisContentSchema,
     "company_analysis",
-    "회사의 역량과 고객 문제를 분석하고 현재 자료로 설명할 수 있는 신청 아이템 후보를 1~3개 제안하라. 정보가 부족하면 후보 0개와 구체적인 자료 질문을 반환하라. 후보 수를 채우기 위해 기술·사업을 발명하지 마라. 각 후보에 기술 범위, 고객, 해결방식, 차별성 근거, 현재 단계, 수익방식, 추천 이유와 보강과제를 작성하라. 신청기술이 실제 사업과 어떻게 연결되는지, 비교조건을 갖춘 차별성 자료가 있는지, 자사·외부 개발의 범위와 지속 개발 인력·인프라, 완료·계획 구분, 인력·자금·일정의 실행 조건을 함께 분석하라. 시장확대 전략은 신청기술의 고객 가치와 구매·도입 경로에 연결하고 추상적인 우수성·홍보 표현은 구체적 확인 질문으로 바꾸라. 새 제안은 제안이라고 표시하라. facts와 candidates의 id는 각각 중복 없이 부여하라. 후보에는 적어도 하나의 실질적 evidence가 필요하다. questions는 답하면 문서를 보강할 수 있는 구체적 질문이어야 한다.",
+    "회사의 역량과 고객 문제를 분석하고 현재 자료로 설명할 수 있는 신청 아이템 후보를 1~3개 제안하라. 정보가 부족하면 후보 0개와 구체적인 자료 질문을 반환하라. 후보 수를 채우기 위해 기술·사업을 발명하지 마라. 각 후보에 기술 범위, 고객, 해결방식, 차별성 근거, 현재 단계, 수익방식, 추천 이유와 보강과제를 작성하라. 신청기술이 실제 사업과 어떻게 연결되는지, 비교조건을 갖춘 차별성 자료가 있는지, 자사·외부 개발의 범위와 지속 개발 인력·인프라, 완료·계획 구분, 인력·자금·일정의 실행 조건을 함께 분석하라. 시장확대 전략은 신청기술의 고객 가치와 구매·도입 경로에 연결하고 추상적인 우수성·홍보 표현은 구체적 확인 질문으로 바꾸라. 새 제안은 제안이라고 표시하라. facts와 candidates의 id는 각각 중복 없이 부여하라. 후보에는 적어도 하나의 실질적 evidence가 필요하다. questions는 답하면 문서를 보강할 수 있는 구체적 질문이어야 한다." +
+      candidateClassificationInstructions,
     aiInput(value),
   );
   const facts = new Set(result.facts.map((fact) => fact.id));
@@ -565,8 +594,12 @@ export async function generatePlan(
   const result = await requestStructured(
     planContentSchema,
     "business_plan",
-    "선택된 아이템을 중심으로 검토 가능한 사업계획서를 완성하라. sectionDefinitions의 10개 key와 title을 정확히 한 번씩 같은 순서로 작성하라. 근거가 있는 항목은 고객 문제→신청기술의 해결방식→보유 역량→시장진입·확대→실행 자금이 연결되는 구체적인 서술형 본문으로 작성하라. 모든 개발·시장·인력·자금 서술을 같은 신청기술에 연결하고 관련 없는 일반 사업 소개를 나열하지 마라. 차별성은 비교 대상·조건·기간·측정방법과 증빙에 연결하고, 자사·외부 개발 범위 및 사용 근거, 완료한 개발과 향후 계획, 담당 인력·일정·비용·조달 확정 여부를 구분하라. 자료가 없는 항목은 객관적 사실로 단정하지 않는다. 데이터 부족 부분은 [확인 필요] 표시와 답해야 할 질문을 기재하라. 제안·미검증·누락이 있는 section은 needsConfirmation=true다. completed facts는 관련 증빙을 연결하라. 각 section에 사용한 자료 evidence를 붙이고 부족한 자료·검증·수치 확인을 actionItems로 정리하라. interviewQuestions에는 회사 원문과 방금 작성한 초안의 구체적 주장·검토 쟁점을 대조하는 실무 준비 질문을 작성하라. 각 질문에 해당 기술·자료·기간·수치를 필요한 만큼 특정하고, 원문·현재 구현 상태·담당 역할·실제 제출본에서 무엇을 확인할지 물어라. 실제 기관의 확정 질문처럼 표현하지 말고 준비 질문임을 표시하라. 재확인은 이전 기간의 기술 개선과 사업성과를 별도로 다루라. 공식 제출 화면과 대조 검토가 필요한 초안이라는 점을 summary에 표시하라.",
-    aiInput(value, { selectedCandidate: candidate, sectionDefinitions }),
+    "선택된 아이템을 중심으로 검토 가능한 사업계획서를 완성하라. sectionDefinitions의 10개 key와 title을 정확히 한 번씩 같은 순서로 작성하라. 근거가 있는 항목은 고객 문제→신청기술의 해결방식→보유 역량→시장진입·확대→실행 자금이 연결되는 구체적인 서술형 본문으로 작성하라. 모든 개발·시장·인력·자금 서술을 같은 신청기술에 연결하고 관련 없는 일반 사업 소개를 나열하지 마라. 차별성은 비교 대상·조건·기간·측정방법과 증빙에 연결하고, 자사·외부 개발 범위 및 사용 근거, 완료한 개발과 향후 계획, 담당 인력·일정·비용·조달 확정 여부를 구분하라. 자료가 없는 항목은 객관적 사실로 단정하지 않는다. 데이터 부족 부분은 [확인 필요] 표시와 답해야 할 질문을 기재하라. 제안·미검증·누락이 있는 section은 needsConfirmation=true다. completed facts는 관련 증빙을 연결하라. 각 section에 사용한 자료 evidence를 붙이고 부족한 자료·검증·수치 확인을 actionItems로 정리하라. interviewQuestions에는 회사 원문과 방금 작성한 초안의 구체적 주장·검토 쟁점을 대조하는 실무 준비 질문을 작성하라. 각 질문에 해당 기술·자료·기간·수치를 필요한 만큼 특정하고, 원문·현재 구현 상태·담당 역할·실제 제출본에서 무엇을 확인할지 물어라. 실제 기관의 확정 질문처럼 표현하지 말고 준비 질문임을 표시하라. 재확인은 이전 기간의 기술 개선과 사업성과를 별도로 다루라. 공식 제출 화면과 대조 검토가 필요한 초안이라는 점을 summary에 표시하라." +
+      candidateClassificationInstructions,
+    aiInput(value, {
+      selectedCandidate: { ...candidate, classification: getCandidateClassification(candidate) },
+      sectionDefinitions,
+    }),
   );
   const keys = result.sections.map((section) => section.key);
   if (
@@ -605,7 +638,10 @@ export async function generatePlan(
     "이번 작업은 초안을 작성하는 작업이 아니라 독립된 비판적 검토다. 제공된 회사 원문과 draft를 대조하여 실제로 수정·확인이 필요한 문제만 최대 12개 findings로 반환하라. 인용문과 주장의 실질적 관련성, 단순 인용으로 정당화되지 않는 기술 우수성, 원문과 상충하는 서술, 완료와 계획·출원과 등록·협의와 계약 혼동, 기술·시장·인력·일정·자금 사이의 모순, 입증되지 않은 수치와 사실을 확인한다. 개발·시장확대·자금계획이 선택한 신청기술에 실제로 연결되는지, 비교 대상·측정 조건이 빠진 차별성 주장, 자사 개발과 외주·외부 기술 범위의 혼동, 지속 개발 인력·인프라와 실행 비용·조달 시기의 불일치, 추상적 우수성 또는 일반 홍보 문구로 빠진 설명을 대조하라. interviewQuestions도 회사 원문과 초안 쟁점의 실제 확인에 도움이 되는지 검토하고 기관이 확정한 질문·일률적 현장 필수요건으로 단정하지 않도록 확인하라. 단순 일반론이나 심사 점수·합격 전망은 쓰지 마라. 문제없으면 빈 배열이다. 각 finding에 왜 문제가 되는지 원문과 본문 내용을 구체적으로 비교한 message, 해결할 action, 정확한 sectionKey(전체문제는 null), 제공된 sourceId만 작성하라. 근거의 진위를 독립 검증한 것처럼 단정하지 말고 판단이 불확실하면 확인 의견으로 표시한다. severity error는 원문 충돌 등 명확한 문제, warning은 확인 필요, info는 참고 의견이다. category는 semantic-evidence, contradiction, timeline, financial-plan, fact-vs-plan 중 맞는 것을 쓰라.",
     aiInput(value, { selectedCandidate: candidate, draft: result }),
   );
-  const sourceIds = new Set(["profile", ...value.sources.map((source) => source.id)]);
+  const sourceIds = new Set([
+    "profile",
+    ...value.sources.filter((source) => source.extraction !== "pending").map((source) => source.id),
+  ]);
   const sectionKeys = new Set<string>(sectionDefinitions.map((section) => section.key));
   if (
     independentReview.findings.some(
