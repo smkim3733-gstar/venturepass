@@ -324,21 +324,27 @@ describe("synthetic v2 approved execution runner", () => {
     expect(send).toHaveBeenCalledTimes(1);
     expect(store.providerBudgetGet()).toMatchObject({ heldUnits: "0", recognizedUnits: "2" });
   });
-  it("keeps both original validated outputs if final record and fallback fail", async () => {
-    vi.spyOn(store, "providerRecordFinish").mockImplementation(() => {
-      throw new Error("final storage unavailable");
-    });
-    const result = await run();
-    expect(result).toMatchObject({
-      recordingStatus: "last-confirmed",
-      failureCode: "RECORDING_UNCONFIRMED",
-      snapshot: { state: "validated" },
-    });
-    expect(send).toHaveBeenCalledTimes(2);
-    expect(store.providerArtifact(id, "generation-validated").body.length).toBeGreaterThan(0);
-    expect(store.providerArtifact(id, "review-validated").body.length).toBeGreaterThan(0);
-    expect(store.providerBudgetGet()).toMatchObject({ heldUnits: "0", recognizedUnits: "4" });
-    expect((await run()).replayed).toBe(true);
-    expect(send).toHaveBeenCalledTimes(2);
-  });
+  // This path durably records both phases, rereads both artifacts, then replays.
+  // Windows filesystem flushes can exceed the default 5 s without a failed assertion.
+  it(
+    "keeps both original validated outputs if final record and fallback fail",
+    async () => {
+      vi.spyOn(store, "providerRecordFinish").mockImplementation(() => {
+        throw new Error("final storage unavailable");
+      });
+      const result = await run();
+      expect(result).toMatchObject({
+        recordingStatus: "last-confirmed",
+        failureCode: "RECORDING_UNCONFIRMED",
+        snapshot: { state: "validated" },
+      });
+      expect(send).toHaveBeenCalledTimes(2);
+      expect(store.providerArtifact(id, "generation-validated").body.length).toBeGreaterThan(0);
+      expect(store.providerArtifact(id, "review-validated").body.length).toBeGreaterThan(0);
+      expect(store.providerBudgetGet()).toMatchObject({ heldUnits: "0", recognizedUnits: "4" });
+      expect((await run()).replayed).toBe(true);
+      expect(send).toHaveBeenCalledTimes(2);
+    },
+    process.platform === "win32" ? 15000 : 5000,
+  );
 });
