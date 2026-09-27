@@ -9,6 +9,7 @@ import {
   PACKAGE_DOWNLOAD_NAME,
   packageLimits,
   packageRequestSchema,
+  type PackageRequest,
 } from "@/lib/studio-package-types";
 import { Notice, jsonBody } from "./shared";
 
@@ -107,13 +108,26 @@ type Props = {
   plan: BusinessPlan;
   dirty: boolean;
   onBusyChange: (message: string) => void;
+  onPreserve?: (request: PackageRequest) => Promise<string>;
+  blockedReason?: string;
+  /** A confirmed parent recovery invalidates messages from the previous request. */
+  statusVersion?: number;
 };
 
-export function PackagePanel({ company, plan, dirty, onBusyChange }: Props) {
+export function PackagePanel({
+  company,
+  plan,
+  dirty,
+  onBusyChange,
+  onPreserve,
+  blockedReason,
+  statusVersion = 0,
+}: Props) {
   const [selected, setSelected] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
+  const [noticeVersion, setNoticeVersion] = useState(statusVersion);
   const inFlight = useRef(false);
   const mounted = useRef(false);
   const binding = `${company.id}:${company.revision}:${plan.id}`;
@@ -137,7 +151,19 @@ export function PackagePanel({ company, plan, dirty, onBusyChange }: Props) {
     company.selectedCandidateId !== plan.candidateId ||
     !plan.confirmedAt ||
     plan.content.sections.some((section) => section.needsConfirmation) ||
-    plan.review.some((item) => item.severity === "error" || item.category === "confirmation");
+    plan.review.some(
+      (item) =>
+        item.severity === "error" ||
+        item.category === "confirmation" ||
+        (item.severity !== "info" &&
+          [
+            "semantic-evidence",
+            "contradiction",
+            "timeline",
+            "financial-plan",
+            "fact-vs-plan",
+          ].includes(item.category)),
+    );
   function toggle(id: string, checked: boolean) {
     if (busy || dirty || stale || inFlight.current) return;
     setSelected((previous) =>
@@ -150,8 +176,9 @@ export function PackagePanel({ company, plan, dirty, onBusyChange }: Props) {
     setMessage("");
     setError("");
   }
-  async function download() {
+  async function download(mode: "download" | "preserve" = "download") {
     if (busy || dirty || stale || inFlight.current) return;
+    setNoticeVersion(statusVersion);
     const sourceIds = selectedPackageSources(company, selected);
     const exactPlans = company.plans.filter((item) => item.id === plan.id);
     if (!sourceIds || exactPlans.length !== 1 || exactPlans[0] !== plan) {
@@ -172,9 +199,18 @@ export function PackagePanel({ company, plan, dirty, onBusyChange }: Props) {
     setBusy(true);
     setError("");
     setMessage("");
-    onBusyChange("선택한 원고와 원본으로 이 PC에 보관할 ZIP을 만드는 중입니다");
+    onBusyChange(
+      mode === "preserve"
+        ? "원고와 선택 원본을 이 PC의 준비본으로 보관하고 있습니다"
+        : "선택한 원고와 원본으로 이 PC에 보관할 ZIP을 만드는 중입니다",
+    );
     let objectUrl: string | null = null;
     try {
+      if (mode === "preserve" && onPreserve) {
+        const result = await onPreserve(request.data);
+        if (mounted.current && context.current === startedBinding) setMessage(result);
+        return;
+      }
       const response = await fetch(`/api/studio/cases/${company.id}/package`, {
         method: "POST",
         cache: "no-store",
@@ -307,7 +343,7 @@ export function PackagePanel({ company, plan, dirty, onBusyChange }: Props) {
       </p>
       {dirty && (
         <Notice tone="warning">
-          원고 수정본을 먼저 저장하거나 편집을 취소한 뒤 묶음을 만들어 주세요.
+          {blockedReason || "원고 수정본을 먼저 저장하거나 편집을 취소한 뒤 묶음을 만들어 주세요."}
         </Notice>
       )}
       {stale && (
@@ -315,19 +351,28 @@ export function PackagePanel({ company, plan, dirty, onBusyChange }: Props) {
           기업 또는 원고 버전이 변경되었습니다. 원고 화면을 다시 열고 원본을 선택해 주세요.
         </Notice>
       )}
-      {error && (
+      {error && noticeVersion === statusVersion && (
         <div role="alert">
           <Notice tone="warning">
             {error} 자동 재시도하지 않습니다. 상태를 확인한 뒤 다시 만들 수 있습니다.
           </Notice>
         </div>
       )}
-      {message && (
+      {message && noticeVersion === statusVersion && (
         <p role="status" className="text-sm leading-6">
           {message}
         </p>
       )}
-      <Button disabled={busy || dirty || stale} onClick={() => void download()}>
+      {onPreserve && (
+        <Button disabled={busy || dirty || stale} onClick={() => void download("preserve")}>
+          {busy ? "준비본 보관 중…" : "원고와 선택 원본 보관"}
+        </Button>
+      )}
+      <Button
+        variant={onPreserve ? "outline" : "default"}
+        disabled={busy || dirty || stale}
+        onClick={() => void download()}
+      >
         <Download />
         {busy ? "ZIP 준비 중…" : `원고 v${plan.version} 제출 준비 ZIP 내려받기`}
       </Button>

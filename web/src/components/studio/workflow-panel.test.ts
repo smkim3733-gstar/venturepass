@@ -162,3 +162,62 @@ describe("workflow agency request references", () => {
     expect(record.tasks[1]).not.toHaveProperty("owners");
   });
 });
+
+describe("기본 후속 업무의 상세 진입", () => {
+  function guided(
+    c: StudioCase,
+    target: import("@/lib/studio-guided-followup").GuidedWorkflowTarget,
+  ) {
+    const mutate = vi.fn();
+    const html = renderToStaticMarkup(
+      createElement(WorkflowPanel, { company: c, mutate, setDirty: vi.fn(), guidedTarget: target }),
+    );
+    expect(mutate).not.toHaveBeenCalled();
+    return html;
+  }
+  it("opens exactly the selected task while retaining original dates and completed status", () => {
+    const c = company();
+    const before = JSON.stringify(c);
+    const html = guided(c, { caseId: c.id, companyRevision: c.revision, kind: "task", taskId });
+    expect(html).toContain('id="workflow-task-editor"');
+    expect(html).toContain('value="가상 후속 업무"');
+    expect(html).toContain('value="2026-10-02"');
+    expect(JSON.stringify(c)).toBe(before);
+  });
+  it("opens the exact corrected request, preserving old completed task", () => {
+    const c = company({
+      agencyRecords: [
+        request(),
+        request({
+          id: correctedId,
+          kind: "request-correction",
+          requestVersionId: correctedId,
+          previousVersionId: requestId,
+          version: 2,
+          title: "정정된 요청",
+        }),
+      ],
+    });
+    const html = guided(c, {
+      caseId: c.id,
+      companyRevision: c.revision,
+      kind: "response",
+      requestRecordId: requestId,
+      requestVersionId: correctedId,
+    });
+    expect(html).toContain('value="답변 준비: 정정된 요청"');
+    expect(html).toContain("기준 요청: 정정된 요청 · 요청 v2");
+    expect(html).not.toContain('id="workflow-task-editor"');
+    expect(c.tasks[0].status).toBe("done");
+  });
+  it.each(["case", "revision", "task"])("stale %s never opens a replacement task", (field) => {
+    const c = company();
+    const target = { caseId: c.id, companyRevision: c.revision, kind: "task" as const, taskId };
+    if (field === "case") target.caseId = correctedId;
+    if (field === "revision") target.companyRevision = 99;
+    if (field === "task") target.taskId = correctedId;
+    const html = guided(c, target);
+    expect(html).not.toContain('id="workflow-task-editor"');
+    expect(html).toContain("현재 안내를 다시 확인");
+  });
+});

@@ -11,6 +11,20 @@ import type {
 } from "@/lib/venturein-execution-schema";
 import type { VentureTextSource } from "@/lib/venturein-preflight";
 import type { VentureWorkflowStatus } from "@/lib/venturein-workflow";
+import type { PreparedPackageSummary } from "@/lib/studio-prepared-package-types";
+import { preparedPackageList } from "./prepared-package-ui";
+import {
+  validatePreparedComparison,
+  validatePreparedExecutionReview,
+  createPreparedExecutionExpectation,
+  validatePreparedExecutionOutcome,
+  preparedExecutionDraftReasons,
+  validateRecoveryPreparedTargets,
+  VentureinPreparedBindingSummary,
+  VentureinPreparedComparisonView,
+  type PreparedExecutionComparison,
+  type PreparedExecutionExpectation,
+} from "./venturein-prepared-execution-ui";
 import { Loading, Notice, formatDate, jsonBody, studioFetch } from "./shared";
 import {
   validateVentureInputComparison,
@@ -23,6 +37,7 @@ import {
 } from "./venturein-recovery-panel";
 
 type Props = {
+  caseId: string;
   endpoint: string;
   workflow: VentureWorkflowStatus;
   companyRevision: number;
@@ -35,6 +50,9 @@ type Props = {
   onBusyChange: (busy: boolean) => void;
   onWorkflowChange: (workflow: VentureWorkflowStatus) => void;
 };
+
+const executionButtonClass =
+  "h-auto min-h-11 min-w-0 max-w-full shrink whitespace-normal break-words py-2";
 
 function fileSize(bytes: number) {
   return `${Math.ceil(bytes / 1024).toLocaleString()}KB (${bytes.toLocaleString()}바이트)`;
@@ -93,6 +111,7 @@ function ApprovalReview({
   const [approved, setApproved] = useState(false);
   const [expired, setExpired] = useState(false);
   const mounted = useRef(false);
+  const inFlight = useRef(false);
 
   useEffect(() => {
     mounted.current = true;
@@ -115,15 +134,21 @@ function ApprovalReview({
   }, [review]);
 
   async function prepareReview() {
+    if (busy || blockedReason || inFlight.current) return;
+    inFlight.current = true;
     setReview(null);
     setApproved(false);
     setExpired(false);
-    const next = await prepare();
-    if (mounted.current && next) setReview(next);
+    try {
+      const next = await prepare();
+      if (mounted.current && next) setReview(next);
+    } finally {
+      inFlight.current = false;
+    }
   }
 
   async function executeOnce() {
-    if (!review || !approved || busy || blockedReason) return;
+    if (!review || !approved || busy || blockedReason || inFlight.current) return;
     if (Date.parse(review.expiresAt) <= Date.now()) {
       setReview(null);
       setApproved(false);
@@ -131,15 +156,21 @@ function ApprovalReview({
       return;
     }
     const approvedReview = review;
+    inFlight.current = true;
     setReview(null);
     setApproved(false);
-    await execute(approvedReview);
+    try {
+      await execute(approvedReview);
+    } finally {
+      inFlight.current = false;
+    }
   }
 
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-3">
         <Button
+          className={executionButtonClass}
           type="button"
           variant="outline"
           disabled={busy || !!blockedReason}
@@ -162,6 +193,7 @@ function ApprovalReview({
             이번에 전송할 텍스트 {review.fieldCount}개 · 파일 {review.attachmentCount}개
           </h4>
           <VentureinApprovalScope review={review} />
+          <VentureinPreparedBindingSummary prepared={review.preparedPackage} required />
           <dl className="space-y-2 text-sm leading-6">
             <div>
               <dt className="text-muted-foreground">신청 기업</dt>
@@ -249,7 +281,12 @@ function ApprovalReview({
             />
             <span>위 텍스트와 파일을 www.smes.go.kr에 전송해 입력·첨부하는 데 동의합니다.</span>
           </label>
-          <Button type="button" disabled={!approved || busy} onClick={executeOnce}>
+          <Button
+            className={executionButtonClass}
+            type="button"
+            disabled={!approved || busy}
+            onClick={executeOnce}
+          >
             <Send />
             승인한 입력·첨부 1회 실행
           </Button>
@@ -260,6 +297,7 @@ function ApprovalReview({
 }
 
 export function VentureinExecutionPanel({
+  caseId,
   endpoint,
   workflow,
   companyRevision,
@@ -278,6 +316,17 @@ export function VentureinExecutionPanel({
   const [executionBeforeRequest, setExecutionBeforeRequest] = useState<string | null>(null);
   const [reviewVersion, setReviewVersion] = useState(0);
   const [recoveryVersion, setRecoveryVersion] = useState(0);
+  const [packages, setPackages] = useState<{
+    caseId: string;
+    items: PreparedPackageSummary[];
+  } | null>(null);
+  const [packageId, setPackageId] = useState("");
+  const [packageComparison, setPackageComparison] = useState<{
+    key: string;
+    value: PreparedExecutionComparison;
+  } | null>(null);
+  const packageIdRef = useRef("");
+  const pendingExecution = useRef<PreparedExecutionExpectation | null>(null);
   const mounted = useRef(false);
   const inFlight = useRef(false);
   const context = useRef(bindingKey);
@@ -289,6 +338,13 @@ export function VentureinExecutionPanel({
     execution?.completedFieldKeys.filter((key) => !attachmentKeys.has(key)) ?? [];
   const outcomeUnknown = execution?.code === "INPUT_RESULT_UNKNOWN";
   const sameSnapshot = Boolean(execution && execution.snapshotId === workflow.snapshot?.screen.id);
+  const selectedPackage =
+    packages?.caseId === caseId
+      ? (packages.items.find((item) => item.id === packageId) ?? null)
+      : null;
+  const comparisonKey = JSON.stringify([bindingKey, caseId, packageId]);
+  const currentPackageComparison =
+    packageComparison?.key === comparisonKey ? packageComparison.value : null;
 
   useEffect(() => {
     mounted.current = true;
@@ -318,22 +374,60 @@ export function VentureinExecutionPanel({
   function current() {
     return mounted.current && context.current === bindingKey;
   }
-  const unavailable = uncertain
-    ? "앞선 입력·첨부 결과를 확인하지 못했습니다. 저장된 실행 결과와 공식 화면을 확인하세요."
-    : sameSnapshot
-      ? outcomeUnknown
-        ? "이 화면의 입력·첨부 결과가 미확인 상태입니다. 공식 화면을 직접 확인한 뒤 화면을 다시 읽고 연결해 주세요."
-        : execution?.status === "running"
-          ? "실행 결과 확인이 필요합니다. 입력 완료로 판단하지 말고 저장된 실행 결과를 확인하세요."
-          : "이 화면 기록으로 이미 입력·첨부를 시도했습니다. 공식 화면을 확인한 뒤 다시 읽고 새 연결을 검토해 주세요."
-      : blockedReason ||
-        (!workflow.report.inputReadiness
-          ? "선택 입력 준비 정보가 없습니다. 점검 결과 새로고침으로 최신 상태를 확인해 주세요."
-          : workflow.report.inputReadiness.ready !== true
-            ? "선택 항목 입력 전 보완사항을 먼저 해결해 주세요."
-            : "");
+  function choosePackage(next: string) {
+    if (inFlight.current || !canRefresh) return;
+    packageIdRef.current = next;
+    setPackageId(next);
+    setPackageComparison(null);
+    setReviewVersion((version) => version + 1);
+    setRecoveryVersion((version) => version + 1);
+  }
+  async function readPackages() {
+    if (!canRefresh || !begin("현재 기업의 보관 준비본을 확인하고 있습니다")) return;
+    setReviewVersion((version) => version + 1);
+    setPackageComparison(null);
+    try {
+      const value = preparedPackageList(
+        await studioFetch<unknown>(`/api/studio/cases/${caseId}/prepared-packages`),
+        { id: caseId, revision: companyRevision },
+      );
+      if (!current()) return;
+      if (value.caseRevision !== companyRevision)
+        throw new Error("기업 자료가 변경되었습니다. 최신 점검 결과를 먼저 읽어 주세요.");
+      setPackages({ caseId, items: value.packages });
+      if (!value.packages.some((item) => item.id === packageIdRef.current)) {
+        packageIdRef.current = "";
+        setPackageId("");
+      }
+    } catch (caught) {
+      if (current())
+        setError(caught instanceof Error ? caught.message : "준비본 목록을 불러오지 못했습니다.");
+    } finally {
+      finish();
+    }
+  }
+  const companyBindingMismatch =
+    workflow.report.caseId !== caseId ||
+    (!!workflow.snapshot && workflow.snapshot.caseId !== caseId);
+  const unavailable = companyBindingMismatch
+    ? "현재 기업의 점검 결과를 다시 읽어 주세요. 다른 기업의 연결안으로 실행하지 않습니다."
+    : uncertain
+      ? "앞선 입력·첨부 결과를 확인하지 못했습니다. 저장된 실행 결과와 공식 화면을 확인하세요."
+      : sameSnapshot
+        ? outcomeUnknown
+          ? "이 화면의 입력·첨부 결과가 미확인 상태입니다. 공식 화면을 직접 확인한 뒤 화면을 다시 읽고 연결해 주세요."
+          : execution?.status === "running"
+            ? "실행 결과 확인이 필요합니다. 입력 완료로 판단하지 말고 저장된 실행 결과를 확인하세요."
+            : "이 화면 기록으로 이미 입력·첨부를 시도했습니다. 공식 화면을 확인한 뒤 다시 읽고 새 연결을 검토해 주세요."
+        : blockedReason ||
+          (!workflow.report.inputReadiness
+            ? "선택 입력 준비 정보가 없습니다. 점검 결과 새로고침으로 최신 상태를 확인해 주세요."
+            : workflow.report.inputReadiness.ready !== true
+              ? "선택 항목 입력 전 보완사항을 먼저 해결해 주세요."
+              : "");
 
   const comparisonUnavailable =
+    (companyBindingMismatch ? "현재 기업의 화면·대응표를 다시 읽어 주세요." : "") ||
     blockedReason ||
     (!workflow.snapshot || !workflow.draft || !sessionStartedAt
       ? "현재 화면을 읽고 항목 연결을 저장한 뒤 대조할 수 있습니다."
@@ -343,13 +437,71 @@ export function VentureinExecutionPanel({
           ? "선택 항목 입력 전 보완사항을 해결한 뒤 대조할 수 있습니다."
           : "");
 
+  const preparedUnavailable =
+    unavailable ||
+    (!selectedPackage
+      ? "보관한 준비본을 선택한 뒤 현재 선택 항목과 대조해 주세요."
+      : !currentPackageComparison?.result.matched
+        ? "선택한 준비본과 현재 항목의 일치를 먼저 확인해 주세요."
+        : "");
+
+  async function comparePackage() {
+    if (
+      !selectedPackage ||
+      comparisonUnavailable ||
+      !workflow.snapshot ||
+      !sessionStartedAt ||
+      !begin("선택한 준비본과 현재 입력·첨부 범위를 로컬에서 대조하고 있습니다")
+    )
+      return;
+    const selectedId = selectedPackage.id;
+    setPackageComparison(null);
+    setReviewVersion((version) => version + 1);
+    setRecoveryVersion((version) => version + 1);
+    try {
+      const value = await studioFetch<{ preparedComparison: unknown }>(`${endpoint}/execution`, {
+        method: "POST",
+        ...jsonBody({
+          action: "compare-prepared-package",
+          revision: workflow.revision,
+          companyRevision,
+          accountRevision,
+          preparedPackageId: selectedId,
+        }),
+      });
+      const comparison = await validatePreparedComparison(
+        value.preparedComparison,
+        {
+          caseId,
+          workflowRevision: workflow.revision,
+          companyRevision,
+          accountRevision,
+          snapshotId: workflow.snapshot.screen.id,
+          sessionStartedAt,
+        },
+        selectedPackage,
+        workflow.report.textFields,
+        workflow.report.attachments,
+      );
+      if (current() && packageIdRef.current === selectedId)
+        setPackageComparison({ key: comparisonKey, value: comparison });
+    } catch (caught) {
+      if (current() && packageIdRef.current === selectedId)
+        setError(
+          caught instanceof Error ? caught.message : "준비본 대조 결과를 확인하지 못했습니다.",
+        );
+    } finally {
+      finish();
+    }
+  }
+
   const recoveryUnavailable = uncertain
     ? "앞선 입력·첨부 결과가 미확인 상태입니다. 저장된 실행 결과와 공식 화면을 확인하세요."
     : comparisonUnavailable ||
       ventureRecoveryBlockedReason(
         execution,
         {
-          caseId: workflow.report.caseId,
+          caseId,
           companyRevision,
           accountRevision,
           sessionStartedAt,
@@ -388,6 +540,8 @@ export function VentureinExecutionPanel({
           ...attempt.completedFieldKeys,
         ]),
       );
+      await validateRecoveryPreparedTargets(review.preparedPackage, workflow.report.textFields);
+      if (!current()) return null;
       return validateVentureRecoveryReview(
         review,
         {
@@ -398,6 +552,8 @@ export function VentureinExecutionPanel({
           sessionStartedAt,
           priorExecutionId: execution.id,
           destination: workflow.snapshot.screen.url,
+          preparedPackage:
+            execution.manifest?.version === 2 ? execution.manifest.preparedPackage : undefined,
         },
         workflow.report.textFields,
         touched,
@@ -418,6 +574,8 @@ export function VentureinExecutionPanel({
       return;
     setExecutionBeforeRequest(execution?.id ?? null);
     try {
+      const expected = createPreparedExecutionExpectation(caseId, review, execution);
+      pendingExecution.current = expected;
       const result = await studioFetch<{ workflow: VentureWorkflowStatus }>(
         `${endpoint}/execution`,
         {
@@ -435,7 +593,9 @@ export function VentureinExecutionPanel({
         result.workflow.execution.priorExecutionId !== review.priorExecutionId
       )
         throw new Error("새 입력 실행 결과를 확인하지 못했습니다.");
-      setUncertain(false);
+      const outcome = validatePreparedExecutionOutcome(result.workflow.execution, expected);
+      if (outcome.settled) pendingExecution.current = null;
+      setUncertain(!outcome.settled);
       onWorkflowChange(result.workflow);
     } catch (caught) {
       if (mounted.current) {
@@ -500,7 +660,14 @@ export function VentureinExecutionPanel({
   }
 
   async function prepare() {
-    if (unavailable || !begin("입력·첨부 전 기업·항목·원본 파일을 확인하고 있습니다")) return null;
+    if (
+      preparedUnavailable ||
+      !selectedPackage ||
+      !currentPackageComparison ||
+      !begin("입력·첨부 전 기업·항목·원본 파일을 확인하고 있습니다")
+    )
+      return null;
+    const selectedId = selectedPackage.id;
     setRecoveryVersion((version) => version + 1);
     try {
       const { review } = await studioFetch<{ review: VentureExecutionReview }>(
@@ -512,10 +679,11 @@ export function VentureinExecutionPanel({
             revision: workflow.revision,
             accountRevision,
             companyRevision,
+            preparedPackageId: selectedId,
           }),
         },
       );
-      if (!current()) return null;
+      if (!current() || packageIdRef.current !== selectedId) return null;
       const destination = new URL(review.destination);
       if (
         review.scope !== "selected-fields" ||
@@ -537,12 +705,19 @@ export function VentureinExecutionPanel({
           (file) => !file.confirmed || !/^[a-f0-9]{64}$/i.test(file.sha256),
         ) ||
         !Number.isFinite(Date.parse(review.expiresAt)) ||
-        Date.parse(review.expiresAt) <= Date.now() ||
+        review.destination !== workflow.snapshot?.screen.url ||
         destination.origin !== "https://www.smes.go.kr" ||
         destination.username ||
         destination.password
       )
         throw new Error("검토안과 현재 연결이 일치하지 않습니다. 최신 점검 결과를 확인해 주세요.");
+      await validatePreparedExecutionReview(
+        review,
+        currentPackageComparison,
+        workflow.report.textFields,
+        workflow.report.attachments,
+      );
+      if (!current() || packageIdRef.current !== selectedId) return null;
       return review;
     } catch (caught) {
       if (current())
@@ -554,9 +729,19 @@ export function VentureinExecutionPanel({
   }
 
   async function execute(review: VentureExecutionReview) {
-    if (unavailable || !begin("승인한 입력·첨부를 한 번 실행하고 결과를 확인하고 있습니다")) return;
+    if (
+      preparedUnavailable ||
+      !currentPackageComparison ||
+      !selectedPackage ||
+      review.preparedPackage?.binding.package.id !== selectedPackage.id ||
+      review.preparedPackage.digest !== currentPackageComparison.result.digest ||
+      !begin("승인한 입력·첨부를 한 번 실행하고 결과를 확인하고 있습니다")
+    )
+      return;
     setExecutionBeforeRequest(execution?.id ?? null);
     try {
+      const expected = createPreparedExecutionExpectation(caseId, review, execution);
+      pendingExecution.current = expected;
       const result = await studioFetch<{ workflow: VentureWorkflowStatus }>(
         `${endpoint}/execution`,
         {
@@ -569,7 +754,9 @@ export function VentureinExecutionPanel({
         return;
       }
       if (!result.workflow?.execution) throw new Error("입력 실행 결과를 확인하지 못했습니다.");
-      setUncertain(false);
+      const outcome = validatePreparedExecutionOutcome(result.workflow.execution, expected);
+      if (outcome.settled) pendingExecution.current = null;
+      setUncertain(!outcome.settled);
       onWorkflowChange(result.workflow);
     } catch (caught) {
       if (mounted.current) {
@@ -585,10 +772,24 @@ export function VentureinExecutionPanel({
 
   async function checkResult() {
     if (!canRefresh || !begin("저장된 실행 결과를 불러오고 있습니다")) return;
+    const expected = pendingExecution.current;
     try {
       const value = await studioFetch<VentureWorkflowStatus>(endpoint);
       if (!current()) return;
-      if (value.execution && value.execution.id !== executionBeforeRequest) setUncertain(false);
+      if (value.report?.caseId !== caseId || (value.snapshot && value.snapshot.caseId !== caseId))
+        throw new Error("현재 기업의 실행 결과를 확인하지 못했습니다.");
+      if (expected && pendingExecution.current === expected) {
+        try {
+          const outcome = validatePreparedExecutionOutcome(value.execution, expected);
+          if (outcome.settled) pendingExecution.current = null;
+          setUncertain(!outcome.settled);
+        } catch {
+          setUncertain(true);
+          setError(
+            "조회한 최근 기록은 앞선 요청의 회사·화면·준비본·입력 범위와 일치하지 않습니다. 앞선 요청은 미확인 상태로 유지합니다. 공식 화면과 실행 이력을 확인해 주세요.",
+          );
+        }
+      }
       onWorkflowChange(value);
     } catch (caught) {
       if (current())
@@ -605,12 +806,12 @@ export function VentureinExecutionPanel({
   }
 
   return (
-    <section aria-label="승인 후 공식 화면 입력·첨부" className="space-y-4 border-t pt-4">
+    <section aria-label="승인 후 공식 화면 입력·첨부" className="min-w-0 space-y-4 border-t pt-4">
       <h4 className="font-semibold">검토 후 공식 화면에 입력·첨부</h4>
       <p className="text-xs leading-6 text-muted-foreground">
-        선택 항목 검토안 준비 → 전송 승인 → 입력·첨부 1회 실행 순서로 진행합니다. 실행 직전 공식
-        화면과 로그인 상태, 승인한 원본 파일을 다시 확인합니다. 전체 제출 준비와 동의 사항은 별도로
-        확인해야 합니다.
+        준비본 선택·대조 → 선택 항목 검토 → 전송 승인 → 입력·첨부 1회 실행 순서로 진행합니다. 실행
+        직전 공식 화면과 로그인 상태, 승인한 원본 파일을 다시 확인합니다. 전체 제출 준비와 동의
+        사항은 별도로 확인해야 합니다.
       </p>
       {busy && <Loading text={busy} />}
       {error && (
@@ -631,10 +832,19 @@ export function VentureinExecutionPanel({
       {execution && (
         <div role="status" className="space-y-2 rounded-xl border p-4 text-sm leading-6">
           <p className="text-xs text-muted-foreground">
-            {uncertain && execution.id === executionBeforeRequest
-              ? "이전 실행 기록 · 이번 요청 결과는 미확인"
+            {uncertain
+              ? execution.id === executionBeforeRequest
+                ? "이전 실행 기록 · 이번 요청 결과는 미확인"
+                : "최근 저장된 기록 · 이번 요청과의 일치는 미확인"
               : "최근 저장된 실행 기록"}
           </p>
+          <VentureinPreparedBindingSummary
+            prepared={
+              execution.manifest?.version === 2 ? execution.manifest.preparedPackage : undefined
+            }
+            historical
+            required={execution.manifest?.version === 2}
+          />
           <p className="flex items-center gap-2 font-semibold">
             {execution.status === "completed" && !outcomeUnknown && (
               <CheckCircle2 className="size-4" />
@@ -702,6 +912,7 @@ export function VentureinExecutionPanel({
       )}
       {(execution || uncertain) && (
         <Button
+          className={executionButtonClass}
           type="button"
           variant="outline"
           disabled={!!busy || !canRefresh}
@@ -723,7 +934,7 @@ export function VentureinExecutionPanel({
       />
       {(execution || uncertain) && (
         <VentureinRecoveryPanel
-          key={`${bindingKey}:${recoveryVersion}`}
+          key={`${comparisonKey}:${recoveryVersion}`}
           prepare={prepareRecovery}
           execute={executeRecovery}
           blockedReason={recoveryUnavailable}
@@ -731,11 +942,89 @@ export function VentureinExecutionPanel({
           describeSource={describeSource}
         />
       )}
+      <section
+        aria-label="실행할 준비본 선택과 대조"
+        className="min-w-0 space-y-3 rounded-xl border p-4"
+      >
+        <h5 className="font-semibold">보관한 준비본 연결</h5>
+        <p className="text-xs leading-6 text-muted-foreground">
+          준비본의 전체 원고와 이번에 선택한 값·첨부를 대조합니다. 기관에 입력하거나 전송하지
+          않습니다.
+        </p>
+        <Button
+          className={executionButtonClass}
+          variant="outline"
+          disabled={!!busy || !canRefresh}
+          onClick={readPackages}
+        >
+          준비본 목록 읽기
+        </Button>
+        {packages?.caseId === caseId &&
+          (packages.items.length ? (
+            <label className="block min-w-0 space-y-2 text-sm">
+              <span>이번 입력에 연결할 준비본</span>
+              <select
+                className="min-h-11 w-full min-w-0 max-w-full rounded-lg border bg-background p-2"
+                value={selectedPackage?.id ?? ""}
+                disabled={!!busy || !canRefresh}
+                onChange={(event) => choosePackage(event.target.value)}
+              >
+                <option value="">준비본 선택</option>
+                {packages.items.map((item) => (
+                  <option key={item.id} value={item.id}>
+                    준비본 {item.version} · 원고 {item.planVersion} · {item.planTitle}
+                    {item.draft ? " · 확인 필요" : ""}
+                  </option>
+                ))}
+              </select>
+            </label>
+          ) : (
+            <p className="text-sm">
+              보관한 준비본이 없습니다. 신청 준비 화면에서 원고·첨부를 준비본으로 보관해 주세요.
+            </p>
+          ))}
+        {selectedPackage && (
+          <>
+            <p className="break-words text-xs leading-6">
+              보관: {formatDate(selectedPackage.createdAt)} · 준비본 {selectedPackage.version} ·
+              원고 {selectedPackage.planVersion}
+            </p>
+            {selectedPackage.draft && (
+              <Notice tone="warning">
+                확인이 남은 준비본입니다. 대조가 일치해도 사실·증빙 검토 완료로 바뀌지 않습니다.
+                {selectedPackage.draftReasons.length > 0 && (
+                  <ul className="mt-2 list-inside list-disc break-words">
+                    {preparedExecutionDraftReasons(selectedPackage.draftReasons).map(
+                      (reason, index) => (
+                        <li key={index}>{reason}</li>
+                      ),
+                    )}
+                  </ul>
+                )}
+              </Notice>
+            )}
+            <Button
+              className={executionButtonClass}
+              variant="outline"
+              disabled={!!busy || !!comparisonUnavailable}
+              onClick={comparePackage}
+            >
+              준비본과 선택 항목 대조
+            </Button>
+          </>
+        )}
+        {currentPackageComparison && (
+          <VentureinPreparedComparisonView
+            comparison={currentPackageComparison}
+            fieldLabel={fieldLabel}
+          />
+        )}
+      </section>
       <ApprovalReview
-        key={`${bindingKey}:${reviewVersion}`}
+        key={`${comparisonKey}:${reviewVersion}`}
         prepare={prepare}
         execute={execute}
-        blockedReason={unavailable}
+        blockedReason={preparedUnavailable}
         busy={!!busy}
         describeSource={describeSource}
       />

@@ -65,6 +65,7 @@ function renderExecution(workflow: VentureWorkflowStatus) {
   const onBusyChange = vi.fn();
   const onWorkflowChange = vi.fn();
   const props: ComponentProps<typeof VentureinExecutionPanel> = {
+    caseId: workflow.report.caseId,
     endpoint: "/api/studio/cases/11111111-1111-4111-8111-111111111111/venturein/workflow",
     workflow,
     companyRevision: 4,
@@ -173,10 +174,11 @@ describe("선택 항목 입력 준비 표시", () => {
     expect(html).not.toContain('type="checkbox"');
   });
 
-  it("선택 항목이 준비되면 전체 제출 보완이 남아 있어도 검토안 준비를 허용한다", () => {
+  it("선택 항목이 준비돼도 새 승인은 준비본 선택·대조를 요구한다", () => {
     const html = renderExecution(workflowFixture(true, false));
     expect(html).toContain("입력·첨부 검토안 준비");
-    expect(prepareButton(html)).not.toMatch(/\sdisabled=""/);
+    expect(prepareButton(html)).toMatch(/\sdisabled=""/);
+    expect(html).toContain("보관한 준비본을 선택한 뒤 현재 선택 항목과 대조해 주세요");
     expect(html).toContain("전체 제출 준비와 동의 사항은");
     expect(html).toContain("별도로 확인해야 합니다");
   });

@@ -6,6 +6,10 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import type { StudioCase } from "@/lib/studio-schema";
 import {
+  validateGuidedWorkflowTarget,
+  type GuidedWorkflowTarget,
+} from "@/lib/studio-guided-followup";
+import {
   certificateTaskContext,
   createCertificateTaskMutationSchema,
   latestCertificateNotices,
@@ -20,7 +24,16 @@ type Props = {
   mutate: (mutation: Mutation) => Promise<StudioCase | null>;
   blockedReason: string;
   onDirtyChange: (dirty: boolean) => void;
+  guidedTarget?: GuidedWorkflowTarget;
 };
+
+export function guidedCertificateNotice(company: StudioCase, target?: GuidedWorkflowTarget) {
+  if (target?.kind !== "certificate" || !validateGuidedWorkflowTarget(company, target).valid)
+    return null;
+  return (
+    latestCertificateNotices(company).find((notice) => notice.id === target.noticeVersionId) ?? null
+  );
+}
 
 export function certificateTaskAcknowledged(
   saved: StudioCase | null,
@@ -87,22 +100,62 @@ export function CertificateTaskReference({
 }
 
 export function CertificateRenewal(props: Props) {
-  return (
-    <CertificateRenewalEditor key={`${props.company.id}:${props.company.revision}`} {...props} />
-  );
+  return <CertificateRenewalEditor key={props.company.id} {...props} />;
 }
 
-function CertificateRenewalEditor({ company, mutate, blockedReason, onDirtyChange }: Props) {
+function CertificateRenewalEditor({
+  company,
+  mutate,
+  blockedReason,
+  onDirtyChange,
+  guidedTarget,
+}: Props) {
   const id = useId();
+  const [guidedNotice] = useState(() => guidedCertificateNotice(company, guidedTarget));
+  const [entryTarget] = useState(guidedTarget);
   const [form, setForm] = useState<{
     input: Mutation;
     validUntil: string;
     attempted: boolean;
-  } | null>(null);
+    companyRevision: number;
+  } | null>(() => {
+    if (
+      !guidedNotice ||
+      guidedNotice.details.category !== "certificate" ||
+      blockedReason ||
+      company.tasks.length >= 200 ||
+      company.tasks.some(
+        (task) =>
+          task.certificateOrigin?.noticeRecordId === guidedNotice.noticeRecordId &&
+          task.certificateOrigin.noticeVersionId === guidedNotice.id,
+      )
+    )
+      return null;
+    return {
+      input: {
+        action: "create-certificate-task",
+        noticeRecordId: guidedNotice.noticeRecordId,
+        noticeVersionId: guidedNotice.id,
+        preparationOn: "",
+      },
+      validUntil: guidedNotice.details.validUntil,
+      attempted: false,
+      companyRevision: company.revision,
+    };
+  });
+  const [guidedFocus] = useState(() =>
+    guidedNotice ? (form ? `${id}-date` : `certificate-notice-${guidedNotice.id}`) : null,
+  );
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const pending = useRef(false);
   const mounted = useRef(false);
+  useEffect(() => {
+    if (!guidedFocus) return;
+    const element = document.getElementById(guidedFocus);
+    element?.scrollIntoView({ block: "start" });
+    element?.focus({ preventScroll: true });
+  }, [guidedFocus]);
   useEffect(() => {
     mounted.current = true;
     return () => {
@@ -116,6 +169,12 @@ function CertificateRenewalEditor({ company, mutate, blockedReason, onDirtyChang
   const blocked = !!blockedReason || saving;
   async function save() {
     if (!form || blocked || pending.current) return;
+    if (form.companyRevision !== company.revision) {
+      setError(
+        "기업 기록이 변경되었습니다. 입력 날짜를 보존했습니다. 최신 통보와 업무를 확인해 주세요.",
+      );
+      return;
+    }
     const parsed = createCertificateTaskMutationSchema.safeParse({
       ...form.input,
       revision: company.revision,
@@ -156,6 +215,17 @@ function CertificateRenewalEditor({ company, mutate, blockedReason, onDirtyChang
         않습니다.
       </Notice>
       {blockedReason && <p className="text-sm text-amber-900">{blockedReason}</p>}
+      {guidedTarget?.kind === "certificate" &&
+        (!guidedNotice ||
+          JSON.stringify(entryTarget) !== JSON.stringify(guidedTarget) ||
+          !validateGuidedWorkflowTarget(company, {
+            ...guidedTarget,
+            companyRevision: company.revision,
+          }).valid) && (
+          <p role="alert" className="text-sm text-amber-900">
+            기업이나 통보 버전이 변경되었습니다. 입력은 보존하며 다른 통보로 바꾸지 않습니다.
+          </p>
+        )}
       {!notices.length && (
         <p className="text-sm text-muted-foreground">
           최신 분류가 ‘확인서 관련 통보’인 기록이 없습니다. 위 기관 통보에서 원문과 유효기간을 먼저
@@ -171,7 +241,12 @@ function CertificateRenewalEditor({ company, mutate, blockedReason, onDirtyChang
             task.certificateOrigin.noticeVersionId === notice.id,
         );
         return (
-          <article key={notice.id} className="space-y-3 rounded-xl border p-4">
+          <article
+            key={notice.id}
+            id={`certificate-notice-${notice.id}`}
+            tabIndex={-1}
+            className="space-y-3 rounded-xl border p-4"
+          >
             <h4 className="text-sm font-semibold">
               <a href={`#agency-record-${notice.id}`} className="underline underline-offset-4">
                 {notice.title} · 통보 v{notice.version}
@@ -184,7 +259,7 @@ function CertificateRenewalEditor({ company, mutate, blockedReason, onDirtyChang
             <p className="whitespace-pre-wrap text-xs">
               담당자 입력 상태: {details.statusText || "미기재"}
             </p>
-            <details>
+            <details open={guidedNotice?.id === notice.id || undefined}>
               <summary className="cursor-pointer text-xs underline">현재 통보 원문 읽기</summary>
               <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-words text-xs">
                 {notice.body}
@@ -200,6 +275,7 @@ function CertificateRenewalEditor({ company, mutate, blockedReason, onDirtyChang
                 type="button"
                 variant="outline"
                 size="sm"
+                className="h-auto min-h-11 max-w-full whitespace-normal break-words"
                 disabled={blocked || form !== null || tasks.length >= 200}
                 onClick={() => {
                   if (blocked || form || pending.current) return;
@@ -212,6 +288,7 @@ function CertificateRenewalEditor({ company, mutate, blockedReason, onDirtyChang
                     },
                     validUntil: details.validUntil,
                     attempted: false,
+                    companyRevision: company.revision,
                   });
                   setError("");
                 }}
@@ -225,6 +302,12 @@ function CertificateRenewalEditor({ company, mutate, blockedReason, onDirtyChang
       {form && (
         <fieldset disabled={blocked} className="space-y-3 rounded-xl border border-primary/30 p-4">
           <legend className="px-2 text-sm font-semibold">사용자가 정하는 차기 준비일</legend>
+          {form.companyRevision !== company.revision && (
+            <p role="alert" className="text-sm text-amber-900">
+              기업 기록이 변경되어 저장을 멈췄습니다. 입력 날짜는 보존했습니다. 최신 통보와 업무를
+              확인해 주세요.
+            </p>
+          )}
           <Label htmlFor={`${id}-date`}>준비 업무 날짜 *</Label>
           <Input
             id={`${id}-date`}
@@ -256,7 +339,12 @@ function CertificateRenewalEditor({ company, mutate, blockedReason, onDirtyChang
           <div className="flex flex-wrap gap-2">
             <Button
               type="button"
-              disabled={!form.input.preparationOn || tasks.length >= 200}
+              disabled={
+                !form.input.preparationOn ||
+                tasks.length >= 200 ||
+                form.companyRevision !== company.revision
+              }
+              className="h-auto min-h-11 max-w-full whitespace-normal break-words"
               onClick={() => void save()}
             >
               {saving

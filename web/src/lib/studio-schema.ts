@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { guidedPreparationRunSchema } from "./studio-guided-preparation-types";
 import {
   preparationAutomationSchema,
   preparationAutomationSettingInputSchema,
@@ -414,6 +415,7 @@ export const caseSchema = z.object({
   diagnosisAnswers: diagnosisAnswersSchema.default(emptyDiagnosisAnswers),
   diagnoses: z.array(diagnosisSchema).max(MAX_DIAGNOSES).default([]),
   preparationRuns: z.array(preparationRunSchema).max(MAX_PREPARATION_RUNS).default([]),
+  guidedPreparationRuns: z.array(guidedPreparationRunSchema).max(30).optional(),
   preparationAutomation: preparationAutomationSchema.default(emptyPreparationAutomation),
   revision: z.number().int(),
   createdAt: z.string(),

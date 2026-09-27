@@ -112,6 +112,45 @@ beforeEach(() => {
 });
 afterEach(() => vi.restoreAllMocks());
 describe("preparation package buffers and disclosure boundaries", () => {
+  it.each([
+    "semantic-evidence",
+    "contradiction",
+    "timeline",
+    "financial-plan",
+    "fact-vs-plan",
+    "confirmation",
+    "custom-error",
+  ])(
+    "preserves stored %s findings even when current rules and user confirmation are clear",
+    async (category) => {
+      const finding = {
+        id: "stored-review",
+        severity: category === "custom-error" ? ("error" as const) : ("warning" as const),
+        category,
+        message: "STORED_SEMANTIC_REVIEW_MESSAGE",
+        action: "원자료와 다시 대조해 주세요.",
+        sectionKey: "solution",
+        sourceIds: [source.id],
+      };
+      record.plans[0].review = [finding];
+      const result = await buildPreparationPackage(store, record.id, request());
+      expect(result.manifest.plan.draft).toBe(true);
+      expect(result.manifest.plan.draftReasons).toContain(
+        category === "custom-error"
+          ? "STORED_REVIEW_ERROR"
+          : category === "confirmation"
+            ? "STORED_REVIEW_CONFIRMATION"
+            : "STORED_SEMANTIC_FINDINGS",
+      );
+      const zip = await JSZip.loadAsync(result.buffer);
+      expect(await zip.file("plan.md")!.async("string")).toContain("DRAFT");
+      const review = await zip.file("review.md")!.async("string");
+      expect(review).toContain("원고 저장 당시 검토 의견");
+      expect(review).toContain(finding.message);
+      expect(review).toContain(finding.action);
+      expect(record.plans[0].review).toEqual([finding]);
+    },
+  );
   it("creates readable ZIP entries whose manifest hashes bind exact archived bytes", async () => {
     const result = await buildPreparationPackage(store, record.id, request());
     expect(result.fileName).toBe(PACKAGE_DOWNLOAD_NAME);

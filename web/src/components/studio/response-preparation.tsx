@@ -9,6 +9,10 @@ import type { AgencyRequestRecord } from "@/lib/studio-agency-records";
 import type { StudioCase } from "@/lib/studio-schema";
 import { compareTextExact } from "@/lib/studio-plan-diff";
 import {
+  validateGuidedWorkflowTarget,
+  type GuidedWorkflowTarget,
+} from "@/lib/studio-guided-followup";
+import {
   buildLocalResponseDraft,
   preparedResponseBody,
   responsePreparationContext,
@@ -504,11 +508,56 @@ export function ResponsePreparationComparison({
   );
 }
 
-type Form = { input: ResponsePreparationInput; baseline: string; nonce: string; binding: string };
+type Form = {
+  input: ResponsePreparationInput;
+  baseline: string;
+  nonce: string;
+  binding: string;
+  request: AgencyRequestRecord;
+};
+
+/** Opens only one exact current-request draft. Older or ambiguous drafts remain readable. */
+export function guidedResponsePreparation(company: StudioCase, target?: GuidedWorkflowTarget) {
+  if (target?.kind !== "response" || !validateGuidedWorkflowTarget(company, target).valid)
+    return null;
+  const request = latestResponseRequests(company).find(
+    (entry) => entry.id === target.requestVersionId,
+  )!;
+  const records = company.responsePreparations ?? [];
+  const roots = records.filter(
+    (entry) => entry.previousVersionId === null && entry.requestRecordId === target.requestRecordId,
+  );
+  const previous =
+    roots.length === 1
+      ? (records.filter((entry) => entry.preparationId === roots[0].preparationId).at(-1) ?? null)
+      : null;
+  const reason =
+    records.length >= responsePreparationLimits.versions
+      ? "답변 준비 버전 한도에 도달했습니다. 기존 준비안을 확인해 주세요."
+      : roots.length > 1
+        ? "이 요청의 준비안이 여러 개입니다. 아래에서 이어 쓸 준비안을 선택해 주세요."
+        : previous && previous.requestVersionId !== target.requestVersionId
+          ? "이전 요청 기준의 준비안이 있습니다. 정정된 요청과 비교한 뒤 새 버전 작성을 선택해 주세요."
+          : "";
+  return { request, previous, canEdit: !reason, reason };
+}
+
+/** Refresh display only after a valid entry. Never writes or reopens an editor. */
+export function guidedResponseGuidance(
+  company: StudioCase,
+  target: GuidedWorkflowTarget | undefined,
+  acceptedEntry: boolean,
+) {
+  return acceptedEntry && target
+    ? guidedResponsePreparation(company, { ...target, companyRevision: company.revision })
+    : null;
+}
+
 type Props = Pick<PanelProps, "company" | "mutate"> & {
   blockedReason: string;
   onDirtyChange: (dirty: boolean) => void;
   onBusyChange?: (message: string) => void;
+  guidedTarget?: GuidedWorkflowTarget;
 };
 
 export function ResponsePreparations({
@@ -517,8 +566,30 @@ export function ResponsePreparations({
   blockedReason,
   onDirtyChange,
   onBusyChange,
+  guidedTarget,
 }: Props) {
-  const [form, setForm] = useState<Form | null>(null);
+  const [guidedSelection] = useState(() => guidedResponsePreparation(company, guidedTarget));
+  const [entryTarget] = useState(guidedTarget);
+  const [form, setForm] = useState<Form | null>(() => {
+    if (!guidedSelection?.canEdit || blockedReason) return null;
+    const input = responseInputFor(guidedSelection.request, guidedSelection.previous ?? undefined);
+    return {
+      input,
+      baseline: JSON.stringify(input),
+      nonce: crypto.randomUUID(),
+      binding: `${company.id}:${company.revision}`,
+      request: structuredClone(guidedSelection.request),
+    };
+  });
+  const [guidedFocus] = useState(() =>
+    !guidedSelection
+      ? null
+      : form
+        ? "response-preparation-title"
+        : guidedSelection.previous
+          ? `response-preparation-${guidedSelection.previous.id}`
+          : `response-request-${guidedSelection.request.id}`,
+  );
   const [saving, setSaving] = useState(false);
   const [suggestionBusy, setSuggestionBusy] = useState(false);
   const [error, setError] = useState("");
@@ -527,6 +598,12 @@ export function ResponsePreparations({
   const registrations = useRef(new Map<string, string>());
   const binding = `${company.id}:${company.revision}`;
   const context = useRef(binding);
+  useEffect(() => {
+    if (!guidedFocus) return;
+    const element = document.getElementById(guidedFocus);
+    element?.scrollIntoView({ block: "start" });
+    element?.focus({ preventScroll: true });
+  }, [guidedFocus]);
   useEffect(() => {
     mounted.current = true;
     return () => {
@@ -543,9 +620,18 @@ export function ResponsePreparations({
   const records = company.responsePreparations ?? [];
   const roots = records.filter((entry) => entry.previousVersionId === null);
   const selectedRequest = form
-    ? requests.find((entry) => entry.id === form.input.requestVersionId)
+    ? (company.agencyRecords.find(
+        (entry): entry is AgencyRequestRecord =>
+          (entry.kind === "request" || entry.kind === "request-correction") &&
+          entry.id === form.input.requestVersionId,
+      ) ?? form.request)
     : undefined;
   const limit = records.length >= responsePreparationLimits.versions;
+  const currentGuidance = guidedResponseGuidance(
+    company,
+    guidedTarget,
+    !!guidedSelection && JSON.stringify(entryTarget) === JSON.stringify(guidedTarget),
+  );
   function open(request: AgencyRequestRecord, previous?: ResponsePreparation) {
     if (
       blocked ||
@@ -554,7 +640,13 @@ export function ResponsePreparations({
     )
       return;
     const input = responseInputFor(request, previous);
-    setForm({ input, baseline: JSON.stringify(input), nonce: crypto.randomUUID(), binding });
+    setForm({
+      input,
+      baseline: JSON.stringify(input),
+      nonce: crypto.randomUUID(),
+      binding,
+      request: structuredClone(request),
+    });
     setError("");
   }
   function edit(input: ResponsePreparationInput) {
@@ -642,43 +734,78 @@ export function ResponsePreparations({
         등록할 수 있습니다. 발송 여부와 내용 검토는 별도로 확인합니다.
       </Notice>
       {blockedReason && <p className="text-sm text-amber-900">{blockedReason}</p>}
+      {currentGuidance?.reason && (
+        <p className="text-sm text-amber-900">{currentGuidance.reason}</p>
+      )}
+      {guidedTarget?.kind === "response" &&
+        (!guidedSelection ||
+          JSON.stringify(entryTarget) !== JSON.stringify(guidedTarget) ||
+          !validateGuidedWorkflowTarget(company, {
+            ...guidedTarget,
+            companyRevision: company.revision,
+          }).valid) && (
+          <p role="alert" className="text-sm text-amber-900">
+            기업이나 요청 버전이 변경되었습니다. 입력은 보존하며 다른 요청으로 바꾸지 않습니다.
+          </p>
+        )}
       {limit && (
         <p className="text-sm text-amber-900">
           답변 준비 버전 50개 한도에 도달했습니다. 이전 기록은 보존합니다.
         </p>
       )}
       {!requests.length && <p className="text-sm">기관 요청 원문을 먼저 기록해 주세요.</p>}
-      {requests.map((request) => (
-        <div
-          key={request.id}
-          className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-muted/25 p-3"
-        >
-          <a className="text-sm underline" href={`#agency-record-${request.id}`}>
-            {request.title} · 요청 v{request.version}
-          </a>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            disabled={
-              blocked ||
-              limit ||
-              roots.some((root) => root.requestRecordId === request.requestRecordId)
-            }
-            onClick={() => open(request)}
+      {requests.map((request) => {
+        const selection = guidedResponsePreparation(company, {
+          caseId: company.id,
+          companyRevision: company.revision,
+          kind: "response",
+          requestRecordId: request.requestRecordId,
+          requestVersionId: request.id,
+        });
+        const hasPreparation = roots.some(
+          (root) => root.requestRecordId === request.requestRecordId,
+        );
+        return (
+          <div
+            key={request.id}
+            id={`response-request-${request.id}`}
+            tabIndex={-1}
+            className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-muted/25 p-3"
           >
-            {roots.some((root) => root.requestRecordId === request.requestRecordId)
-              ? "아래 준비안에서 이어 작성"
-              : "이 요청의 답변 준비"}
-          </Button>
-        </div>
-      ))}
+            <a className="text-sm underline" href={`#agency-record-${request.id}`}>
+              {request.title} · 요청 v{request.version}
+            </a>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-auto min-h-11 max-w-full whitespace-normal break-words"
+              disabled={blocked || limit || !selection?.canEdit}
+              onClick={() => {
+                if (selection?.canEdit) open(request, selection.previous ?? undefined);
+              }}
+            >
+              {hasPreparation
+                ? selection?.canEdit
+                  ? "이 요청의 답변 이어 작성"
+                  : "아래 준비안에서 이어 작성"
+                : "이 요청의 답변 준비"}
+            </Button>
+          </div>
+        );
+      })}
       {form && selectedRequest && (
         <fieldset disabled={blocked} className="space-y-4 rounded-xl border border-primary/30 p-4">
           <legend className="px-2 font-semibold">답변 준비 편집</legend>
           <p className="text-xs">
             기준 요청: {selectedRequest.title} · 요청 v{selectedRequest.version}
           </p>
+          {form.binding !== binding && (
+            <p role="alert" className="text-sm text-amber-900">
+              기업 기록이 변경되어 저장을 멈췄습니다. 작성한 내용은 보존했습니다. 최신 원문을 확인한
+              뒤 다시 작성해 주세요.
+            </p>
+          )}
           <div className="space-y-2">
             <Label htmlFor="response-preparation-title">답변 준비안 제목 *</Label>
             <Input
@@ -740,7 +867,7 @@ export function ResponsePreparations({
             합쳐진 답변 본문 {preparedResponseBody(form.input).length.toLocaleString()} / 20,000자
           </p>
           <div className="flex flex-wrap gap-2">
-            <Button type="button" onClick={() => void save()}>
+            <Button type="button" disabled={form.binding !== binding} onClick={() => void save()}>
               답변 준비 새 버전 저장
             </Button>
             <Button
@@ -773,7 +900,12 @@ export function ResponsePreparations({
         );
         const registered = preparedResponseAlreadyRegistered(company, record);
         return (
-          <article key={root.id} className="space-y-3 rounded-xl border p-4">
+          <article
+            key={root.id}
+            id={`response-preparation-${record.id}`}
+            tabIndex={-1}
+            className="space-y-3 rounded-xl border p-4"
+          >
             <h4 className="font-semibold">
               {record.title} · 준비 v{record.version}
             </h4>
@@ -792,7 +924,7 @@ export function ResponsePreparations({
                 ))}
               </ul>
             )}
-            <details>
+            <details open={guidedSelection?.previous?.id === record.id || undefined}>
               <summary className="cursor-pointer text-sm">준비한 답변 초안 펼치기</summary>
               <pre className="mt-2 max-h-96 overflow-auto whitespace-pre-wrap text-sm leading-6">
                 {preparedResponseBody(record)}
@@ -809,6 +941,7 @@ export function ResponsePreparations({
                 type="button"
                 variant="outline"
                 size="sm"
+                className="h-auto min-h-11 max-w-full whitespace-normal break-words"
                 disabled={blocked || limit || !request}
                 onClick={() => {
                   if (request) open(request, record);

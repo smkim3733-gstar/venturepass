@@ -38,6 +38,9 @@ let directory: string;
 let company: StudioCase;
 const bytes = Buffer.from("%PDF-1.7\nSYNTHETIC ORIGINAL");
 const hash = (value: Buffer | string) => createHash("sha256").update(value).digest("hex");
+// These cases perform several real Windows original-protection subprocesses.
+// Keep the same assertions and non-Windows budget, while allowing bounded local I/O.
+const originalIoTimeout = process.platform === "win32" ? 15000 : 5000;
 const store = () => state.store!;
 function mutate(input: CaseMutation) {
   company = store().mutate(company.id, input, () => []);
@@ -501,50 +504,58 @@ describe("신청회차 API/실제 합성 SQLite", () => {
       "unverified",
     );
   });
-  it("선택 원본은 삭제/같은 크기 변조를 거부하고 이전 SHA는 유지한다", async () => {
-    const source = original();
-    const selected = plan(source);
-    const first = await cycle();
-    await save(submission(first.id, selected.id, [source.id]));
-    const before = structuredClone(company);
-    const deleted = await patch({
-      action: "delete-source",
-      revision: company.revision,
-      sourceId: source.id,
-    });
-    expect(deleted.status).toBe(409);
-    expect((await deleted.json()).code).toBe("APPLICATION_SOURCE_REFERENCED");
-    writeFileSync(
-      join(directory, "originals", company.id, `${source.id}.bin`),
-      Buffer.alloc(bytes.length, 65),
-    );
-    const changed = await patch(submission(first.id, selected.id, [source.id]));
-    expect(changed.status).toBe(409);
-    expect((await changed.json()).code).toBe("APPLICATION_ORIGINAL_CHANGED");
-    expect(store().get(company.id)).toEqual(before);
-  });
-  it("여러 파일 수집 중 먼저 읽은 원본이 변하면 전체 제출 기록을 버린다", async () => {
-    const one = original();
-    const selected = plan(one);
-    const two = original("두 번째 자료");
-    const first = await cycle();
-    const before = structuredClone(company);
-    const reader = store().originalForVentureInput.bind(store());
-    let changed = false;
-    vi.spyOn(store(), "originalForVentureInput").mockImplementation((id, sourceId) => {
-      const result = reader(id, sourceId);
-      if (sourceId === two.id && !changed) {
-        changed = true;
-        writeFileSync(
-          join(directory, "originals", company.id, `${one.id}.bin`),
-          Buffer.alloc(bytes.length, 66),
-        );
-      }
-      return result;
-    });
-    expect((await patch(submission(first.id, selected.id, [one.id, two.id]))).status).toBe(409);
-    expect(store().get(company.id)).toEqual(before);
-  });
+  it(
+    "선택 원본은 삭제/같은 크기 변조를 거부하고 이전 SHA는 유지한다",
+    async () => {
+      const source = original();
+      const selected = plan(source);
+      const first = await cycle();
+      await save(submission(first.id, selected.id, [source.id]));
+      const before = structuredClone(company);
+      const deleted = await patch({
+        action: "delete-source",
+        revision: company.revision,
+        sourceId: source.id,
+      });
+      expect(deleted.status).toBe(409);
+      expect((await deleted.json()).code).toBe("APPLICATION_SOURCE_REFERENCED");
+      writeFileSync(
+        join(directory, "originals", company.id, `${source.id}.bin`),
+        Buffer.alloc(bytes.length, 65),
+      );
+      const changed = await patch(submission(first.id, selected.id, [source.id]));
+      expect(changed.status).toBe(409);
+      expect((await changed.json()).code).toBe("APPLICATION_ORIGINAL_CHANGED");
+      expect(store().get(company.id)).toEqual(before);
+    },
+    originalIoTimeout,
+  );
+  it(
+    "여러 파일 수집 중 먼저 읽은 원본이 변하면 전체 제출 기록을 버린다",
+    async () => {
+      const one = original();
+      const selected = plan(one);
+      const two = original("두 번째 자료");
+      const first = await cycle();
+      const before = structuredClone(company);
+      const reader = store().originalForVentureInput.bind(store());
+      let changed = false;
+      vi.spyOn(store(), "originalForVentureInput").mockImplementation((id, sourceId) => {
+        const result = reader(id, sourceId);
+        if (sourceId === two.id && !changed) {
+          changed = true;
+          writeFileSync(
+            join(directory, "originals", company.id, `${one.id}.bin`),
+            Buffer.alloc(bytes.length, 66),
+          );
+        }
+        return result;
+      });
+      expect((await patch(submission(first.id, selected.id, [one.id, two.id]))).status).toBe(409);
+      expect(store().get(company.id)).toEqual(before);
+    },
+    originalIoTimeout,
+  );
   it.each(["original", "plan"] as const)(
     "소명에 고정된 %s 변조는 제출 기록에서 거부한다",
     async (target) => {
@@ -611,6 +622,7 @@ describe("신청회차 API/실제 합성 SQLite", () => {
       expect((await response.json()).code).toBe("AGENCY_EVIDENCE_CHANGED");
       expect(store().get(company.id)).toEqual(before);
     },
+    originalIoTimeout,
   );
   it("다른 회사 ID는 안전 원본 reader를 호출하기 전에 거부한다", async () => {
     const source = original();

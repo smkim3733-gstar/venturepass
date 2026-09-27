@@ -12,6 +12,8 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Local customer data and one-off verification artifacts are not application source.
+    ".venture-pass/**",
   ]),
 ]);
 

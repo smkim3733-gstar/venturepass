@@ -172,16 +172,21 @@ describe("로컬 OCR 미리보기 API·임시 저장소", () => {
     assertUnchanged(before);
   });
 
-  it("미리보기를 다시 요청해도 저장 본문·버전·완료 근거가 생기지 않는다", async () => {
-    expect((await previewRequest()).status).toBe(200);
-    expect((await previewRequest()).status).toBe(200);
-    expect(state.runOcr).toHaveBeenCalledTimes(2);
-    assertUnchanged();
-    expect(state.store!.get(company.id).sources[0]).toMatchObject({
-      extraction: "pending",
-      text: "",
-    });
-  });
+  it(
+    "미리보기를 다시 요청해도 저장 본문·버전·완료 근거가 생기지 않는다",
+    async () => {
+      expect((await previewRequest()).status).toBe(200);
+      expect((await previewRequest()).status).toBe(200);
+      expect(state.runOcr).toHaveBeenCalledTimes(2);
+      assertUnchanged();
+      expect(state.store!.get(company.id).sources[0]).toMatchObject({
+        extraction: "pending",
+        text: "",
+      });
+    },
+    // Both previews perform the real Windows file-protection subprocess checks.
+    process.platform === "win32" ? 15_000 : 5_000,
+  );
 
   it.each([
     {},
@@ -288,30 +293,34 @@ describe("로컬 OCR 미리보기 API·임시 저장소", () => {
     assertUnchanged();
   });
 
-  it("OCR 시작 후 회사 입력 잠금이 생겨도 결과 반환을 거부한다", async () => {
-    let release: (() => void) | undefined;
-    let held: Promise<void> | undefined;
-    state.runOcr.mockImplementationOnce(async () => {
-      held = withVentureInputCompanyLock(
-        company.id,
-        () =>
-          new Promise<void>((done) => {
-            release = done;
-          }),
-      );
-      return ocrResult();
-    });
-    try {
-      const response = await previewRequest();
-      expect(response.status).toBe(409);
-      expect(await response.json()).toMatchObject({ code: "INPUT_IN_PROGRESS" });
-      assertUnchanged();
-    } finally {
-      release?.();
-      await held;
-    }
-    expect((await previewRequest()).status).toBe(200);
-  });
+  it(
+    "OCR 시작 후 회사 입력 잠금이 생겨도 결과 반환을 거부한다",
+    async () => {
+      let release: (() => void) | undefined;
+      let held: Promise<void> | undefined;
+      state.runOcr.mockImplementationOnce(async () => {
+        held = withVentureInputCompanyLock(
+          company.id,
+          () =>
+            new Promise<void>((done) => {
+              release = done;
+            }),
+        );
+        return ocrResult();
+      });
+      try {
+        const response = await previewRequest();
+        expect(response.status).toBe(409);
+        expect(await response.json()).toMatchObject({ code: "INPUT_IN_PROGRESS" });
+        assertUnchanged();
+      } finally {
+        release?.();
+        await held;
+      }
+      expect((await previewRequest()).status).toBe(200);
+    },
+    process.platform === "win32" ? 15_000 : 5_000,
+  );
 
   it("OCR 중 동일 크기의 원본 변경도 SHA 대조로 결과를 폐기한다", async () => {
     const replacement = Buffer.from(bytes);

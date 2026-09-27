@@ -1,5 +1,5 @@
 import { randomUUID, createHash } from "node:crypto";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -7,6 +7,8 @@ import { StudioStore } from "./studio-storage";
 import { emptyProfile, type StudioCase } from "./studio-schema";
 import type { VentureScreenSnapshot } from "./venturein-inspection";
 import type { VentureSessionStatus } from "./venturein-schema";
+import { preparedPackageRecordSchema } from "./studio-prepared-package-types";
+import { StudioError } from "./studio-http";
 
 vi.mock("server-only", () => ({}));
 const state = vi.hoisted(() => ({
@@ -66,6 +68,70 @@ describe("검토한 공식 입력값의 단회 실행 API", () => {
   };
   const execute = (token: string) =>
     POST(request({ action: "execute", token, approved: true }), context());
+  const pinnedPackage = (originals = new Map<string, Buffer>()) => {
+    const sha = (value: string | Buffer) => createHash("sha256").update(value).digest("hex");
+    const buffer = Buffer.from("synthetic pinned archive");
+    const plan = company.plans.at(-1)!;
+    const input = {
+      revision: company.revision,
+      planId: plan.id,
+      sourceIds: [...originals.keys()],
+      clientRequestId: randomUUID(),
+    };
+    const record = preparedPackageRecordSchema.parse({
+      id: randomUUID(),
+      version: 1,
+      caseId: company.id,
+      caseRevision: company.revision,
+      clientRequestId: input.clientRequestId,
+      input,
+      requestDigest: sha(JSON.stringify(input)),
+      createdAt: new Date().toISOString(),
+      scope: "local-preparation-only",
+      company: { profile: company.profile, snapshotSha256: sha(JSON.stringify(company)) },
+      plan: { ...plan, contentSha256: sha(JSON.stringify(plan.content)) },
+      sourceIds: input.sourceIds,
+      sources: input.sourceIds.map((id) => {
+        const source = company.sources.find((item) => item.id === id)!;
+        const { text, ...metadata } = source;
+        return {
+          source: metadata,
+          sourceSha256: sha(JSON.stringify(source)),
+          textSha256: sha(text),
+          originalSha256: sha(originals.get(id)!),
+          originalSizeBytes: originals.get(id)!.byteLength,
+        };
+      }),
+      review: {
+        storedFindings: plan.review,
+        currentRuleFindings: [],
+        confirmedAt: plan.confirmedAt,
+        unconfirmedSectionKeys: [],
+        currentEvidence: true,
+        latestPlanVersion: true,
+        draft: false,
+        draftReasons: [],
+      },
+      zip: {
+        fileName: "venturepass-preparation-package.zip",
+        sha256: sha(buffer),
+        sizeBytes: buffer.byteLength,
+      },
+    });
+    const download = vi
+      .spyOn(state.store!, "downloadPreparedPackage")
+      .mockImplementation((caseId, id) => {
+        if (caseId !== company.id || id !== record.id)
+          throw new StudioError("합성 준비본 없음", 404, "PREPARED_PACKAGE_NOT_FOUND");
+        return { record: structuredClone(record), buffer: Buffer.from(buffer) };
+      });
+    return { record, buffer, download };
+  };
+  const preparePinned = async (preparedPackageId: string) => {
+    const response = await POST(request({ ...prepareBody(), preparedPackageId }), context());
+    expect(response.status).toBe(200);
+    return (await response.json()).review;
+  };
   const alter = (change: (data: ReturnType<typeof JSON.parse>) => void) => {
     const envelope = state.store!.getVentureWorkflowEnvelope(company.id);
     const data = JSON.parse(envelope.body!);
@@ -1444,5 +1510,218 @@ describe("검토한 공식 입력값의 단회 실행 API", () => {
     ).json();
     expect(exported.latestExecutionExternalWritesPerformed).toBeNull();
     expect(exported.execution.touchedFieldKeys).toEqual(["company", "technology"]);
+  });
+
+  it("준비본 로컬 대조는 실행·화면 접근·승인 발급 없이 기존 v1 승인을 보존한다", async () => {
+    const prior = await prepare();
+    const pinned = pinnedPackage();
+    const revision = prepareBody().revision;
+    const response = await POST(
+      request({
+        ...prepareBody(),
+        action: "compare-prepared-package",
+        preparedPackageId: pinned.record.id,
+      }),
+      context(),
+    );
+    expect(response.status).toBe(200);
+    expect((await response.json()).preparedComparison).toMatchObject({
+      caseId: company.id,
+      workflowRevision: revision,
+      companyRevision: company.revision,
+      accountRevision: state.accountRevision,
+      snapshotId: screen.id,
+      result: {
+        matched: true,
+        binding: { targets: [{ fieldKey: "company" }, { fieldKey: "technology" }] },
+      },
+    });
+    expect(prepareBody().revision).toBe(revision);
+    expect(getVentureWorkflow(company.id).execution).toBeNull();
+    expect(state.fill).not.toHaveBeenCalled();
+    expect(state.compare).not.toHaveBeenCalled();
+    expect(state.inspect).not.toHaveBeenCalled();
+    const done = await (await execute(prior.token)).json();
+    expect(done.execution.manifest.version).toBe(1);
+    expect(done.execution.manifest.preparedPackage).toBeUndefined();
+  });
+
+  it("준비본 대조 실패는 불일치를 표시하고 명시한 v2 준비를 v1으로 낮추지 않는다", async () => {
+    const pinned = pinnedPackage();
+    pinned.record.company.profile.technologySummary = "보관된 다른 내용";
+    const compared = await POST(
+      request({
+        ...prepareBody(),
+        action: "compare-prepared-package",
+        preparedPackageId: pinned.record.id,
+      }),
+      context(),
+    );
+    expect(compared.status).toBe(200);
+    expect((await compared.json()).preparedComparison.result).toMatchObject({
+      matched: false,
+      binding: null,
+      digest: null,
+      issues: [{ code: "PROFILE_VALUE_MISMATCH", fieldKey: "technology" }],
+    });
+    const refused = await POST(
+      request({ ...prepareBody(), preparedPackageId: pinned.record.id }),
+      context(),
+    );
+    expect(refused.status).toBe(409);
+    expect((await refused.json()).code).toBe("PREPARED_PACKAGE_MISMATCH");
+    expect(getVentureWorkflow(company.id).execution).toBeNull();
+    expect(state.fill).not.toHaveBeenCalled();
+  });
+
+  it("같은 회사 revision·원고 ID·version에서도 원고 내용이 바뀌면 v2 승인을 거부한다", async () => {
+    const pinned = pinnedPackage();
+    const review = await preparePinned(pinned.record.id);
+    const get = state.store!.get.bind(state.store!);
+    vi.spyOn(state.store!, "get").mockImplementation((id) => {
+      const value = get(id);
+      if (id === company.id) value.plans.at(-1)!.content.summary += " 내용 변경";
+      return value;
+    });
+    const response = await execute(review.token);
+    expect(response.status).toBe(409);
+    expect((await response.json()).code).toBe("PREPARED_PACKAGE_MISMATCH");
+    expect(state.fill).not.toHaveBeenCalled();
+    expect((await execute(review.token)).status).toBe(410);
+  });
+
+  it.each(["company", "account", "session", "snapshot", "mapping"])(
+    "v2 검토 후 %s 변경은 기존 승인으로 입력할 수 없다",
+    async (change) => {
+      const pinned = pinnedPackage();
+      const review = await preparePinned(pinned.record.id);
+      if (change === "company")
+        company = state.store!.mutate(
+          company.id,
+          { action: "stage", revision: company.revision, stage: "preparing" },
+          () => [],
+        );
+      if (change === "account") state.accountRevision += 1;
+      if (change === "session")
+        state.session = { ...state.session!, startedAt: new Date(Date.now() + 1000).toISOString() };
+      if (change === "snapshot")
+        alter((data) => {
+          data.snapshot.screen.id = randomUUID();
+          data.draft.snapshotId = data.snapshot.screen.id;
+        });
+      if (change === "mapping")
+        alter((data) => {
+          data.draft.textMappings[1].source.property = "companyName";
+        });
+      expect((await execute(review.token)).status).toBe(409);
+      expect(state.fill).not.toHaveBeenCalled();
+      expect((await execute(review.token)).status).toBe(410);
+    },
+  );
+
+  it.each(["delete", "same-size-content"])(
+    "v2 승인 후 현재 원본 %s 변경은 보관 ZIP이 있어도 전송하지 않는다",
+    async (change) => {
+      const original = addOriginal();
+      const pinned = pinnedPackage(new Map([[original.source.id, original.content]]));
+      const review = await preparePinned(pinned.record.id);
+      if (change === "delete") unlinkSync(original.path);
+      else writeFileSync(original.path, Buffer.alloc(original.content.byteLength, 120));
+      expect((await execute(review.token)).status).toBe(409);
+      expect(state.fill).not.toHaveBeenCalled();
+      expect((await execute(review.token)).status).toBe(410);
+    },
+  );
+
+  const partialPinned = async () => {
+    const pinned = pinnedPackage();
+    const review = await preparePinned(pinned.record.id);
+    state.fill.mockResolvedValueOnce({
+      status: "stopped",
+      completedFieldKeys: ["company"],
+      touchedFieldKeys: ["company"],
+      attemptedFieldKey: "company",
+      code: "TARGET_CHANGED",
+    });
+    const response = await execute(review.token);
+    expect(response.status).toBe(200);
+    const execution = (await response.json()).execution;
+    comparisonStates(["matched", "empty"]);
+    return { ...pinned, review, execution };
+  };
+
+  it("v2 부분 복구는 원래 준비본·전체 두 항목을 보존하고 새 빈칸 한 개만 승인한다", async () => {
+    const first = await partialPinned();
+    const response = await recoveryPrepare();
+    expect(response.status).toBe(200);
+    const { review } = await response.json();
+    expect(review.preparedPackage).toEqual(first.review.preparedPackage);
+    expect(
+      review.preparedPackage.binding.targets.map((item: { fieldKey: string }) => item.fieldKey),
+    ).toEqual(["company", "technology"]);
+    expect(review.fields.map((item: { fieldKey: string }) => item.fieldKey)).toEqual([
+      "technology",
+    ]);
+    const result = await (await recoveryExecute(review.token)).json();
+    expect(result.execution.status).toBe("completed");
+    expect(result.execution.manifest).toEqual(first.execution.manifest);
+    expect(result.execution.requestedFieldKeys).toEqual(["technology"]);
+    expect(result.execution.preservedFieldKeys).toEqual(["company"]);
+    expect(result.execution.previousAttempts[0].id).toBe(first.execution.id);
+    expect(state.fill).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(["missing", "other-version", "protected-value"])(
+    "v2 부분 복구에서 원래 준비본 %s 변경을 전체 범위로 다시 확인한다",
+    async (change) => {
+      const first = await partialPinned();
+      if (change === "missing")
+        first.download.mockImplementation(() => {
+          throw new StudioError("합성 준비본 없음", 404, "PREPARED_PACKAGE_NOT_FOUND");
+        });
+      if (change === "other-version") first.record.version += 1;
+      if (change === "protected-value")
+        first.record.company.profile.companyName = "이미 입력된 보호 항목도 변경됨";
+      expect((await recoveryPrepare()).status).toBe(change === "missing" ? 404 : 409);
+      expect(state.compare).not.toHaveBeenCalled();
+      expect(state.fill).toHaveBeenCalledTimes(1);
+      expect(getVentureWorkflow(company.id).execution!.manifest).toEqual(first.execution.manifest);
+    },
+  );
+
+  it("v1 부분 복구는 준비본이 있어도 조회하거나 권한을 자동 결합하지 않는다", async () => {
+    const first = await partial();
+    const pinned = pinnedPackage();
+    const { review } = await (await recoveryPrepare()).json();
+    expect(review.preparedPackage).toBeUndefined();
+    const result = await (await recoveryExecute(review.token)).json();
+    expect(result.execution.manifest).toEqual(first.manifest);
+    expect(result.execution.manifest.version).toBe(1);
+    expect(pinned.download).not.toHaveBeenCalled();
+  });
+
+  it("v2 runner 도중 준비본 변경은 완료로 확정하지 않고 원래 manifest와 unknown을 보관한다", async () => {
+    const pinned = pinnedPackage();
+    const review = await preparePinned(pinned.record.id);
+    state.fill.mockImplementationOnce(async (_caseId, _input, assertCurrent) => {
+      assertCurrent();
+      pinned.buffer[0] ^= 1;
+      return {
+        status: "completed",
+        completedFieldKeys: ["company", "technology"],
+        touchedFieldKeys: ["company", "technology"],
+        attemptedFieldKey: null,
+        code: null,
+      };
+    });
+    const result = await (await execute(review.token)).json();
+    expect(result.execution).toMatchObject({
+      status: "stopped",
+      code: "INPUT_RESULT_UNKNOWN",
+      manifest: { version: 2, preparedPackage: review.preparedPackage },
+    });
+    expect((await recoveryPrepare()).status).toBe(409);
+    expect((await execute(review.token)).status).toBe(410);
+    expect(state.fill).toHaveBeenCalledTimes(1);
   });
 });

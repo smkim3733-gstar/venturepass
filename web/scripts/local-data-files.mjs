@@ -106,9 +106,9 @@ const sameStat = (a, b) =>
   a.ctimeNs === b.ctimeNs &&
   b.nlink === 1n &&
   b.isFile();
-export function readPrefixSafe(file, count) {
+export function readPrefixSafe(file, count, maximum = limits.dbBytes) {
   const before = safePath(file);
-  if (before.size < BigInt(count) || before.size > BigInt(limits.dbBytes)) fail("DATABASE_INVALID");
+  if (before.size < BigInt(count) || before.size > BigInt(maximum)) fail("DATABASE_INVALID");
   const descriptor = openSync(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
   try {
     const bytes = Buffer.alloc(count);
@@ -124,7 +124,20 @@ export function readPrefixSafe(file, count) {
     closeSync(descriptor);
   }
 }
-export function readSafe(file, maximum, destination = null, collect = false) {
+/**
+ * @param {string} file
+ * @param {number} maximum
+ * @param {string | null} [destination]
+ * @param {boolean} [collect]
+ * @param {((identity: import('node:fs').BigIntStats) => void) | null} [onDestinationOpened]
+ */
+export function readSafe(
+  file,
+  maximum,
+  destination = null,
+  collect = false,
+  onDestinationOpened = null,
+) {
   const before = safePath(file);
   if (before.size > BigInt(maximum)) fail("FILE_LIMIT");
   let reader;
@@ -142,6 +155,7 @@ export function readSafe(file, maximum, destination = null, collect = false) {
         constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL,
         0o600,
       );
+      onDestinationOpened?.(fstatSync(writer, { bigint: true }));
     }
     const buffer = Buffer.alloc(64 * 1024);
     for (;;) {

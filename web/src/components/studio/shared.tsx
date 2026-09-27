@@ -113,13 +113,18 @@ export async function studioFetch<T>(url: string, init?: RequestInit): Promise<T
     .json()
     .catch(() => ({ error: "서버 응답을 확인하지 못했습니다. 잠시 후 다시 시도해 주세요." }));
   if (!response.ok)
-    throw new StudioApiError(body.error || "요청을 처리하지 못했습니다.", response.status);
+    throw new StudioApiError(
+      body.error || "요청을 처리하지 못했습니다.",
+      response.status,
+      typeof body.code === "string" && /^[A-Z0-9_]{1,100}$/.test(body.code) ? body.code : undefined,
+    );
   return body as T;
 }
 export class StudioApiError extends Error {
   constructor(
     message: string,
     public status: number,
+    public code?: string,
   ) {
     super(message);
   }

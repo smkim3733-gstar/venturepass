@@ -141,6 +141,27 @@ export async function buildPreparationPackage(
       ...(findings.some((finding) => finding.category === "confirmation")
         ? ["REVIEW_CONFIRMATION"]
         : []),
+      ...(plan.review.some((finding) => finding.severity === "error")
+        ? ["STORED_REVIEW_ERROR"]
+        : []),
+      ...(plan.review.some(
+        (finding) => finding.category === "confirmation" && finding.severity !== "info",
+      )
+        ? ["STORED_REVIEW_CONFIRMATION"]
+        : []),
+      ...(plan.review.some(
+        (finding) =>
+          finding.severity !== "info" &&
+          [
+            "semantic-evidence",
+            "contradiction",
+            "timeline",
+            "financial-plan",
+            "fact-vs-plan",
+          ].includes(finding.category),
+      )
+        ? ["STORED_SEMANTIC_FINDINGS"]
+        : []),
       ...(evidence.some((item) => item.state !== "matched") ? ["INVALID_REFERENCE"] : []),
     ];
     const draft = draftReasons.length > 0;
@@ -182,7 +203,17 @@ export async function buildPreparationPackage(
         "",
       ]),
       "## 원고의 추가 준비 과제",
+      "",
       ...plan.content.actionItems.map((item) => quote(item)),
+      "",
+      "## 원고 저장 당시 검토 의견",
+      "AI 의미 검토를 포함해 원고 버전에 저장된 의견입니다. 현재 규칙 점검과 별도로 보존하며 해결·사실 확인 완료로 바꾸지 않습니다.",
+      ...plan.review.flatMap((finding) => [
+        `### ${finding.severity} · ${finding.category}`,
+        quote(finding.message),
+        quote(finding.action),
+        "",
+      ]),
       "",
       "## 현재 진단에서 연결한 미완료 자료보강 업무",
       ...linkedTasks.flatMap((task) => [quote(task.title), quote(task.notes), ""]),

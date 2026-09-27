@@ -8,6 +8,7 @@ import {
   readFileSync,
   readdirSync,
   rmSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -15,6 +16,7 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import JSZip from "jszip";
 
 const script = fileURLToPath(new URL("./local-data.mjs", import.meta.url));
 const sha = (value) => createHash("sha256").update(value).digest("hex");
@@ -154,12 +156,19 @@ function fixture(root) {
 }
 
 function snapshot(database) {
-  return ["studio_cases", "venture_accounts", "venture_workflows"].map((table) =>
-    database.prepare(`SELECT * FROM ${table} ORDER BY 1`).all(),
-  );
+  const tables = ["studio_cases", "venture_accounts", "venture_workflows"];
+  if (
+    database
+      .prepare(
+        "SELECT name FROM sqlite_schema WHERE type='table' AND name='studio_prepared_packages'",
+      )
+      .get()
+  )
+    tables.push("studio_prepared_packages");
+  return tables.map((table) => database.prepare(`SELECT * FROM ${table} ORDER BY 1`).all());
 }
 
-function cli(args, temporaryRoot, forbidden, ok = true) {
+function cli(args, temporaryRoot, forbidden, ok = true, originals = 1) {
   const result = spawnSync(process.execPath, [script, ...args], {
     cwd: path.dirname(script),
     windowsHide: true,
@@ -190,7 +199,7 @@ function cli(args, temporaryRoot, forbidden, ok = true) {
       ok: true,
       action: args[0],
       companies: 1,
-      originals: 1,
+      originals,
       accounts: 1,
       scope: "structure-and-bytes-only",
       credentials: "same-windows-user-may-be-required",
@@ -347,6 +356,258 @@ test(
       )
         throw new Error("Unsafe synthetic cleanup target");
       rmSync(resolved, { recursive: true, force: true });
+    }
+  },
+);
+
+const preparedSql =
+  "CREATE TABLE studio_prepared_packages (id TEXT PRIMARY KEY, case_id TEXT NOT NULL REFERENCES studio_cases(id) ON DELETE CASCADE, version INTEGER NOT NULL CHECK(version > 0), client_request_id TEXT NOT NULL, request_digest TEXT NOT NULL, body TEXT NOT NULL, body_sha256 TEXT NOT NULL, archive BLOB NOT NULL, UNIQUE(case_id, version), UNIQUE(case_id, client_request_id))";
+async function addSyntheticPrepared(data) {
+  const source = data.record.sources[0];
+  const content = {
+    title: "SYNTHETIC RETAINED PLAN",
+    summary: secret,
+    sections: [],
+    actionItems: [],
+    interviewQuestions: [],
+  };
+  const plan = {
+    id: randomUUID(),
+    version: 1,
+    generatedAt: "2026-09-27T00:00:00.000Z",
+    mode: "manual",
+    candidateId: randomUUID(),
+    sourceRevision: 4,
+    content,
+    review: [],
+    confirmedAt: null,
+  };
+  data.record.plans = [plan];
+  data.database
+    .prepare("UPDATE studio_cases SET body=? WHERE id=?")
+    .run(JSON.stringify(data.record), data.record.id);
+  const zip = new JSZip();
+  zip.file(`originals/${source.id}.bin`, data.original);
+  zip.file("plan.json", JSON.stringify(plan));
+  const archive = await zip.generateAsync({ type: "nodebuffer", compression: "STORE" });
+  const input = {
+    revision: data.record.revision,
+    planId: plan.id,
+    sourceIds: [source.id],
+    clientRequestId: randomUUID(),
+  };
+  const metadata = { ...source };
+  delete metadata.text;
+  const record = {
+    id: randomUUID(),
+    version: 1,
+    caseId: data.record.id,
+    caseRevision: input.revision,
+    clientRequestId: input.clientRequestId,
+    requestDigest: sha(JSON.stringify(input)),
+    input,
+    createdAt: "2026-09-27T00:00:00.000Z",
+    scope: "local-preparation-only",
+    company: { profile: data.record.profile, snapshotSha256: sha(JSON.stringify(data.record)) },
+    plan: { ...plan, contentSha256: sha(JSON.stringify(content)) },
+    sourceIds: [source.id],
+    sources: [
+      {
+        source: metadata,
+        sourceSha256: sha(JSON.stringify(source)),
+        textSha256: sha(source.text),
+        originalSha256: sha(data.original),
+        originalSizeBytes: data.original.length,
+      },
+    ],
+    review: {
+      storedFindings: [],
+      currentRuleFindings: [],
+      confirmedAt: null,
+      unconfirmedSectionKeys: [],
+      currentEvidence: true,
+      latestPlanVersion: true,
+      draft: true,
+      draftReasons: ["Synthetic unconfirmed plan"],
+    },
+    zip: {
+      fileName: "venturepass-preparation-package.zip",
+      sha256: sha(archive),
+      sizeBytes: archive.length,
+    },
+  };
+  const body = JSON.stringify(record);
+  data.database
+    .prepare("INSERT INTO studio_prepared_packages VALUES(?,?,?,?,?,?,?,?)")
+    .run(
+      record.id,
+      record.caseId,
+      record.version,
+      record.clientRequestId,
+      record.requestDigest,
+      body,
+      sha(body),
+      archive,
+    );
+  return { record, archive };
+}
+function syntheticCleanup(root) {
+  const target = path.resolve(root);
+  const relative = path.relative(path.resolve(tmpdir()), target);
+  assert.ok(
+    !path.isAbsolute(relative) &&
+      !relative.startsWith("..") &&
+      path.basename(target).startsWith("venture-local-data-audit-"),
+  );
+  rmSync(target, { recursive: true, force: true });
+}
+function assertRestoredRows(root, rows) {
+  const database = new DatabaseSync(path.join(root, "studio.sqlite"), { readOnly: true });
+  try {
+    assert.deepEqual(snapshot(database), rows);
+  } finally {
+    database.close();
+  }
+}
+
+test(
+  "synthetic child CLI: current four-table database with no packages backs up and restores",
+  { timeout: 180_000 },
+  () => {
+    const root = mkdtempSync(path.join(tmpdir(), "venture-local-data-audit-"));
+    const source = path.join(root, "source"),
+      backup = path.join(root, "backup"),
+      restored = path.join(root, "restored");
+    const data = fixture(source);
+    try {
+      data.database.exec(preparedSql);
+      const before = snapshot(data.database);
+      const forbidden = [root, secret, data.record.id];
+      cli(["backup", "--source", source, "--destination", backup], root, forbidden);
+      cli(["verify", "--source", backup], root, forbidden);
+      cli(["restore", "--source", backup, "--destination", restored], root, forbidden);
+      assertRestoredRows(restored, before);
+      assert.deepEqual(snapshot(data.database), before);
+      assert.deepEqual(readFileSync(path.join(restored, data.relative)), data.original);
+    } finally {
+      data.database.close();
+      syntheticCleanup(root);
+    }
+  },
+);
+
+test(
+  "synthetic child CLI: immutable prepared ZIP survives original and plan deletion; resealed corrupt backup is refused",
+  { timeout: 360_000 },
+  async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "venture-local-data-audit-"));
+    const source = path.join(root, "source"),
+      backup = path.join(root, "backup"),
+      restored = path.join(root, "restored");
+    const data = fixture(source);
+    let closed = false;
+    try {
+      data.database.exec(preparedSql);
+      const prepared = await addSyntheticPrepared(data);
+      const before = snapshot(data.database);
+      const forbidden = [
+        root,
+        secret,
+        data.record.id,
+        prepared.record.id,
+        prepared.record.clientRequestId,
+      ];
+      cli(["backup", "--source", source, "--destination", backup], root, forbidden);
+      cli(["verify", "--source", backup], root, forbidden);
+      cli(["restore", "--source", backup, "--destination", restored], root, forbidden);
+      assertRestoredRows(restored, before);
+      assert.deepEqual(readFileSync(path.join(restored, data.relative)), data.original);
+      assert.deepEqual(snapshot(data.database), before);
+
+      // Alter only archived bytes, then reseal the outer file manifest. The inner
+      // prepared SHA must still reject it before a restoration directory exists.
+      const badDb = new DatabaseSync(path.join(backup, "studio.sqlite"));
+      const badArchive = Buffer.from(prepared.archive);
+      badArchive[badArchive.length - 1] ^= 1;
+      badDb.prepare("UPDATE studio_prepared_packages SET archive=?").run(badArchive);
+      badDb.close();
+      const manifestPath = path.join(backup, "backup-manifest.json");
+      const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+      const databaseBytes = readFileSync(path.join(backup, "studio.sqlite"));
+      Object.assign(
+        manifest.files.find((item) => item.path === "studio.sqlite"),
+        { sizeBytes: databaseBytes.length, sha256: sha(databaseBytes) },
+      );
+      const manifestBytes = Buffer.from(JSON.stringify(manifest));
+      writeFileSync(manifestPath, manifestBytes);
+      writeFileSync(
+        path.join(backup, "COMPLETE.json"),
+        JSON.stringify({
+          format: "venturepass-local-backup-complete",
+          manifestSha256: sha(manifestBytes),
+        }),
+      );
+      assert.equal(
+        cli(["verify", "--source", backup], root, forbidden, false).code,
+        "DATABASE_INVALID",
+      );
+      const blocked = path.join(root, "blocked");
+      assert.equal(
+        cli(["restore", "--source", backup, "--destination", blocked], root, forbidden, false).code,
+        "DATABASE_INVALID",
+      );
+      assert.equal(existsSync(blocked), false);
+
+      // Historical source IDs remain solely inside the preserved package. Cold
+      // backup must not require/recreate a removed live source or its plan.
+      data.record.sources = [];
+      data.record.plans = [];
+      data.record.sourceIntakes = [];
+      data.record.revision++;
+      data.database
+        .prepare("UPDATE studio_cases SET revision=?,body=? WHERE id=?")
+        .run(data.record.revision, JSON.stringify(data.record), data.record.id);
+      unlinkSync(path.join(source, data.relative));
+      const historicalRows = snapshot(data.database);
+      data.database.close();
+      closed = true;
+      const beforeBytes = readFileSync(path.join(source, "studio.sqlite"));
+      const beforeFiles = readdirSync(source, { recursive: true }).sort();
+      const historyBackup = path.join(root, "history-backup"),
+        historyRestored = path.join(root, "history-restored");
+      cli(["backup", "--source", source, "--destination", historyBackup], root, forbidden, true, 0);
+      cli(["verify", "--source", historyBackup], root, forbidden, true, 0);
+      cli(
+        ["restore", "--source", historyBackup, "--destination", historyRestored],
+        root,
+        forbidden,
+        true,
+        0,
+      );
+      assertRestoredRows(historyRestored, historicalRows);
+      assert.equal(existsSync(path.join(historyRestored, data.relative)), false);
+      const restoredDb = new DatabaseSync(path.join(historyRestored, "studio.sqlite"), {
+        readOnly: true,
+      });
+      let restoredZip;
+      try {
+        restoredZip = Buffer.from(
+          restoredDb.prepare("SELECT archive FROM studio_prepared_packages").get().archive,
+        );
+      } finally {
+        restoredDb.close();
+      }
+      assert.deepEqual(restoredZip, prepared.archive);
+      const opened = await JSZip.loadAsync(restoredZip);
+      assert.deepEqual(
+        await opened.file(`originals/${prepared.record.sourceIds[0]}.bin`).async("nodebuffer"),
+        data.original,
+      );
+      assert.deepEqual(readFileSync(path.join(source, "studio.sqlite")), beforeBytes);
+      assert.deepEqual(readdirSync(source, { recursive: true }).sort(), beforeFiles);
+    } finally {
+      if (!closed) data.database.close();
+      syntheticCleanup(root);
     }
   },
 );

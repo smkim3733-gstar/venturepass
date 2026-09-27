@@ -13,7 +13,13 @@ import {
   Sparkles,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Sheet, SheetContent, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetTitle,
+  SheetTrigger,
+} from "@/components/ui/sheet";
 import { cn } from "@/lib/utils";
 import { useState } from "react";
 
@@ -23,27 +29,39 @@ const navigation = [
   { href: "/companies", label: "확인기업 탐색", icon: Building2 },
   { href: "/application", label: "우리 기업 신청 준비", icon: ClipboardCheck },
 ];
-function Brand() {
+function Brand({ studio = false }: { studio?: boolean }) {
   return (
-    <Link href="/" className="flex items-center gap-3" aria-label="벤처패스 홈">
-      <span className="flex size-10 items-center justify-center rounded-xl bg-primary text-white shadow-sm">
-        <Sprout className="size-6" />
+    <Link
+      href={studio ? "/studio" : "/"}
+      className="flex min-h-11 shrink-0 items-center gap-3 rounded-md focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-ring"
+      aria-label={studio ? "벤처패스 신청 준비" : "벤처패스 홈"}
+    >
+      <span
+        className={cn(
+          "flex size-10 items-center justify-center bg-primary",
+          studio
+            ? "rounded-md border-b-[3px] border-gold font-semibold text-gold"
+            : "rounded-xl text-white shadow-sm",
+        )}
+        aria-hidden="true"
+      >
+        {studio ? "V" : <Sprout className="size-6" />}
       </span>
       <span>
         <span className="block text-[21px] font-extrabold tracking-tight text-foreground">
           벤처패스
         </span>
         <span className="block text-[10px] font-semibold tracking-[.13em] text-muted-foreground">
-          VENTURE PASS
+          VENTUREPASS
         </span>
       </span>
     </Link>
   );
 }
-function Navigation({ close }: { close?: () => void }) {
+function Navigation({ close, label = "주 메뉴" }: { close?: () => void; label?: string }) {
   const pathname = usePathname();
   return (
-    <nav aria-label="주 메뉴" className="space-y-2">
+    <nav aria-label={label} className="space-y-2">
       {navigation.map(({ href, label, icon: Icon }) => (
         <Link
           key={href}
@@ -57,7 +75,7 @@ function Navigation({ close }: { close?: () => void }) {
               : "text-muted-foreground hover:bg-muted hover:text-foreground",
           )}
         >
-          <Icon className="size-[19px]" />
+          <Icon className="size-[19px]" aria-hidden="true" />
           {label}
           {pathname === href && <span className="ml-auto size-1.5 rounded-full bg-primary" />}
         </Link>
@@ -67,14 +85,74 @@ function Navigation({ close }: { close?: () => void }) {
 }
 export function AppShell({ children }: { children: React.ReactNode }) {
   const [open, setOpen] = useState(false);
+  const pathname = usePathname();
+  const isStudio = pathname === "/studio" || pathname.startsWith("/studio/");
+  const skipLink = (
+    <a
+      href="#main-content"
+      className="sr-only fixed left-4 top-4 z-[60] rounded-md bg-white px-4 py-3 text-primary shadow-sm focus:not-sr-only focus:outline-2 focus:outline-offset-2 focus:outline-ring"
+    >
+      본문으로 이동
+    </a>
+  );
+
+  if (isStudio) {
+    return (
+      <div className="min-h-screen bg-background" data-app-shell="studio">
+        {skipLink}
+        <header className="border-b border-border bg-white">
+          <div className="mx-auto flex min-h-20 max-w-5xl flex-wrap items-center justify-between gap-3 px-4 py-4 sm:px-7 lg:px-10">
+            <Brand studio />
+            <Sheet open={open} onOpenChange={setOpen}>
+              <SheetTrigger asChild>
+                <Button
+                  variant="ghost"
+                  className="min-h-11 gap-2 px-3 text-muted-foreground"
+                  aria-label="다른 메뉴 열기"
+                >
+                  <Menu className="size-4" aria-hidden="true" />
+                  다른 메뉴
+                </Button>
+              </SheetTrigger>
+              <SheetContent
+                side="right"
+                className="gap-6 overflow-y-auto p-6 data-[side=right]:w-[calc(100%_-_2rem)] [&_[data-slot=sheet-close]]:size-11"
+              >
+                <div className="pr-10">
+                  <SheetTitle>다른 메뉴</SheetTitle>
+                  <SheetDescription className="mt-2">
+                    필요한 업무 화면으로 이동하세요.
+                  </SheetDescription>
+                </div>
+                <Navigation label="다른 메뉴" close={() => setOpen(false)} />
+                <a
+                  href="https://www.smes.go.kr/venturein/institution/requireGuide?rgCd=C"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="mt-auto flex min-h-11 items-center gap-2 rounded-md px-4 text-sm text-muted-foreground underline-offset-4 hover:text-primary hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+                >
+                  공식 제도 안내
+                  <ArrowUpRight className="size-4" aria-hidden="true" />
+                  <span className="sr-only">새 창에서 열기</span>
+                </a>
+              </SheetContent>
+            </Sheet>
+          </div>
+        </header>
+        <main
+          id="main-content"
+          tabIndex={-1}
+          className="mx-auto min-w-0 max-w-5xl px-4 pb-12 pt-6 outline-none sm:px-7 sm:pt-8 lg:px-10"
+        >
+          {children}
+        </main>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen">
-      <a
-        href="#main-content"
-        className="sr-only fixed left-4 top-4 z-50 rounded bg-white px-4 py-2 focus:not-sr-only"
-      >
-        본문으로 이동
-      </a>
+      {skipLink}
       <aside className="fixed inset-y-0 left-0 z-30 hidden w-[252px] flex-col border-r border-border/70 bg-white px-5 py-8 lg:flex">
         <div className="px-3">
           <Brand />
@@ -139,7 +217,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             </div>
           </div>
         </header>
-        <main id="main-content" className="mx-auto max-w-[1510px] px-5 py-8 sm:px-9 sm:py-10">
+        <main
+          id="main-content"
+          tabIndex={-1}
+          className="mx-auto max-w-[1510px] px-5 py-8 outline-none sm:px-9 sm:py-10"
+        >
           {children}
         </main>
         <footer className="mx-auto flex max-w-[1510px] flex-wrap justify-between gap-2 px-5 pb-7 text-[11px] text-muted-foreground sm:px-9">

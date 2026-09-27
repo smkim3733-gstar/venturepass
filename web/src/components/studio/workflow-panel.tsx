@@ -16,6 +16,10 @@ import {
   type StudioCase,
 } from "@/lib/studio-schema";
 import { agencyTaskContext } from "@/lib/studio-agency-tasks";
+import {
+  validateGuidedWorkflowTarget,
+  type GuidedWorkflowTarget,
+} from "@/lib/studio-guided-followup";
 import { EmptyPanel, Notice, PanelHeading, selectClass, useDirty, type PanelProps } from "./shared";
 import { VisitPreparation } from "./evaluation-preparation";
 import { StageHistory } from "./stage-history";
@@ -133,11 +137,32 @@ export function WorkflowPanel({
   mutate,
   setDirty,
   onBusyChange = () => undefined,
-}: PanelProps & { onBusyChange?: (message: string) => void }) {
+  guidedTarget,
+}: PanelProps & { onBusyChange?: (message: string) => void; guidedTarget?: GuidedWorkflowTarget }) {
+  // Parent remounts only after its dirty/busy navigation guard accepts a new target.
+  const [entryTarget] = useState(guidedTarget);
+  const [entryValid] = useState(
+    () => !!guidedTarget && validateGuidedWorkflowTarget(company, guidedTarget).valid,
+  );
+  const targetChanged = JSON.stringify(entryTarget) !== JSON.stringify(guidedTarget);
+  // Navigation revision is checked once on entry. Later saves change it legitimately;
+  // active editors separately pin their own revision and preserve stale drafts.
+  const targetStatus = guidedTarget
+    ? validateGuidedWorkflowTarget(company, {
+        ...guidedTarget,
+        companyRevision:
+          entryValid && !targetChanged ? company.revision : guidedTarget.companyRevision,
+      })
+    : null;
   const [stage, setStage] = useState(company.stage);
   const [stageNote, setStageNote] = useState("");
   const [occurredOn, setOccurredOn] = useState("");
-  const [task, setTask] = useState<WorkflowTask | null>(null);
+  const [task, setTask] = useState<WorkflowTask | null>(() =>
+    entryValid && entryTarget?.kind === "task"
+      ? structuredClone(company.tasks.find((item) => item.id === entryTarget.taskId)!)
+      : null,
+  );
+  const [taskRevision, setTaskRevision] = useState(company.revision);
   const [agencyDirty, setAgencyDirty] = useState(false);
   const [appealDirty, setAppealDirty] = useState(false);
   const [applicationDirty, setApplicationDirty] = useState(false);
@@ -146,6 +171,21 @@ export function WorkflowPanel({
   const [responseDirty, setResponseDirty] = useState(false);
   const [visitDirty, setVisitDirty] = useState(false);
   const [certificateDirty, setCertificateDirty] = useState(false);
+  useEffect(() => {
+    if (!entryValid || entryTarget?.kind !== "notice") return;
+    const element = document.getElementById(`agency-record-${entryTarget.noticeVersionId}`);
+    if (!element) {
+      toast.error("선택한 통보를 화면에서 찾지 못했습니다. 현재 안내를 다시 확인해 주세요.");
+      return;
+    }
+    let ancestor = element.parentElement;
+    while (ancestor) {
+      if (ancestor.tagName === "DETAILS") (ancestor as HTMLDetailsElement).open = true;
+      ancestor = ancestor.parentElement;
+    }
+    element.scrollIntoView({ block: "start" });
+    element.focus({ preventScroll: true });
+  }, [entryTarget, entryValid]);
   useEffect(() => {
     if (!task?.id) return;
     document
@@ -178,9 +218,16 @@ export function WorkflowPanel({
     }
     if (taskDirty && !window.confirm("저장하지 않은 업무 편집을 취소할까요?")) return;
     setTask(item ? structuredClone(item) : newTask());
+    setTaskRevision(company.revision);
   }
   async function saveTask() {
     if (!task) return;
+    if (taskRevision !== company.revision) {
+      toast.error(
+        "기업 기록이 변경되었습니다. 업무 초안은 보존했습니다. 최신 업무를 확인한 뒤 다시 열어 주세요.",
+      );
+      return;
+    }
     if (recordDirty) {
       toast.error("편집 중인 기관 기록·답변·소명·신청회차를 먼저 저장하거나 취소해 주세요.");
       return;
@@ -194,7 +241,8 @@ export function WorkflowPanel({
       toast.error(result.error.issues[0]?.message || "업무 제목을 확인해 주세요.");
       return;
     }
-    await mutate({ action: "task", task: result.data });
+    const saved = await mutate({ action: "task", task: result.data });
+    if (saved?.id === company.id) setTaskRevision(saved.revision);
   }
   async function saveStage() {
     if (recordDirty) {
@@ -229,6 +277,18 @@ export function WorkflowPanel({
   );
   return (
     <div>
+      {(targetChanged || (targetStatus && !targetStatus.valid)) && (
+        <p
+          role="alert"
+          className="mb-4 rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-950"
+        >
+          {targetChanged
+            ? "이동 대상이 변경되었습니다. 작성 중인 내용을 보존했습니다. 저장하거나 취소한 뒤 기본 화면에서 다시 열어 주세요."
+            : targetStatus && !targetStatus.valid
+              ? targetStatus.reason
+              : ""}
+        </p>
+      )}
       <PanelHeading
         title="접수부터 확인서까지 진행 관리"
         description="기관에서 확인한 진행 결과와 담당 업무를 기록하세요. 단계 변경만으로 기관에 신청되거나 서류가 제출되지는 않습니다."
@@ -347,6 +407,7 @@ export function WorkflowPanel({
       />
       <ResponsePreparations
         company={company}
+        guidedTarget={entryValid ? entryTarget : undefined}
         mutate={mutate}
         onBusyChange={onBusyChange}
         blockedReason={
@@ -438,6 +499,7 @@ export function WorkflowPanel({
       />
       <CertificateRenewal
         company={company}
+        guidedTarget={entryValid ? entryTarget : undefined}
         mutate={mutate}
         blockedReason={
           procedureDirty ||
@@ -512,6 +574,12 @@ export function WorkflowPanel({
           aria-label="업무 편집"
           className="mb-5 scroll-mt-24 rounded-2xl border border-primary/30 bg-primary/[.025] p-5"
         >
+          {taskRevision !== company.revision && (
+            <p role="alert" className="mb-3 text-sm text-amber-900">
+              기업 기록이 변경되어 저장을 멈췄습니다. 업무 초안은 보존했습니다. 최신 업무를 확인한
+              뒤 다시 열어 주세요.
+            </p>
+          )}
           <div className="mb-4 flex items-center justify-between">
             <h4 className="font-semibold">{savedTask ? "업무 수정" : "새 업무"}</h4>
             <Button
@@ -585,7 +653,7 @@ export function WorkflowPanel({
             onChange={(processing) => setTask({ ...task, processing })}
           />
           <div className="mt-4 flex justify-end">
-            <Button onClick={saveTask}>
+            <Button onClick={saveTask} disabled={taskRevision !== company.revision}>
               <Save />
               업무 저장
             </Button>

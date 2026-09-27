@@ -5,6 +5,8 @@ import { withVentureInputCompanyLock } from "./venturein-input-lock";
 import { compareVentureApplication, fillVentureApplication } from "./venturein-runner";
 import { readVentureOriginal } from "./venturein-originals";
 import type { StudioStore } from "./studio-storage";
+import { preparedPackageSummary } from "./studio-prepared-package-types";
+import { compareVenturePreparedBinding } from "./venturein-prepared-binding";
 import {
   assertVentureWorkflowVersions,
   getVentureWorkflow,
@@ -15,15 +17,24 @@ import {
   ventureExecutionRecordSchema,
   ventureRecoverableCodes,
   ventureInputComparisonFieldSchema,
+  venturePreparedComparisonSchema,
+  venturePreparedPackageBindingSchema,
   type VentureInputComparison,
   type VentureExecutionRecord,
   type VentureExecutionReview,
   type VentureExecutionAttempt,
   type VentureRecoveryReview,
+  type VenturePreparedComparison,
+  type VenturePreparedPackageBinding,
 } from "./venturein-execution-schema";
 
 type Versions = { revision: number; companyRevision: number; accountRevision: number };
-type Ticket = Versions & { caseId: string; expiresAt: number; fingerprint: string } & (
+type Ticket = Versions & {
+  caseId: string;
+  expiresAt: number;
+  fingerprint: string;
+  preparedPackage?: VenturePreparedPackageBinding;
+} & (
     | { kind: "normal" }
     | {
         kind: "recovery";
@@ -88,6 +99,122 @@ function fingerprint(
       }),
     )
     .digest("hex");
+}
+
+function executionFingerprint(
+  workflow: VentureWorkflowStatus,
+  attachments: VentureExecutionReview["attachments"],
+  preparedPackage?: VenturePreparedPackageBinding,
+) {
+  const selectedFingerprint = fingerprint(workflow, attachments);
+  // The legacy fingerprint is unchanged; no package is inferred for old approvals.
+  return preparedPackage
+    ? hash({ version: 2, selectedFingerprint, preparedPackage })
+    : selectedFingerprint;
+}
+
+function readPreparedComparison(
+  store: StudioStore,
+  caseId: string,
+  workflow: VentureWorkflowStatus,
+  preparedPackageId: string,
+  attachments: VentureExecutionReview["attachments"],
+): VenturePreparedComparison {
+  // The storage method verifies the immutable row and ZIP bytes. Recompute from the
+  // returned bytes as well; never accept a browser-supplied "verified" flag or SHA.
+  const { record, buffer } = store.downloadPreparedPackage(caseId, preparedPackageId);
+  const company = store.get(caseId);
+  const plans = company.plans.filter((plan) => plan.id === workflow.draft?.planId);
+  const result = compareVenturePreparedBinding({
+    caseId,
+    companyRevision: company.revision,
+    profile: company.profile,
+    plan: plans.length === 1 ? plans[0] : null,
+    preparedPackage: record,
+    archive: {
+      packageId: record.id,
+      sha256: createHash("sha256").update(buffer).digest("hex"),
+      sizeBytes: buffer.byteLength,
+      verified: true,
+    },
+    selection: {
+      planId: workflow.draft!.planId,
+      planVersion: workflow.draft!.planVersion,
+      textFields: workflow.report.textFields,
+      attachments,
+    },
+  });
+  return venturePreparedComparisonSchema.parse({
+    caseId,
+    workflowRevision: workflow.revision,
+    companyRevision: company.revision,
+    accountRevision: workflow.accountRevision,
+    snapshotId: workflow.snapshot!.screen.id,
+    sessionStartedAt: workflow.snapshot!.sessionStartedAt,
+    preparedPackage: preparedPackageSummary(record),
+    result,
+  });
+}
+function requirePreparedConnection(
+  comparison: VenturePreparedComparison,
+): VenturePreparedPackageBinding {
+  const result = comparison.result;
+  if (
+    !result.matched ||
+    !result.binding ||
+    !result.digest ||
+    result.packageDraft === null ||
+    result.companyRevisionChanged === null
+  )
+    throw new StudioError(
+      "선택한 준비본과 현재 입력·첨부가 일치하지 않습니다. 준비본 대조 결과를 다시 확인해 주세요.",
+      409,
+      "PREPARED_PACKAGE_MISMATCH",
+    );
+  return venturePreparedPackageBindingSchema.parse({
+    binding: result.binding,
+    digest: result.digest,
+    packageDraft: result.packageDraft,
+    companyRevisionChanged: result.companyRevisionChanged,
+  });
+}
+function assertPreparedConnection(
+  store: StudioStore,
+  caseId: string,
+  workflow: VentureWorkflowStatus,
+  attachments: VentureExecutionReview["attachments"],
+  expected: VenturePreparedPackageBinding,
+) {
+  const observed = requirePreparedConnection(
+    readPreparedComparison(store, caseId, workflow, expected.binding.package.id, attachments),
+  );
+  if (hash(observed) !== hash(expected))
+    throw new StudioError(
+      "승인에 연결된 준비본 또는 선택 범위가 변경되었습니다. 다시 대조하고 승인해 주세요.",
+      409,
+      "PREPARED_PACKAGE_CHANGED",
+    );
+  return observed;
+}
+
+/** Local archive/mapping comparison only: no browser inspection, token, or receipt mutation. */
+export function compareVenturePreparedPackage(
+  caseId: string,
+  input: Versions & { preparedPackageId: string },
+): VenturePreparedComparison {
+  const store = assertVentureWorkflowVersions(caseId, input),
+    workflow = getVentureWorkflow(caseId);
+  assertEligible(workflow);
+  const { attachments } = readReviewedAttachments(store, caseId, workflow);
+  const comparison = readPreparedComparison(
+    store,
+    caseId,
+    workflow,
+    input.preparedPackageId,
+    attachments,
+  );
+  assertVentureWorkflowVersions(caseId, input);
+  return comparison;
 }
 
 function assertEligible(workflow: VentureWorkflowStatus) {
@@ -267,7 +394,10 @@ async function compareLocked(caseId: string, input: Versions): Promise<VentureIn
 }
 
 /** Local review only. No browser inspection, input or navigation happens during preparation. */
-export function prepareVentureExecution(caseId: string, input: Versions): VentureExecutionReview {
+export function prepareVentureExecution(
+  caseId: string,
+  input: Versions & { preparedPackageId?: string },
+): VentureExecutionReview {
   const store = assertVentureWorkflowVersions(caseId, input);
   const workflow = getVentureWorkflow(caseId);
   assertEligible(workflow);
@@ -278,11 +408,19 @@ export function prepareVentureExecution(caseId: string, input: Versions): Ventur
       "INPUT_ALREADY_ATTEMPTED",
     );
   const { attachments } = readReviewedAttachments(store, caseId, workflow);
+  const preparedPackage =
+    input.preparedPackageId === undefined
+      ? undefined
+      : requirePreparedConnection(
+          readPreparedComparison(store, caseId, workflow, input.preparedPackageId, attachments),
+        );
+  assertVentureWorkflowVersions(caseId, input);
   const approval = issueTicket({
     ...input,
     caseId,
     kind: "normal",
-    fingerprint: fingerprint(workflow, attachments),
+    fingerprint: executionFingerprint(workflow, attachments, preparedPackage),
+    ...(preparedPackage && { preparedPackage }),
   });
   return {
     scope: "selected-fields",
@@ -301,6 +439,7 @@ export function prepareVentureExecution(caseId: string, input: Versions): Ventur
     attachments,
     attachmentCount: attachments.length,
     totalAttachmentBytes: attachments.reduce((sum, file) => sum + file.sizeBytes, 0),
+    ...(preparedPackage && { preparedPackage }),
   };
 }
 
@@ -318,12 +457,21 @@ const orderedSubset = (values: string[], whole: string[]) =>
   JSON.stringify(values) === JSON.stringify(whole.filter((key) => values.includes(key)));
 
 /** Missing legacy evidence, uncertain results and any attachment in the original manifest fail closed. */
-function recoveryEvidence(caseId: string, workflow: VentureWorkflowStatus, input: Versions) {
+function recoveryEvidence(
+  store: StudioStore,
+  caseId: string,
+  workflow: VentureWorkflowStatus,
+  input: Versions,
+) {
   const record = workflow.execution;
   const manifest = record?.manifest;
   const history = record?.previousAttempts;
   if (!record || !manifest || !history || history.length >= 9 || record.status !== "stopped")
     recoveryBlocked();
+  const preparedPackage =
+    manifest.version === 2
+      ? assertPreparedConnection(store, caseId, workflow, [], manifest.preparedPackage)
+      : undefined;
   const targets = targetsFor(workflow);
   const keys = targets.map(({ fieldKey }) => fieldKey);
   if (
@@ -337,7 +485,7 @@ function recoveryEvidence(caseId: string, workflow: VentureWorkflowStatus, input
     manifest.snapshotId !== workflow.snapshot!.screen.id ||
     manifest.sessionStartedAt !== workflow.snapshot!.sessionStartedAt ||
     manifest.draftFingerprint !== hash(workflow.draft) ||
-    manifest.fingerprint !== fingerprint(workflow, []) ||
+    manifest.fingerprint !== executionFingerprint(workflow, [], preparedPackage) ||
     JSON.stringify(manifest.targets) !== JSON.stringify(targets) ||
     input.revision !== manifest.workflowRevision + 2 * (history.length + 1)
   )
@@ -375,7 +523,7 @@ function recoveryEvidence(caseId: string, workflow: VentureWorkflowStatus, input
     ids.add(attempt.id);
     written.forEach((key) => touched.add(key));
   }
-  return { record, manifest, touched, keys };
+  return { record, manifest, touched, keys, preparedPackage };
 }
 
 function recoveryPartition(
@@ -408,13 +556,13 @@ export async function prepareVentureRecovery(
     const store = assertVentureWorkflowVersions(caseId, input);
     const workflow = getVentureWorkflow(caseId);
     assertEligible(workflow);
-    const evidence = recoveryEvidence(caseId, workflow, input);
+    const evidence = recoveryEvidence(store, caseId, workflow, input);
     const receiptFingerprint = hash(evidence.record);
     const comparison = await compareLocked(caseId, input);
     assertVentureWorkflowVersions(caseId, input);
     const current = getVentureWorkflow(caseId);
     assertEligible(current);
-    const currentEvidence = recoveryEvidence(caseId, current, input);
+    const currentEvidence = recoveryEvidence(store, caseId, current, input);
     if (hash(currentEvidence.record) !== receiptFingerprint)
       recoveryBlocked("RECOVERY_BINDING_CHANGED");
     const partition = recoveryPartition(comparison, currentEvidence);
@@ -426,6 +574,7 @@ export async function prepareVentureRecovery(
       priorExecutionId: evidence.record.id,
       priorReceiptFingerprint: receiptFingerprint,
       ...partition,
+      ...(evidence.preparedPackage && { preparedPackage: evidence.preparedPackage }),
     });
     return {
       scope: "text-recovery",
@@ -448,6 +597,7 @@ export async function prepareVentureRecovery(
       protectedFields: current.report.textFields
         .filter((field) => partition.preserveFieldKeys.includes(field.fieldKey))
         .map(({ fieldKey, label }) => ({ fieldKey, label })),
+      ...(evidence.preparedPackage && { preparedPackage: evidence.preparedPackage }),
     };
   });
 }
@@ -493,7 +643,9 @@ async function executeLocked(
   const workflow = getVentureWorkflow(caseId);
   assertEligible(workflow);
   const { attachments, originals } = readReviewedAttachments(store, caseId, workflow);
-  if (fingerprint(workflow, attachments) !== ticket.fingerprint)
+  if (ticket.preparedPackage)
+    assertPreparedConnection(store, caseId, workflow, attachments, ticket.preparedPackage);
+  if (executionFingerprint(workflow, attachments, ticket.preparedPackage) !== ticket.fingerprint)
     throw new StudioError(
       "검토 후 계정·화면 또는 입력값이 바뀌었습니다. 다시 검토해 주세요.",
       409,
@@ -504,7 +656,9 @@ async function executeLocked(
   let preserveFieldKeys: string[] = [];
   let previousAttempts: VentureExecutionAttempt[] = [];
   let manifest: VentureExecutionRecord["manifest"] = {
-    version: 1,
+    ...(ticket.preparedPackage
+      ? { version: 2 as const, preparedPackage: ticket.preparedPackage }
+      : { version: 1 as const }),
     fingerprint: ticket.fingerprint,
     draftFingerprint: hash(workflow.draft),
     caseId,
@@ -516,7 +670,7 @@ async function executeLocked(
     targets: targetsFor(workflow),
   };
   if (ticket.kind === "recovery") {
-    const evidence = recoveryEvidence(caseId, workflow, ticket);
+    const evidence = recoveryEvidence(store, caseId, workflow, ticket);
     if (
       evidence.record.id !== ticket.priorExecutionId ||
       hash(evidence.record) !== ticket.priorReceiptFingerprint
@@ -526,7 +680,7 @@ async function executeLocked(
     assertVentureWorkflowVersions(caseId, ticket);
     const current = getVentureWorkflow(caseId);
     assertEligible(current);
-    const currentEvidence = recoveryEvidence(caseId, current, ticket);
+    const currentEvidence = recoveryEvidence(store, caseId, current, ticket);
     if (hash(currentEvidence.record) !== ticket.priorReceiptFingerprint)
       recoveryBlocked("RECOVERY_BINDING_CHANGED");
     const partition = recoveryPartition(comparison, currentEvidence);
@@ -574,8 +728,10 @@ async function executeLocked(
     assertVentureWorkflowVersions(caseId, { ...ticket, revision: runningRevision });
     const current = getVentureWorkflow(caseId);
     assertEligible(current);
+    if (ticket.preparedPackage)
+      assertPreparedConnection(store, caseId, current, attachments, ticket.preparedPackage);
     if (
-      fingerprint(current, attachments) !== ticket.fingerprint ||
+      executionFingerprint(current, attachments, ticket.preparedPackage) !== ticket.fingerprint ||
       current.execution?.id !== started.id
     )
       throw new StudioError("입력 중 검토 상태가 바뀌었습니다.", 409, "INPUT_REVIEW_CHANGED");
@@ -604,6 +760,7 @@ async function executeLocked(
       },
       assertCurrent,
     );
+    if (ticket.preparedPackage) assertCurrent();
     if (
       !Array.isArray(result.touchedFieldKeys) ||
       !unique(result.touchedFieldKeys) ||

@@ -7,6 +7,7 @@ import {
   compareVentureInput,
   prepareVentureRecovery,
   executeVentureRecovery,
+  compareVenturePreparedPackage,
 } from "@/lib/venturein-execution";
 
 export const runtime = "nodejs";
@@ -24,15 +25,17 @@ export function POST(request: Request, context: Context) {
     const { caseId } = await context.params;
     return withVentureLock(caseId, async () =>
       jsonResponse(
-        input.action === "prepare"
-          ? { review: prepareVentureExecution(caseId, input) }
-          : input.action === "prepare-recovery"
-            ? { review: await prepareVentureRecovery(caseId, input) }
-            : input.action === "execute-recovery"
-              ? await executeVentureRecovery(caseId, input)
-              : input.action === "compare"
-                ? { comparison: await compareVentureInput(caseId, input) }
-                : await executeVentureInput(caseId, input),
+        input.action === "compare-prepared-package"
+          ? { preparedComparison: compareVenturePreparedPackage(caseId, input) }
+          : input.action === "prepare"
+            ? { review: prepareVentureExecution(caseId, input) }
+            : input.action === "prepare-recovery"
+              ? { review: await prepareVentureRecovery(caseId, input) }
+              : input.action === "execute-recovery"
+                ? await executeVentureRecovery(caseId, input)
+                : input.action === "compare"
+                  ? { comparison: await compareVentureInput(caseId, input) }
+                  : await executeVentureInput(caseId, input),
       ),
     );
   });

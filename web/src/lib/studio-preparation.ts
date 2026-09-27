@@ -10,6 +10,7 @@ import type { StudioCase } from "./studio-schema";
 import type { StudioStore } from "./studio-storage";
 import { assertVentureCompanyWritable } from "./venturein-input-lock";
 import { currentVerifiedCandidateSelection } from "./studio-candidate-selection";
+import { studioGenerationJobs } from "./studio-generation-lock";
 
 const shared = globalThis as typeof globalThis & { __venturepassPreparationJobs?: Set<string> };
 const jobs = (shared.__venturepassPreparationJobs ??= new Set<string>());
@@ -37,7 +38,8 @@ export async function runLocalPreparation(
   rawInput: PreparationRequest,
 ): Promise<PreparationResponse> {
   const input = preparationRequestSchema.parse(rawInput);
-  if (jobs.has(caseId)) throw new PreparationRequestError("PREPARATION_BUSY", 409, false);
+  if (jobs.has(caseId) || studioGenerationJobs.has(caseId))
+    throw new PreparationRequestError("PREPARATION_BUSY", 409, false);
   jobs.add(caseId);
   let accepted = false;
   let company: StudioCase | undefined;

@@ -3,10 +3,11 @@ import { generationSchema } from "@/lib/studio-schema";
 import { currentVerifiedCandidateSelection } from "@/lib/studio-candidate-selection";
 import { getStudioStore } from "@/lib/studio-storage";
 import { jsonResponse, readJson, studioRoute, StudioError } from "@/lib/studio-http";
+import { studioGenerationJobs as running } from "@/lib/studio-generation-lock";
+import { unresolvedGuidedPreparationRuns } from "@/lib/studio-guided-preparation-types";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 600;
-const running = new Set<string>();
 export function POST(request: Request, context: { params: Promise<{ caseId: string }> }) {
   return studioRoute(request, async () => {
     const input = generationSchema.parse(await readJson(request));
@@ -19,7 +20,10 @@ export function POST(request: Request, context: { params: Promise<{ caseId: stri
         409,
         "STALE_REVISION",
       );
-    if (running.has(caseId))
+    if (
+      running.has(caseId) ||
+      unresolvedGuidedPreparationRuns(record.guidedPreparationRuns).length > 0
+    )
       throw new StudioError(
         "이 기업의 분석·작성이 진행 중입니다. 완료 후 다시 시도해 주세요.",
         409,

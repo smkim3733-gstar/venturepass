@@ -1,4 +1,6 @@
 import { z } from "zod";
+import { preparedPackageSummarySchema } from "./studio-prepared-package-types";
+import { ventureTextSourceSchema } from "./venturein-preflight";
 import type {
   VentureResolvedText,
   VentureResolvedAttachment,
@@ -25,6 +27,15 @@ export const ventureRecoverableCodes = [
 export const ventureExecutionRequestSchema = z.discriminatedUnion("action", [
   z
     .object({
+      action: z.literal("compare-prepared-package"),
+      revision,
+      accountRevision: revision,
+      companyRevision: revision,
+      preparedPackageId: z.string().uuid(),
+    })
+    .strict(),
+  z
+    .object({
       action: z.literal("compare"),
       revision,
       accountRevision: revision,
@@ -37,6 +48,7 @@ export const ventureExecutionRequestSchema = z.discriminatedUnion("action", [
       revision,
       accountRevision: revision,
       companyRevision: revision,
+      preparedPackageId: z.string().uuid().optional(),
     })
     .strict(),
   z
@@ -84,7 +96,154 @@ export type VentureInputComparison = {
 };
 
 const fieldKeys = z.array(z.string().min(1).max(256)).max(50);
-export const ventureExecutionManifestSchema = z
+const sha256 = z.string().regex(/^[a-f0-9]{64}$/);
+export const venturePreparedBindingManifestSchema = z
+  .object({
+    version: z.literal(1),
+    scope: z.literal("selected-prepared-fields"),
+    caseId: z.string().uuid(),
+    companyRevision: revision,
+    package: z
+      .object({
+        id: z.string().uuid(),
+        version: z.number().int().positive().max(20),
+        caseRevision: revision,
+        createdAt: z.string().datetime(),
+        zipSha256: sha256,
+        zipSizeBytes: z
+          .number()
+          .int()
+          .positive()
+          .max(28 * 1024 * 1024),
+      })
+      .strict(),
+    plan: z
+      .object({
+        id: z.string().uuid(),
+        version: z.number().int().positive().safe(),
+        contentSha256: sha256,
+      })
+      .strict(),
+    targets: z
+      .array(
+        z.discriminatedUnion("kind", [
+          z
+            .object({
+              kind: z.literal("text"),
+              fieldKey: z.string().min(1).max(256),
+              source: ventureTextSourceSchema,
+              valueSha256: sha256,
+              characterCount: z.number().int().min(1).max(20000),
+            })
+            .strict(),
+          z
+            .object({
+              kind: z.literal("file"),
+              fieldKey: z.string().min(1).max(256),
+              files: z
+                .array(
+                  z
+                    .object({
+                      sourceId: z.string().uuid(),
+                      sourceUpdatedAt: z.string().datetime({ offset: true }),
+                      originalName: z.string().min(1).max(200),
+                      mimeType: z.string().max(150).nullable(),
+                      sizeBytes: z
+                        .number()
+                        .int()
+                        .positive()
+                        .max(12 * 1024 * 1024),
+                      sha256,
+                    })
+                    .strict(),
+                )
+                .min(1)
+                .max(10),
+            })
+            .strict(),
+        ]),
+      )
+      .min(1)
+      .max(50),
+  })
+  .strict();
+export const venturePreparedPackageBindingSchema = z
+  .object({
+    binding: venturePreparedBindingManifestSchema,
+    digest: sha256,
+    packageDraft: z.boolean(),
+    companyRevisionChanged: z.boolean(),
+  })
+  .strict();
+export type VenturePreparedPackageBinding = z.infer<typeof venturePreparedPackageBindingSchema>;
+export const venturePreparedBindingResultSchema = z
+  .object({
+    scope: z.literal("selected-prepared-fields"),
+    matched: z.boolean(),
+    issues: z
+      .array(
+        z
+          .object({
+            code: z.enum([
+              "INVALID_INPUT",
+              "PACKAGE_COMPANY_MISMATCH",
+              "PACKAGE_METADATA_INCONSISTENT",
+              "PACKAGE_ARCHIVE_UNVERIFIED",
+              "PACKAGE_ARCHIVE_MISMATCH",
+              "PLAN_BINDING_MISMATCH",
+              "PLAN_CONTENT_MISMATCH",
+              "SELECTION_EMPTY",
+              "SELECTION_LIMIT",
+              "TARGET_DUPLICATE",
+              "TARGET_UNCONFIRMED",
+              "TEXT_VALUE_INVALID",
+              "TEXT_CURRENT_MISMATCH",
+              "PROFILE_VALUE_MISMATCH",
+              "PLAN_SECTION_AMBIGUOUS",
+              "ATTACHMENT_SOURCE_DUPLICATE",
+              "ATTACHMENT_TARGET_INVALID",
+              "ATTACHMENT_NOT_PACKAGED",
+              "ATTACHMENT_METADATA_MISMATCH",
+              "ATTACHMENT_CONTENT_MISMATCH",
+            ]),
+            fieldKey: z.string().min(1).max(256).optional(),
+            sourceId: z.string().uuid().optional(),
+          })
+          .strict(),
+      )
+      .max(1000),
+    companyRevisionChanged: z.boolean().nullable(),
+    packageDraft: z.boolean().nullable(),
+    binding: venturePreparedBindingManifestSchema.nullable(),
+    digest: sha256.nullable(),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (
+      value.matched
+        ? !value.binding ||
+          !value.digest ||
+          value.issues.length > 0 ||
+          value.packageDraft === null ||
+          value.companyRevisionChanged === null
+        : value.binding !== null || value.digest !== null || value.issues.length === 0
+    )
+      context.addIssue({ code: "custom", message: "준비본 대조 상태가 일치하지 않습니다." });
+  });
+export const venturePreparedComparisonSchema = z
+  .object({
+    caseId: z.string().uuid(),
+    workflowRevision: revision,
+    companyRevision: revision,
+    accountRevision: revision,
+    snapshotId: z.string().min(1).max(200),
+    sessionStartedAt: z.string().datetime(),
+    preparedPackage: preparedPackageSummarySchema,
+    result: venturePreparedBindingResultSchema,
+  })
+  .strict();
+export type VenturePreparedComparison = z.infer<typeof venturePreparedComparisonSchema>;
+const executionManifestBase = z
   .object({
     version: z.literal(1),
     fingerprint: z.string().regex(/^[a-f0-9]{64}$/),
@@ -103,6 +262,24 @@ export const ventureExecutionManifestSchema = z
       .max(50),
   })
   .strict();
+export const ventureExecutionManifestSchema = z
+  .discriminatedUnion("version", [
+    executionManifestBase,
+    executionManifestBase
+      .extend({ version: z.literal(2), preparedPackage: venturePreparedPackageBindingSchema })
+      .strict(),
+  ])
+  .superRefine((value, context) => {
+    if (value.version !== 2) return;
+    const binding = value.preparedPackage.binding;
+    if (
+      binding.caseId !== value.caseId ||
+      binding.companyRevision !== value.companyRevision ||
+      JSON.stringify(binding.targets.map(({ fieldKey, kind }) => ({ fieldKey, kind }))) !==
+        JSON.stringify(value.targets)
+    )
+      context.addIssue({ code: "custom", message: "준비본과 실행 범위가 일치하지 않습니다." });
+  });
 
 /** Legacy optional fields never constitute evidence that no input was attempted. */
 export const ventureExecutionAttemptSchema = z
@@ -153,6 +330,8 @@ export type VentureExecutionReview = {
   attachments: (VentureResolvedAttachment & { sha256: string })[];
   attachmentCount: number;
   totalAttachmentBytes: number;
+  /** Absent for legacy v1 approval; never inferred from another/current package. */
+  preparedPackage?: VenturePreparedPackageBinding;
 };
 
 export type VentureRecoveryReview = Omit<

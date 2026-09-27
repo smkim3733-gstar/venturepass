@@ -89,6 +89,10 @@ test("same-sized writes during a read invalidate the observation", (t) => {
     if (!changed) {
       changed = true;
       writeFileSync(source, "bbbb");
+      // Windows can report both writes in the same timestamp tick. Make this
+      // mutation deterministic instead of relying on filesystem clock granularity.
+      const future = new Date(Date.now() + 2000);
+      fs.utimesSync(source, future, future);
     }
     return count;
   });
@@ -256,3 +260,389 @@ test("verify rejects WAL-header backup before SQLite can create sidecars", (t) =
   assert.deepEqual(readdirSync(root), before);
   assert.deepEqual(readFileSync(file), bytes);
 });
+
+const preparedSql =
+  "CREATE TABLE studio_prepared_packages (id TEXT PRIMARY KEY, case_id TEXT NOT NULL REFERENCES studio_cases(id) ON DELETE CASCADE, version INTEGER NOT NULL CHECK(version > 0), client_request_id TEXT NOT NULL, request_digest TEXT NOT NULL, body TEXT NOT NULL, body_sha256 TEXT NOT NULL, archive BLOB NOT NULL, UNIQUE(case_id, version), UNIQUE(case_id, client_request_id))";
+const syntheticArchive = Buffer.from("PK\x03\x04 SYNTHETIC ARCHIVE BYTES ONLY");
+function preparedRecord(company, version = 1) {
+  const content = {
+    title: "Synthetic retained plan",
+    summary: "Local synthetic test",
+    sections: [],
+    actionItems: [],
+    interviewQuestions: [],
+  };
+  const input = {
+    revision: company.revision,
+    planId: randomUUID(),
+    sourceIds: [],
+    clientRequestId: randomUUID(),
+  };
+  return {
+    id: randomUUID(),
+    version,
+    caseId: company.id,
+    caseRevision: company.revision,
+    clientRequestId: input.clientRequestId,
+    requestDigest: sha(JSON.stringify(input)),
+    input,
+    createdAt: "2026-09-27T00:00:00.000Z",
+    scope: "local-preparation-only",
+    company: {
+      profile: { companyName: "Synthetic local fixture" },
+      snapshotSha256: sha(JSON.stringify(company)),
+    },
+    plan: {
+      id: input.planId,
+      version: 1,
+      generatedAt: "2026-09-27T00:00:00.000Z",
+      mode: "manual",
+      candidateId: randomUUID(),
+      sourceRevision: 0,
+      content,
+      review: [],
+      confirmedAt: null,
+      contentSha256: sha(JSON.stringify(content)),
+    },
+    sourceIds: [],
+    sources: [],
+    review: {
+      storedFindings: [],
+      currentRuleFindings: [],
+      confirmedAt: null,
+      unconfirmedSectionKeys: [],
+      currentEvidence: true,
+      latestPlanVersion: true,
+      draft: true,
+      draftReasons: ["Synthetic unconfirmed plan"],
+    },
+    zip: {
+      fileName: "venturepass-preparation-package.zip",
+      sha256: sha(syntheticArchive),
+      sizeBytes: syntheticArchive.length,
+    },
+  };
+}
+function addPrepared(db, record, changes = {}) {
+  const body = JSON.stringify(record);
+  const row = {
+    id: record.id,
+    case_id: record.caseId,
+    version: record.version,
+    client_request_id: record.clientRequestId,
+    request_digest: record.requestDigest,
+    body,
+    body_sha256: sha(body),
+    archive: syntheticArchive,
+    ...changes,
+  };
+  db.prepare("INSERT INTO studio_prepared_packages VALUES(?,?,?,?,?,?,?,?)").run(
+    ...Object.values(row),
+  );
+}
+
+test("exact current empty prepared table is accepted without changing the legacy snapshot format", (t) => {
+  const db = database(t);
+  addCase(db);
+  const legacy = inspectDatabase(db);
+  db.exec(preparedSql);
+  const current = inspectDatabase(db);
+  assert.deepEqual(Object.keys(current), Object.keys(legacy));
+  assert.notEqual(current.digest, legacy.digest);
+  assert.equal(current.companies, 1);
+});
+
+for (const [label, altered] of [
+  [
+    "missing foreign key",
+    preparedSql.replace(" REFERENCES studio_cases(id) ON DELETE CASCADE", ""),
+  ],
+  ["different cascade", preparedSql.replace("ON DELETE CASCADE", "ON DELETE RESTRICT")],
+  ["missing version check", preparedSql.replace(" CHECK(version > 0)", "")],
+  ["missing version uniqueness", preparedSql.replace(", UNIQUE(case_id, version)", "")],
+  ["missing nonce uniqueness", preparedSql.replace(", UNIQUE(case_id, client_request_id)", "")],
+  ["missing not null", preparedSql.replace("archive BLOB NOT NULL", "archive BLOB")],
+  [
+    "extra column",
+    preparedSql.replace("archive BLOB NOT NULL", "archive BLOB NOT NULL, extra TEXT"),
+  ],
+])
+  test(`prepared schema refuses ${label}`, (t) => {
+    const db = database(t);
+    addCase(db);
+    db.exec(altered);
+    assert.throws(() => inspectDatabase(db), { code: "DATABASE_SCHEMA_UNSUPPORTED" });
+  });
+
+test("prepared rows are part of logical digest and never repopulate the live original inventory", (t) => {
+  const db = database(t);
+  const company = addCase(db, { revision: 7 });
+  db.exec(preparedSql);
+  const first = inspectDatabase(db);
+  const record = preparedRecord(company);
+  const sourceId = randomUUID();
+  record.input.sourceIds = [sourceId];
+  record.sourceIds = [sourceId];
+  record.requestDigest = sha(JSON.stringify(record.input));
+  record.sources = [
+    {
+      source: { id: sourceId, originalName: "SYNTHETIC_DELETED.pdf" },
+      sourceSha256: "1".repeat(64),
+      textSha256: "2".repeat(64),
+      originalSha256: "3".repeat(64),
+      originalSizeBytes: 10,
+    },
+  ];
+  addPrepared(db, record);
+  const second = inspectDatabase(db);
+  assert.notEqual(second.digest, first.digest);
+  assert.deepEqual(second.originals, []);
+  // Current source and plan collections deliberately have no historical IDs.
+  const changed = { ...company, revision: 8, plans: [], sources: [] };
+  db.prepare("UPDATE studio_cases SET revision=?,body=? WHERE id=?").run(
+    8,
+    JSON.stringify(changed),
+    company.id,
+  );
+  assert.doesNotThrow(() => inspectDatabase(db));
+  const row = db.prepare("SELECT * FROM studio_prepared_packages").get();
+  const otherArchive = Buffer.from(syntheticArchive);
+  otherArchive[otherArchive.length - 1] ^= 1;
+  record.zip.sha256 = sha(otherArchive);
+  const body = JSON.stringify(record);
+  db.prepare("UPDATE studio_prepared_packages SET body=?,body_sha256=?,archive=? WHERE id=?").run(
+    body,
+    sha(body),
+    otherArchive,
+    row.id,
+  );
+  assert.notEqual(inspectDatabase(db).digest, second.digest);
+});
+
+for (const [label, modify, rowChanges] of [
+  ["body hash corruption", () => {}, { body_sha256: "0".repeat(64) }],
+  ["archive byte corruption", () => {}, { archive: Buffer.alloc(syntheticArchive.length, 65) }],
+  ["archive wrong storage type", () => {}, { archive: "not a BLOB" }],
+  [
+    "metadata ID mismatch",
+    (r) => {
+      r.id = randomUUID();
+    },
+    { id: randomUUID() },
+  ],
+  [
+    "company metadata mismatch",
+    (r) => {
+      r.caseId = randomUUID();
+    },
+  ],
+  [
+    "future company revision",
+    (r) => {
+      r.caseRevision = 99;
+    },
+  ],
+  [
+    "revision binding mismatch",
+    (r) => {
+      r.input.revision++;
+    },
+  ],
+  [
+    "nonce binding mismatch",
+    (r) => {
+      r.input.clientRequestId = randomUUID();
+    },
+  ],
+  [
+    "request digest mismatch",
+    (r) => {
+      r.requestDigest = "0".repeat(64);
+    },
+  ],
+  [
+    "plan binding mismatch",
+    (r) => {
+      r.input.planId = randomUUID();
+      r.requestDigest = sha(JSON.stringify(r.input));
+    },
+  ],
+  [
+    "plan content changed",
+    (r) => {
+      r.plan.content.summary += "changed";
+    },
+  ],
+  [
+    "stored review mismatch",
+    (r) => {
+      r.review.storedFindings = [{ message: "changed" }];
+    },
+  ],
+  [
+    "confirmation mismatch",
+    (r) => {
+      r.review.confirmedAt = "2026-09-27T00:00:00.000Z";
+    },
+  ],
+  [
+    "ZIP size mismatch",
+    (r) => {
+      r.zip.sizeBytes++;
+    },
+  ],
+  [
+    "ZIP digest mismatch",
+    (r) => {
+      r.zip.sha256 = "0".repeat(64);
+    },
+  ],
+  [
+    "unknown envelope field",
+    (r) => {
+      r.unrecognized = true;
+    },
+  ],
+  [
+    "duplicate selected source",
+    (r) => {
+      const id = randomUUID();
+      r.sourceIds = [id, id];
+    },
+  ],
+  [
+    "missing pinned source",
+    (r) => {
+      r.sourceIds = [randomUUID()];
+    },
+  ],
+  [
+    "bad archive filename",
+    (r) => {
+      r.zip.fileName = "../../escape.zip";
+    },
+  ],
+  [
+    "unsupported scope",
+    (r) => {
+      r.scope = "official-submitted";
+    },
+  ],
+  [
+    "metadata limit",
+    (r) => {
+      r.company.profile.extra = "x".repeat(2 * 1024 * 1024);
+    },
+  ],
+])
+  test(`prepared snapshot refuses ${label}`, (t) => {
+    const db = database(t);
+    const company = addCase(db, { revision: 7 });
+    db.exec(preparedSql);
+    const record = preparedRecord(company);
+    modify(record);
+    addPrepared(db, record, { case_id: company.id, ...rowChanges });
+    assert.throws(() => inspectDatabase(db), { code: "DATABASE_INVALID" });
+  });
+
+test("prepared history rejects gaps, duplicate UUID casing, company orphans and over-limit rows", (t) => {
+  const db = database(t);
+  const company = addCase(db, { revision: 7 });
+  db.exec(preparedSql);
+  addPrepared(db, preparedRecord(company, 2));
+  assert.throws(() => inspectDatabase(db), { code: "DATABASE_INVALID" });
+  db.exec("DELETE FROM studio_prepared_packages");
+  const one = preparedRecord(company),
+    two = preparedRecord(company, 2);
+  one.id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  one.clientRequestId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+  one.input.clientRequestId = one.clientRequestId;
+  one.requestDigest = sha(JSON.stringify(one.input));
+  two.id = one.id.toUpperCase();
+  addPrepared(db, one);
+  addPrepared(db, two);
+  assert.throws(() => inspectDatabase(db), { code: "DATABASE_INVALID" });
+  db.exec("DELETE FROM studio_prepared_packages");
+  two.id = randomUUID();
+  two.clientRequestId = one.clientRequestId.toUpperCase();
+  two.input.clientRequestId = two.clientRequestId;
+  two.requestDigest = sha(JSON.stringify(two.input));
+  addPrepared(db, one);
+  addPrepared(db, two);
+  assert.throws(() => inspectDatabase(db), { code: "DATABASE_INVALID" });
+  db.exec("DELETE FROM studio_prepared_packages");
+  db.exec("PRAGMA foreign_keys=OFF");
+  addPrepared(db, one, { case_id: randomUUID() });
+  assert.throws(() => inspectDatabase(db), { code: "DATABASE_INVALID" });
+  db.exec("DELETE FROM studio_prepared_packages");
+  db.exec("PRAGMA foreign_keys=ON");
+  for (let version = 1; version <= 20; version++) addPrepared(db, preparedRecord(company, version));
+  assert.doesNotThrow(() => inspectDatabase(db));
+  addPrepared(db, preparedRecord(company, 21));
+  assert.throws(() => inspectDatabase(db), { code: "DATABASE_INVALID" });
+});
+
+test("prepared nonce is company scoped and request digest does not depend on stored object key order", (t) => {
+  const db = database(t);
+  const firstCompany = addCase(db, { revision: 7 }),
+    secondCompany = addCase(db, { revision: 8 });
+  db.exec(preparedSql);
+  const first = preparedRecord(firstCompany),
+    second = preparedRecord(secondCompany);
+  second.clientRequestId = first.clientRequestId;
+  second.input.clientRequestId = first.clientRequestId;
+  second.requestDigest = sha(JSON.stringify(second.input));
+  second.input = Object.fromEntries(Object.entries(second.input).reverse());
+  addPrepared(db, first);
+  addPrepared(db, second);
+  assert.equal(inspectDatabase(db).companies, 2);
+});
+
+for (const [label, modify] of [
+  [
+    "source ID mismatch",
+    (r) => {
+      r.sources[0].source.id = randomUUID();
+    },
+  ],
+  [
+    "invalid original SHA",
+    (r) => {
+      r.sources[0].originalSha256 = "invalid";
+    },
+  ],
+  [
+    "invalid source SHA",
+    (r) => {
+      r.sources[0].sourceSha256 = "invalid";
+    },
+  ],
+  [
+    "raw source body in metadata",
+    (r) => {
+      r.sources[0].source.text = "not stored in this envelope";
+    },
+  ],
+])
+  test(`prepared snapshot refuses ${label}`, (t) => {
+    const db = database(t);
+    const company = addCase(db, { revision: 7 });
+    db.exec(preparedSql);
+    const record = preparedRecord(company),
+      sourceId = randomUUID();
+    record.input.sourceIds = [sourceId];
+    record.sourceIds = [sourceId];
+    record.requestDigest = sha(JSON.stringify(record.input));
+    record.sources = [
+      {
+        source: { id: sourceId, originalName: "SYNTHETIC.pdf" },
+        sourceSha256: "1".repeat(64),
+        textSha256: "2".repeat(64),
+        originalSha256: "3".repeat(64),
+        originalSizeBytes: 10,
+      },
+    ];
+    modify(record);
+    addPrepared(db, record);
+    assert.throws(() => inspectDatabase(db), { code: "DATABASE_INVALID" });
+  });

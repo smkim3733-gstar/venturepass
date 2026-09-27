@@ -3,6 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import { caseSchema, emptyProfile, type StudioCase } from "@/lib/studio-schema";
 import type { AgencyRequestRecord } from "@/lib/studio-agency-records";
+import type { GuidedWorkflowTarget } from "@/lib/studio-guided-followup";
 import {
   preparedResponseBody,
   responsePreparationSchema,
@@ -11,6 +12,8 @@ import {
 } from "@/lib/studio-response-preparation-types";
 import {
   latestAgencyResponse,
+  guidedResponsePreparation,
+  guidedResponseGuidance,
   latestResponseRequests,
   newResponseItem,
   preparedResponseAlreadyRegistered,
@@ -26,6 +29,13 @@ import {
 const uuid = (n: number) => `${String(n).padStart(8, "0")}-1111-4111-8111-111111111111`;
 const now = "2026-09-25T00:00:00.000Z";
 const nonce = uuid(40);
+const target = (c: StudioCase, version = uuid(2)): GuidedWorkflowTarget => ({
+  caseId: c.id,
+  companyRevision: c.revision,
+  kind: "response",
+  requestRecordId: uuid(2),
+  requestVersionId: version,
+});
 function request(overrides: Partial<AgencyRequestRecord> = {}): AgencyRequestRecord {
   return {
     id: uuid(2),
@@ -559,5 +569,172 @@ describe("보완 답변 준비 화면", () => {
     expect(html).toContain('maxLength="1500"');
     expect(html).toContain('maxLength="20000"');
     expect(html).toContain("원고 연결 없음");
+  });
+});
+
+describe("기본 안내에서 정확한 답변 편집 연결", () => {
+  const renderGuided = (c: StudioCase, destination = target(c), blockedReason = "") => {
+    const mutate = vi.fn();
+    const html = renderToStaticMarkup(
+      createElement(ResponsePreparations, {
+        company: c,
+        mutate,
+        blockedReason,
+        onDirtyChange: vi.fn(),
+        guidedTarget: destination,
+      }),
+    );
+    expect(mutate).not.toHaveBeenCalled();
+    return html;
+  };
+  it("fresh request opens only an unsaved editor with exact request version", () => {
+    const c = company();
+    const before = JSON.stringify(c);
+    const html = renderGuided(c);
+    expect(html).toContain('id="response-preparation-title"');
+    expect(html).toContain("기준 요청: 합성 요청 · 요청 v1");
+    expect(html).toContain('value="답변 준비: 합성 요청"');
+    expect(JSON.stringify(c)).toBe(before);
+  });
+  it("continues one draft only when its request version is the target version", () => {
+    const c = company({ responsePreparations: [preparation()] });
+    const selection = guidedResponsePreparation(c, target(c));
+    expect(selection?.previous?.id).toBe(uuid(4));
+    expect(selection?.canEdit).toBe(true);
+    expect(renderGuided(c)).toContain('value="합성 답변 준비"');
+    expect(c.responsePreparations).toHaveLength(1);
+  });
+  it("keeps v1 text for comparison after v2 correction without copying it to a new editor", () => {
+    const c = company({
+      responsePreparations: [preparation()],
+      agencyRecords: [
+        request(),
+        request({
+          id: uuid(8),
+          kind: "request-correction",
+          requestVersionId: uuid(8),
+          previousVersionId: uuid(2),
+          version: 2,
+          body: "다시 설명해 주세요.",
+        }),
+      ],
+    });
+    const html = renderGuided(c, target(c, uuid(8)));
+    expect(html).toContain("이전 요청 기준의 준비안");
+    expect(html).toContain(`id="response-preparation-${uuid(4)}"`);
+    expect(html).not.toContain('id="response-preparation-title"');
+    expect(c.responsePreparations[0].requestVersionId).toBe(uuid(2));
+  });
+  it("does not select arbitrarily among multiple preparation roots", () => {
+    const c = company({
+      responsePreparations: [
+        preparation(),
+        preparation({ id: uuid(9), preparationId: uuid(9), clientRequestId: uuid(10) }),
+      ],
+    });
+    const html = renderGuided(c);
+    expect(html).toContain("준비안이 여러 개");
+    expect(html).not.toContain('id="response-preparation-title"');
+    expect(guidedResponsePreparation(c, target(c))?.previous).toBeNull();
+  });
+  it.each(["case", "revision", "version"])(
+    "rejects mismatched %s without a fallback editor",
+    (field) => {
+      const c = company();
+      const destination = target(c);
+      if (field === "case") destination.caseId = uuid(99);
+      if (field === "revision") destination.companyRevision -= 1;
+      if (field === "version" && destination.kind === "response")
+        destination.requestVersionId = uuid(99);
+      expect(guidedResponsePreparation(c, destination)).toBeNull();
+      const html = renderGuided(c, destination);
+      expect(html).not.toContain('id="response-preparation-title"');
+      expect(html).toContain("다른 요청으로 바꾸지 않습니다");
+    },
+  );
+  it("does not open an editor while sibling work is dirty or the version limit is reached", () => {
+    const c = company();
+    expect(renderGuided(c, target(c), "다른 편집을 먼저 저장")).not.toContain(
+      'id="response-preparation-title"',
+    );
+    c.responsePreparations = Array.from({ length: 50 }, (_, n) =>
+      preparation({ id: uuid(100 + n), preparationId: uuid(100 + n) }),
+    );
+    expect(renderGuided(c)).not.toContain('id="response-preparation-title"');
+    expect(guidedResponsePreparation(c, target(c))?.reason).toContain("한도");
+  });
+});
+
+describe("저장 후 답변 준비 안내 갱신", () => {
+  function correctedCompany() {
+    return company({
+      responsePreparations: [preparation()],
+      agencyRecords: [
+        request(),
+        request({
+          id: uuid(8),
+          kind: "request-correction",
+          requestVersionId: uuid(8),
+          previousVersionId: uuid(2),
+          version: 2,
+        }),
+      ],
+    });
+  }
+  it("refreshes only guidance after a v2 save while preserving initial selection and v1", () => {
+    const before = correctedCompany();
+    const entryTarget = target(before, uuid(8));
+    const initial = guidedResponsePreparation(before, entryTarget);
+    expect(initial?.reason).toContain("이전 요청 기준");
+    const after = structuredClone(before);
+    after.revision += 1;
+    after.responsePreparations.push(
+      preparation({
+        id: uuid(11),
+        previousVersionId: uuid(4),
+        version: 2,
+        requestVersionId: uuid(8),
+        clientRequestId: uuid(12),
+        title: "v2 요청 기준 준비안",
+      }),
+    );
+    const snapshot = JSON.stringify(after);
+    const current = guidedResponseGuidance(after, entryTarget, true);
+    expect(current?.reason).toBe("");
+    expect(current?.canEdit).toBe(true);
+    expect(current?.previous?.id).toBe(uuid(11));
+    expect(initial?.previous?.id).toBe(uuid(4));
+    expect(after.responsePreparations[0].requestVersionId).toBe(uuid(2));
+    expect(JSON.stringify(after)).toBe(snapshot);
+    const mutate = vi.fn();
+    const html = renderToStaticMarkup(
+      createElement(ResponsePreparations, {
+        company: after,
+        mutate,
+        blockedReason: "",
+        onDirtyChange: vi.fn(),
+      }),
+    );
+    expect(html).not.toContain('id="response-preparation-title"');
+    expect(html).not.toContain("이전 요청 기준의 준비안이 있습니다");
+    expect(html).toMatch(/<button(?![^>]*\sdisabled="")[^>]*>이 요청의 답변 이어 작성<\/button>/);
+    expect(mutate).not.toHaveBeenCalled();
+  });
+  it("does not repair an invalid entry or silently follow a new request correction", () => {
+    const c = correctedCompany();
+    const entryTarget = target(c, uuid(8));
+    expect(guidedResponseGuidance(c, entryTarget, false)).toBeNull();
+    c.revision += 1;
+    c.agencyRecords.push(
+      request({
+        id: uuid(13),
+        kind: "request-correction",
+        requestVersionId: uuid(13),
+        previousVersionId: uuid(8),
+        version: 3,
+      }),
+    );
+    expect(guidedResponseGuidance(c, entryTarget, true)).toBeNull();
+    expect(guidedResponseGuidance(c, { ...entryTarget, caseId: uuid(99) }, true)).toBeNull();
   });
 });

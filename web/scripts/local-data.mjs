@@ -5,6 +5,11 @@ import { pathToFileURL } from "node:url";
 import { z } from "zod";
 import { prepareColdSource } from "./local-data-cold.mjs";
 import {
+  backupQualityData,
+  restoreQualityData,
+  verifyQualityBackup,
+} from "./local-data-quality.mjs";
+import {
   createDestination,
   DataToolError,
   fail,
@@ -361,7 +366,18 @@ export function restoreLocalData(source, destination) {
 async function main(args) {
   const [action, ...rest] = args;
   const options = {};
-  if (!["backup", "verify", "restore"].includes(action) || rest.length % 2) fail("USAGE");
+  if (
+    ![
+      "backup",
+      "verify",
+      "restore",
+      "quality-backup",
+      "quality-verify",
+      "quality-restore",
+    ].includes(action) ||
+    rest.length % 2
+  )
+    fail("USAGE");
   for (let index = 0; index < rest.length; index += 2) {
     const key = rest[index];
     if (
@@ -374,9 +390,50 @@ async function main(args) {
   }
   if (
     !options["--source"] ||
-    (action === "verify" ? options["--destination"] : !options["--destination"])
+    (action.endsWith("verify") ? options["--destination"] : !options["--destination"])
   )
     fail("USAGE");
+  if (action.startsWith("quality-")) {
+    const result =
+      action === "quality-backup"
+        ? await backupQualityData(options["--source"], options["--destination"])
+        : action === "quality-restore"
+          ? restoreQualityData(options["--source"], options["--destination"])
+          : (() => {
+              const { snapshot } = verifyQualityBackup(options["--source"]);
+              return {
+                runs: snapshot.runs,
+                revisions: snapshot.revisions,
+                requests: snapshot.requests,
+                ...(snapshot.candidateVersions === undefined
+                  ? {}
+                  : {
+                      candidateVersions: snapshot.candidateVersions,
+                      candidateRequests: snapshot.candidateRequests,
+                    }),
+                ...(snapshot.executionRuns === undefined
+                  ? {}
+                  : {
+                      executionRuns: snapshot.executionRuns,
+                      executionEvents: snapshot.executionEvents,
+                      executionRequests: snapshot.executionRequests,
+                    }),
+                ...(snapshot.actualBudgetEvents === undefined
+                  ? {}
+                  : {
+                      actualBudgetEvents: snapshot.actualBudgetEvents,
+                      actualRuns: snapshot.actualRuns,
+                      actualEvents: snapshot.actualEvents,
+                      actualArtifacts: snapshot.actualArtifacts,
+                      actualRequests: snapshot.actualRequests,
+                    }),
+              };
+            })();
+    process.stdout.write(
+      `${JSON.stringify({ ok: true, action, ...result, scope: "quality-records-structure-and-bytes-only", companyDataChanged: false, switched: false })}\n`,
+    );
+    return;
+  }
   const result =
     action === "backup"
       ? await backupLocalData(options["--source"], options["--destination"])

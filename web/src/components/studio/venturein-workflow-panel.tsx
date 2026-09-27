@@ -965,6 +965,7 @@ export function VentureinWorkflowPanel({
               )}
             <VentureinExecutionPanel
               key={company.id}
+              caseId={company.id}
               endpoint={endpoint}
               workflow={workflow}
               companyRevision={company.revision}

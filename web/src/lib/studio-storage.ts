@@ -1,4 +1,26 @@
 import { createHash, randomUUID } from "node:crypto";
+import { packageLimits } from "./studio-package-types";
+import {
+  MAX_PREPARED_PACKAGES,
+  preparedPackageRecordSchema,
+  preparedPackageRequestSchema,
+  preparedPackageSummary,
+  type PreparedPackageRecord,
+  type PreparedPackageRequest,
+} from "./studio-prepared-package-types";
+import {
+  guidedPreparationRequestSchema,
+  MAX_GUIDED_ATTEMPTS_PER_SCOPE,
+  unresolvedGuidedPreparationRuns,
+  type GuidedPreparationRequest,
+  type GuidedPlanRepair,
+} from "./studio-guided-preparation-types";
+import {
+  assertGuidedPreparationBinding,
+  guidedPreparationApproval,
+  guidedPreparationDigest,
+  guidedPreparationError,
+} from "./studio-guided-preparation-state";
 import {
   assertPreparationAutomationCapacity,
   configurePreparationAutomation,
@@ -248,6 +270,18 @@ import {
 } from "./studio-agency-records";
 
 type StoredRow = { body: string; evidence_revision: number };
+// Storage stays independent of the async ZIP/AI engine import graph.
+const preparedPackageSha = (value: Uint8Array | string) =>
+  createHash("sha256").update(value).digest("hex");
+const preparedPackageRequestDigest = (input: PreparedPackageRequest) =>
+  preparedPackageSha(JSON.stringify(preparedPackageRequestSchema.parse(input)));
+function preparedPackageError(code: string, status = 409): never {
+  throw new StudioError(
+    "로컬 준비본을 보관하거나 읽지 못했습니다. 원고·자료와 저장 상태를 확인해 주세요. 기존 준비본은 보존됩니다.",
+    status,
+    code,
+  );
+}
 /** Encrypted connector data is deliberately kept outside StudioCase and its AI/export payloads. */
 export type VentureAccountEnvelope = {
   encryptedPayload: Uint8Array | null;
@@ -505,9 +539,173 @@ export class StudioStore {
     this.db.exec(
       "CREATE TABLE IF NOT EXISTS venture_workflows (case_id TEXT PRIMARY KEY REFERENCES studio_cases(id) ON DELETE CASCADE, revision INTEGER NOT NULL CHECK (revision > 0), body TEXT NOT NULL, updated_at TEXT NOT NULL)",
     );
+    this.db.exec(
+      "CREATE TABLE IF NOT EXISTS studio_prepared_packages (id TEXT PRIMARY KEY, case_id TEXT NOT NULL REFERENCES studio_cases(id) ON DELETE CASCADE, version INTEGER NOT NULL CHECK(version > 0), client_request_id TEXT NOT NULL, request_digest TEXT NOT NULL, body TEXT NOT NULL, body_sha256 TEXT NOT NULL, archive BLOB NOT NULL, UNIQUE(case_id, version), UNIQUE(case_id, client_request_id))",
+    );
   }
   close() {
     this.db.close();
+  }
+  private readPreparedPackageRow(
+    caseId: string,
+    row: { body: string; body_sha256: string; archive?: Uint8Array },
+  ) {
+    if (preparedPackageSha(row.body) !== row.body_sha256)
+      preparedPackageError("PREPARED_PACKAGE_CHANGED");
+    const parsed = preparedPackageRecordSchema.safeParse(JSON.parse(row.body));
+    if (!parsed.success || parsed.data.caseId !== caseId)
+      preparedPackageError("PREPARED_PACKAGE_CHANGED");
+    const record = parsed.data;
+    if (
+      row.archive &&
+      (row.archive.length !== record.zip.sizeBytes ||
+        preparedPackageSha(row.archive) !== record.zip.sha256)
+    )
+      preparedPackageError("PREPARED_ARCHIVE_CHANGED");
+    return record;
+  }
+  listPreparedPackages(caseId: string) {
+    const company = this.get(caseId);
+    const rows = this.db
+      .prepare(
+        "SELECT body,body_sha256 FROM studio_prepared_packages WHERE case_id=? ORDER BY version DESC",
+      )
+      .all(caseId) as { body: string; body_sha256: string }[];
+    return {
+      caseId,
+      caseRevision: company.revision,
+      packages: rows.map((row) => preparedPackageSummary(this.readPreparedPackageRow(caseId, row))),
+    };
+  }
+  getPreparedPackage(caseId: string, packageId: string) {
+    this.get(caseId);
+    uuid.parse(packageId);
+    const row = this.db
+      .prepare("SELECT body,body_sha256 FROM studio_prepared_packages WHERE case_id=? AND id=?")
+      .get(caseId, packageId) as { body: string; body_sha256: string } | undefined;
+    if (!row) preparedPackageError("PREPARED_PACKAGE_NOT_FOUND", 404);
+    const record = this.readPreparedPackageRow(caseId, row);
+    if (record.id !== packageId) preparedPackageError("PREPARED_PACKAGE_CHANGED");
+    return record;
+  }
+  downloadPreparedPackage(caseId: string, packageId: string) {
+    this.get(caseId);
+    uuid.parse(packageId);
+    const row = this.db
+      .prepare(
+        "SELECT body,body_sha256,archive FROM studio_prepared_packages WHERE case_id=? AND id=?",
+      )
+      .get(caseId, packageId) as
+      { body: string; body_sha256: string; archive: Uint8Array } | undefined;
+    if (!row) preparedPackageError("PREPARED_PACKAGE_NOT_FOUND", 404);
+    const record = this.readPreparedPackageRow(caseId, row);
+    if (record.id !== packageId) preparedPackageError("PREPARED_PACKAGE_CHANGED");
+    return { record, buffer: Buffer.from(row.archive) };
+  }
+  findPreparedPackageRequest(caseId: string, raw: PreparedPackageRequest) {
+    this.get(caseId);
+    const input = preparedPackageRequestSchema.parse(raw);
+    const row = this.db
+      .prepare(
+        "SELECT body,body_sha256,archive,request_digest FROM studio_prepared_packages WHERE case_id=? AND client_request_id=?",
+      )
+      .get(caseId, input.clientRequestId) as
+      | { body: string; body_sha256: string; archive: Uint8Array; request_digest: string }
+      | undefined;
+    if (!row) return null;
+    const digest = preparedPackageRequestDigest(input);
+    if (row.request_digest !== digest) preparedPackageError("PREPARED_REQUEST_CONFLICT");
+    const record = this.readPreparedPackageRow(caseId, row);
+    if (record.requestDigest !== digest || JSON.stringify(record.input) !== JSON.stringify(input))
+      preparedPackageError("PREPARED_REQUEST_CONFLICT");
+    return record;
+  }
+  /** Snapshot and archive commit together; no client-provided snapshot reaches this method. */
+  commitPreparedPackage(
+    caseId: string,
+    raw: PreparedPackageRequest,
+    snapshot: Omit<PreparedPackageRecord, "version">,
+    buffer: Buffer,
+  ) {
+    const input = preparedPackageRequestSchema.parse(raw);
+    assertVentureCompanyWritable(caseId);
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const existing = this.findPreparedPackageRequest(caseId, input);
+      if (existing) {
+        this.db.exec("COMMIT");
+        return { package: existing, replayed: true };
+      }
+      const current = this.get(caseId);
+      if (current.revision !== input.revision) preparedPackageError("STALE_REVISION");
+      if (preparedPackageSha(JSON.stringify(current)) !== snapshot.company.snapshotSha256)
+        preparedPackageError("PREPARED_SNAPSHOT_CHANGED");
+      const count = this.db
+        .prepare("SELECT COUNT(*) AS count FROM studio_prepared_packages WHERE case_id=?")
+        .get(caseId) as { count: number };
+      if (count.count >= MAX_PREPARED_PACKAGES) preparedPackageError("PREPARED_PACKAGE_LIMIT", 413);
+      const record = preparedPackageRecordSchema.parse({ ...snapshot, version: count.count + 1 });
+      const currentPlan = current.plans.find((plan) => plan.id === input.planId);
+      const { contentSha256, ...savedPlan } = record.plan;
+      if (
+        !currentPlan ||
+        record.caseId !== caseId ||
+        record.caseRevision !== input.revision ||
+        record.clientRequestId !== input.clientRequestId ||
+        record.requestDigest !== preparedPackageRequestDigest(input) ||
+        JSON.stringify(record.input) !== JSON.stringify(input) ||
+        JSON.stringify(record.sourceIds) !== JSON.stringify(input.sourceIds) ||
+        JSON.stringify(savedPlan) !== JSON.stringify(currentPlan) ||
+        contentSha256 !== preparedPackageSha(JSON.stringify(currentPlan.content)) ||
+        JSON.stringify(record.company.profile) !== JSON.stringify(current.profile) ||
+        JSON.stringify(record.review.storedFindings) !== JSON.stringify(currentPlan.review) ||
+        record.review.confirmedAt !== currentPlan.confirmedAt ||
+        buffer.length !== record.zip.sizeBytes ||
+        preparedPackageSha(buffer) !== record.zip.sha256
+      )
+        preparedPackageError("PREPARED_SNAPSHOT_CHANGED");
+      if (record.sources.length !== input.sourceIds.length)
+        preparedPackageError("PREPARED_SOURCE_CHANGED");
+      for (const [index, sourceId] of input.sourceIds.entries()) {
+        const saved = record.sources[index];
+        const original = this.originalForVentureInput(caseId, sourceId);
+        const { text, ...metadata } = original.source;
+        if (
+          saved.source.id !== sourceId ||
+          saved.sourceSha256 !== preparedPackageSha(JSON.stringify(original.source)) ||
+          JSON.stringify(saved.source) !== JSON.stringify(metadata) ||
+          saved.textSha256 !== preparedPackageSha(text) ||
+          saved.originalSha256 !== original.sha256 ||
+          saved.originalSha256 !== preparedPackageSha(original.buffer) ||
+          saved.originalSizeBytes !== original.buffer.length
+        )
+          preparedPackageError("PREPARED_ORIGINAL_CHANGED");
+      }
+      const body = JSON.stringify(record);
+      if (Buffer.byteLength(body, "utf8") > packageLimits.metadataBytes)
+        preparedPackageError("PREPARED_METADATA_LIMIT", 413);
+      if (preparedPackageSha(JSON.stringify(this.get(caseId))) !== record.company.snapshotSha256)
+        preparedPackageError("PREPARED_SNAPSHOT_CHANGED");
+      this.db
+        .prepare(
+          "INSERT INTO studio_prepared_packages(id,case_id,version,client_request_id,request_digest,body,body_sha256,archive) VALUES (?,?,?,?,?,?,?,?)",
+        )
+        .run(
+          record.id,
+          caseId,
+          record.version,
+          input.clientRequestId,
+          record.requestDigest,
+          body,
+          preparedPackageSha(body),
+          buffer,
+        );
+      this.db.exec("COMMIT");
+      return { package: record, replayed: false };
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
   }
   private filePath(caseId: string, sourceId: string) {
     uuid.parse(caseId);
@@ -1753,6 +1951,300 @@ export class StudioStore {
       // A newly recommended strategy invalidates old plans even if a model reuses candidate IDs.
       return true;
     });
+  }
+  /** Consent, request identity and each generated artifact share the company's CAS transaction. */
+  beginGuidedPreparation(id: string, raw: GuidedPreparationRequest, model: string) {
+    const input = guidedPreparationRequestSchema.parse(raw),
+      digest = guidedPreparationDigest(input);
+    let replayed = false;
+    const company = this.update(
+      id,
+      input.revision,
+      (record) => {
+        const runs = (record.guidedPreparationRuns ??= []);
+        const now = new Date().toISOString();
+        if (input.action !== "restart" && unresolvedGuidedPreparationRuns(runs).length)
+          guidedPreparationError("GUIDED_UNRESOLVED_REQUEST");
+        if (input.action === "start" || input.action === "restart") {
+          if (runs.length >= 30) guidedPreparationError("GUIDED_LIMIT", 413);
+          if (
+            JSON.stringify(input.approval) !==
+            JSON.stringify(guidedPreparationApproval(record, model))
+          )
+            guidedPreparationError("GUIDED_APPROVAL_CHANGED");
+          const sameScope = runs.filter(
+            (run) => run.approval.inputFingerprint === input.approval.inputFingerprint,
+          );
+          if (input.action === "start" && sameScope.length)
+            guidedPreparationError("GUIDED_EXISTING_RUN");
+          if (sameScope.length >= MAX_GUIDED_ATTEMPTS_PER_SCOPE)
+            guidedPreparationError("GUIDED_RESTART_LIMIT", 409);
+          if (input.action === "restart") {
+            const previous = runs.at(-1);
+            if (
+              !previous ||
+              previous.id !== input.previousRunId ||
+              !["failed", "awaiting_review", "running"].includes(previous.status)
+            )
+              guidedPreparationError("GUIDED_RESTART_CHANGED");
+            if (unresolvedGuidedPreparationRuns(runs).some((run) => run.id !== previous.id))
+              guidedPreparationError("GUIDED_UNRESOLVED_REQUEST");
+          }
+          const selected = currentVerifiedCandidateSelection(record)
+            ? record.analysis?.candidates.find((item) => item.id === record.selectedCandidateId)
+            : undefined;
+          runs.push({
+            id: randomUUID(),
+            retryOfId: input.action === "restart" ? input.previousRunId : null,
+            mode: "ai",
+            approval: input.approval,
+            approvedAt: now,
+            status: "running",
+            phase: selected ? "plan" : "analysis",
+            analysisDigest: selected ? guidedPreparationDigest(record.analysis) : null,
+            candidateId: selected?.id ?? null,
+            candidateDigest: selected ? guidedPreparationDigest(selected) : null,
+            planId: null,
+            code: null,
+            requests: [{ clientRequestId: input.clientRequestId, digest }],
+            createdAt: now,
+            updatedAt: now,
+          });
+        } else {
+          const run = runs.find((item) => item.id === input.runId);
+          if (!run || run.status !== "awaiting_choice")
+            guidedPreparationError("GUIDED_SELECTION_REQUIRED");
+          assertGuidedPreparationBinding(record, run);
+          if (run.approval.model !== model) guidedPreparationError("GUIDED_APPROVAL_CHANGED");
+          const selected = currentVerifiedCandidateSelection(record)
+            ? record.analysis?.candidates.find((item) => item.id === record.selectedCandidateId)
+            : undefined;
+          if (!selected) guidedPreparationError("GUIDED_SELECTION_REQUIRED");
+          if (run.requests.length >= 20) guidedPreparationError("GUIDED_LIMIT", 413);
+          run.candidateId = selected.id;
+          run.candidateDigest = guidedPreparationDigest(selected);
+          run.phase = "plan";
+          run.status = "running";
+          run.updatedAt = now;
+          run.requests.push({ clientRequestId: input.clientRequestId, digest });
+        }
+        return false;
+      },
+      (record) => {
+        const matches = (record.guidedPreparationRuns ?? []).flatMap((run) =>
+          run.requests
+            .filter((request) => request.clientRequestId === input.clientRequestId)
+            .map((request) => ({ run, request })),
+        );
+        if (!matches.length) return false;
+        if (
+          matches.length !== 1 ||
+          matches[0].request.digest !== digest ||
+          (input.action === "continue" && matches[0].run.id !== input.runId)
+        )
+          guidedPreparationError("GUIDED_REQUEST_CONFLICT");
+        replayed = true;
+        return true;
+      },
+    );
+    const run = company.guidedPreparationRuns!.find((item) =>
+      item.requests.some((request) => request.clientRequestId === input.clientRequestId),
+    )!;
+    return { company, run, replayed };
+  }
+  checkpointGuidedPlan(
+    id: string,
+    revision: number,
+    runId: string,
+    content: PlanContent,
+    review: ReviewFinding[],
+  ) {
+    return this.update(id, revision, (record) => {
+      const run = record.guidedPreparationRuns?.find((item) => item.id === runId);
+      if (
+        !run ||
+        run.status !== "running" ||
+        run.phase !== "plan" ||
+        run.approval.autoRevisionLimit !== 1 ||
+        run.repair
+      )
+        guidedPreparationError("GUIDED_REPAIR_PHASE");
+      assertGuidedPreparationBinding(record, run);
+      const selected = currentVerifiedCandidateSelection(record)
+        ? record.analysis?.candidates.find((item) => item.id === record.selectedCandidateId)
+        : undefined;
+      if (
+        !selected ||
+        selected.id !== run.candidateId ||
+        guidedPreparationDigest(selected) !== run.candidateDigest
+      )
+        guidedPreparationError("GUIDED_SELECTION_CHANGED");
+      const initial = appendGeneratedPlan(record, revision, selected.id, content, review, "ai");
+      run.planId = initial.id;
+      run.repair = {
+        initialPlanId: initial.id,
+        finalPlanId: null,
+        status: "pending",
+        attempted: false,
+        reason: "검토한 초안을 보관했습니다.",
+        initialReviewCount: review.filter((item) => item.severity !== "info").length,
+        finalReviewCount: null,
+        attemptedAt: null,
+        completedAt: null,
+      };
+      run.updatedAt = new Date().toISOString();
+      return false;
+    });
+  }
+  beginGuidedRepair(id: string, revision: number, runId: string) {
+    return this.update(id, revision, (record) => {
+      const run = record.guidedPreparationRuns?.find((item) => item.id === runId);
+      if (
+        !run ||
+        run.status !== "running" ||
+        run.phase !== "plan" ||
+        run.approval.autoRevisionLimit !== 1 ||
+        !run.repair ||
+        run.repair.attempted ||
+        run.repair.status !== "pending"
+      )
+        guidedPreparationError("GUIDED_REPAIR_LIMIT");
+      assertGuidedPreparationBinding(record, run);
+      const initial = record.plans.find((item) => item.id === run.repair!.initialPlanId);
+      if (
+        !initial ||
+        initial.id !== run.planId ||
+        initial.candidateId !== record.selectedCandidateId ||
+        !currentVerifiedCandidateSelection(record)
+      )
+        guidedPreparationError("GUIDED_REPAIR_CHANGED");
+      run.repair.attempted = true;
+      run.repair.attemptedAt = new Date().toISOString();
+      run.repair.reason = "같은 자료 범위에서 한 번 수정하고 다시 검토합니다.";
+      run.updatedAt = run.repair.attemptedAt;
+      return false;
+    });
+  }
+  commitGuidedPreparation(
+    id: string,
+    revision: number,
+    runId: string,
+    result:
+      | { phase: "analysis"; content: AnalysisContent }
+      | {
+          phase: "plan";
+          content: PlanContent;
+          review: ReviewFinding[];
+          repair?: Pick<GuidedPlanRepair, "attempted" | "reason"> & {
+            status: Exclude<GuidedPlanRepair["status"], "pending">;
+          };
+        },
+  ) {
+    const company = this.update(id, revision, (record) => {
+      const run = record.guidedPreparationRuns?.find((item) => item.id === runId);
+      if (!run || run.status !== "running" || run.phase !== result.phase)
+        guidedPreparationError("GUIDED_PHASE_CHANGED");
+      assertGuidedPreparationBinding(record, run);
+      if (result.phase === "analysis") {
+        applyAnalysis(record, result.content, "ai", revision);
+        run.analysisDigest = guidedPreparationDigest(record.analysis);
+        run.status = result.content.candidates.length ? "awaiting_choice" : "awaiting_materials";
+      } else {
+        const selected = currentVerifiedCandidateSelection(record)
+          ? record.analysis?.candidates.find((item) => item.id === record.selectedCandidateId)
+          : undefined;
+        if (
+          !selected ||
+          selected.id !== run.candidateId ||
+          guidedPreparationDigest(selected) !== run.candidateDigest
+        )
+          guidedPreparationError("GUIDED_SELECTION_CHANGED");
+        let plan: BusinessPlan;
+        if (result.repair) {
+          const checkpoint = run.repair;
+          const initial = record.plans.find((item) => item.id === checkpoint?.initialPlanId);
+          if (
+            run.approval.autoRevisionLimit !== 1 ||
+            !checkpoint ||
+            !initial ||
+            initial.id !== run.planId ||
+            initial.candidateId !== selected.id ||
+            checkpoint.status !== "pending" ||
+            checkpoint.attempted !== result.repair.attempted ||
+            (result.repair.status === "not-needed" && checkpoint.attempted) ||
+            (result.repair.status !== "not-needed" && !checkpoint.attempted)
+          )
+            guidedPreparationError("GUIDED_REPAIR_RESULT");
+          const changed =
+            guidedPreparationDigest(initial.content) !== guidedPreparationDigest(result.content);
+          const reviewChanged =
+            guidedPreparationDigest(initial.review) !== guidedPreparationDigest(result.review);
+          if (
+            (changed || reviewChanged) &&
+            ["not-needed", "failed", "rejected"].includes(result.repair.status)
+          )
+            guidedPreparationError("GUIDED_REPAIR_RESULT");
+          if (
+            initial.content.sections.some(
+              (section) =>
+                section.needsConfirmation &&
+                !result.content.sections.find((item) => item.key === section.key)
+                  ?.needsConfirmation,
+            )
+          )
+            guidedPreparationError("GUIDED_REPAIR_CONFIRMATION");
+          plan =
+            changed || reviewChanged
+              ? appendGeneratedPlan(
+                  record,
+                  revision,
+                  selected.id,
+                  result.content,
+                  result.review,
+                  "ai",
+                )
+              : initial;
+          run.repair = {
+            ...checkpoint,
+            ...result.repair,
+            finalPlanId: plan.id,
+            finalReviewCount: plan.review.filter((item) => item.severity !== "info").length,
+            completedAt: new Date().toISOString(),
+          };
+        } else {
+          if (run.repair) guidedPreparationError("GUIDED_REPAIR_RESULT");
+          plan = appendGeneratedPlan(
+            record,
+            revision,
+            selected.id,
+            result.content,
+            result.review,
+            "ai",
+          );
+        }
+        run.planId = plan.id;
+        run.status = "awaiting_review";
+      }
+      run.updatedAt = new Date().toISOString();
+      return result.phase === "analysis";
+    });
+    return { company, run: company.guidedPreparationRuns!.find((item) => item.id === runId)! };
+  }
+  failGuidedPreparation(id: string, revision: number, runId: string, code: string) {
+    const company = this.update(id, revision, (record) => {
+      const run = record.guidedPreparationRuns?.find((item) => item.id === runId);
+      if (!run || run.status !== "running") guidedPreparationError("GUIDED_PHASE_CHANGED");
+      run.status = "failed";
+      run.code = /^[A-Z0-9_]{1,100}$/.test(code) ? code : "GUIDED_FAILED";
+      if (run.repair?.status === "pending") {
+        run.repair.status = "failed";
+        run.repair.reason = "자동 수정을 마치지 못했습니다. 보관한 초안을 확인해 주세요.";
+        run.repair.completedAt = new Date().toISOString();
+      }
+      run.updatedAt = new Date().toISOString();
+      return false;
+    });
+    return { company, run: company.guidedPreparationRuns!.find((item) => item.id === runId)! };
   }
   saveGeneratedPlan(
     id: string,

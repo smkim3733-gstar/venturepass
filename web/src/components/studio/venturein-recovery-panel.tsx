@@ -8,9 +8,19 @@ import type {
   VentureExecutionRecord,
   VentureRecoveryReview,
 } from "@/lib/venturein-execution-schema";
-import { ventureRecoverableCodes } from "@/lib/venturein-execution-schema";
+import {
+  ventureRecoverableCodes,
+  ventureExecutionRecordSchema,
+} from "@/lib/venturein-execution-schema";
 import type { VentureResolvedText, VentureTextSource } from "@/lib/venturein-preflight";
 import { formatDate, Notice } from "./shared";
+import {
+  validateRecoveryPreparedBinding,
+  VentureinPreparedBindingSummary,
+} from "./venturein-prepared-execution-ui";
+
+const recoveryButtonClass =
+  "h-auto min-h-11 min-w-0 max-w-full shrink whitespace-normal break-words py-2";
 
 type RecoveryBinding = Pick<
   VentureRecoveryReview,
@@ -21,6 +31,7 @@ type RecoveryBinding = Pick<
   | "sessionStartedAt"
   | "priorExecutionId"
   | "destination"
+  | "preparedPackage"
 >;
 
 export function ventureRecoveryBlockedReason(
@@ -45,6 +56,8 @@ export function ventureRecoveryBlockedReason(
     return "결과가 미확인인 실행은 새 입력 대상으로 복구하지 않습니다. 공식 화면을 직접 확인하세요.";
   const manifest = execution.manifest;
   const recoverableCodes = new Set<string>(ventureRecoverableCodes);
+  if (manifest?.version === 2 && !ventureExecutionRecordSchema.safeParse(execution).success)
+    return "이전 준비본 연결 기록을 확인하지 못했습니다. 다른 준비본으로 바꾸어 복구하지 않습니다.";
   if (
     !manifest ||
     !execution.previousAttempts ||
@@ -153,6 +166,11 @@ export function validateVentureRecoveryReview(
     destination.password
   )
     return fail();
+  try {
+    validateRecoveryPreparedBinding(review.preparedPackage, expected.preparedPackage);
+  } catch {
+    return fail();
+  }
   return review;
 }
 
@@ -174,13 +192,17 @@ export function VentureinRecoveryApproval({
   onExecute,
 }: ApprovalProps) {
   return (
-    <section aria-label="미시도 빈 텍스트 새 전송 승인" className="space-y-4 rounded-xl border p-4">
+    <section
+      aria-label="미시도 빈 텍스트 새 전송 승인"
+      className="min-w-0 space-y-4 rounded-xl border p-4"
+    >
       <h5 className="font-semibold">새로 입력할 미시도 빈 텍스트 {review.fieldCount}개</h5>
       <Notice>
         과거 승인을 복원하지 않습니다. 아래 빈 텍스트 항목에 대한 별도의 새 전송 승인입니다.
         일치하는 항목은 보호하며 다시 입력하지 않습니다. 전체 필수 항목이나 약관·동의, 최종 제출이
         완료됐다는 뜻이 아닙니다.
       </Notice>
+      <VentureinPreparedBindingSummary prepared={review.preparedPackage} recovery />
       <dl className="space-y-2 text-sm leading-6">
         <div>
           <dt className="text-muted-foreground">신청 기업</dt>
@@ -287,7 +309,12 @@ export function VentureinRecoveryApproval({
           위 미시도 빈 텍스트를 www.smes.go.kr에 전송해 한 번 입력하는 데 새로 동의합니다.
         </span>
       </label>
-      <Button type="button" disabled={!approved || busy} onClick={onExecute}>
+      <Button
+        className={recoveryButtonClass}
+        type="button"
+        disabled={!approved || busy}
+        onClick={onExecute}
+      >
         <Send />
         새로 승인한 빈 텍스트 1회 입력
       </Button>
@@ -363,7 +390,10 @@ export function VentureinRecoveryPanel({
     }
   }
   return (
-    <section aria-label="텍스트 부분 실행 재검토" className="space-y-3 rounded-xl border p-4">
+    <section
+      aria-label="텍스트 부분 실행 재검토"
+      className="min-w-0 space-y-3 rounded-xl border p-4"
+    >
       <h4 className="text-sm font-semibold">텍스트 부분 실행 재검토</h4>
       <p className="text-xs leading-6 text-muted-foreground">
         정확한 대상·시도 기록이 있는 텍스트 전용 중단 실행만 새로 검토합니다. 현재 일치하는 항목은
@@ -371,6 +401,7 @@ export function VentureinRecoveryPanel({
         대조만으로 입력하지 않습니다.
       </p>
       <Button
+        className={recoveryButtonClass}
         type="button"
         variant="outline"
         disabled={busy || !!blockedReason}
