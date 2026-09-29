@@ -427,6 +427,21 @@ async function main(args) {
                       actualArtifacts: snapshot.actualArtifacts,
                       actualRequests: snapshot.actualRequests,
                     }),
+                ...(snapshot.providerPolicies === undefined
+                  ? {}
+                  : { providerPolicies: snapshot.providerPolicies }),
+                ...(snapshot.providerReservationBindings === undefined
+                  ? {}
+                  : {
+                      providerReservationBindings: snapshot.providerReservationBindings,
+                      providerReservationCoverage: snapshot.providerReservationCoverage,
+                    }),
+                ...(snapshot.providerTransmissionBindings === undefined
+                  ? {}
+                  : {
+                      providerTransmissionBindings: snapshot.providerTransmissionBindings,
+                      providerTransmissionCoverage: snapshot.providerTransmissionCoverage,
+                    }),
               };
             })();
     process.stdout.write(

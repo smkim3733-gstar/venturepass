@@ -6,6 +6,7 @@ import { join, relative, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { PlanQualityStore } from "./studio-plan-quality-store";
+import { freezePolicyFreeSchema } from "./studio-plan-quality-policy-storage-test-helpers";
 import {
   actualTestNow,
   actualTestPreparation,
@@ -27,8 +28,6 @@ import {
 } from "../../scripts/local-data-quality.mjs";
 import {
   qualityWriterTriggerSql,
-  qualityV5WriterTriggerSql,
-  qualityV6WriterTriggerSql,
   qualityImmutableTriggerSql,
 } from "../../scripts/local-data-quality-schema.mjs";
 
@@ -66,19 +65,7 @@ function legacyActualDatabase(bytes: Buffer) {
   writeFileSync(file, bytes);
   const db = new DatabaseSync(file);
   try {
-    const gates = db
-      .prepare(
-        "SELECT name FROM sqlite_schema WHERE type='trigger' AND name IN ('quality_runs_v5_writer','quality_runs_v6_writer')",
-      )
-      .get();
-    if (gates) {
-      const source =
-        gates.name === "quality_runs_v6_writer"
-          ? qualityV6WriterTriggerSql
-          : qualityV5WriterTriggerSql;
-      for (const name of Object.keys(source)) db.exec(`DROP TRIGGER ${name}`);
-      for (const sql of Object.values(qualityWriterTriggerSql)) db.exec(sql);
-    }
+    freezePolicyFreeSchema(db, 4);
   } finally {
     db.close();
   }

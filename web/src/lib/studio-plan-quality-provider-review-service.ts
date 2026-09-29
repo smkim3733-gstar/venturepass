@@ -2,9 +2,16 @@ import { ZodError } from "zod";
 import { assertLocalRequest, jsonResponse, readBoundedBody, StudioError } from "./studio-http";
 import { getPlanQualityStore } from "./studio-plan-quality-store";
 import { planQualityEvaluationDigest as digest } from "./studio-plan-quality-evaluation";
+import { createProviderPolicyReview } from "./studio-plan-quality-provider-policy-review";
+import { providerPolicyInspectionSchema } from "./studio-plan-quality-provider-policy-http-types";
+import {
+  providerPolicyViewSchema,
+  providerPolicyViewBlockerCodes,
+} from "./studio-plan-quality-provider-policy-view-types";
 import {
   getProviderConfigurationProposal,
   createProviderConfigurationProposalView,
+  getProviderConfigurationExpiry,
 } from "./studio-plan-quality-provider-configuration";
 import {
   providerReviewInputSchema,
@@ -14,11 +21,18 @@ import {
   providerReviewNotice,
   providerReviewBlockerCodes,
   providerReviewBlockerMessages,
+  providerProposalBlockerMessages,
+  providerExpiredBlockerCodes,
+  providerExpiredBlockerMessages,
   type ProviderReviewMissingView,
+  type ProviderReviewExpiredView,
 } from "./studio-plan-quality-provider-review-types";
 
-/** Read-only v2 inspection. No credential lookup, provider call, reservation or approval mutation. */
-export async function qualityProviderReviewRoute(request: Request) {
+/** Read-only inspection. No credential lookup, provider call, reservation or approval mutation. */
+export async function qualityProviderReviewRoute(
+  request: Request,
+  mode: "review" | "adoption" = "review",
+) {
   let readingInput = true;
   try {
     assertLocalRequest(request);
@@ -42,7 +56,12 @@ export async function qualityProviderReviewRoute(request: Request) {
       ),
     );
     readingInput = false;
-    const registry = getPlanQualityStore().candidateRegistryGet(input.version);
+    const store = getPlanQualityStore();
+    const context =
+      mode === "adoption"
+        ? store.providerPolicyReviewContext(input.version)
+        : store.providerReviewContext(input.version);
+    const { registry, inspectedAt } = context;
     if (registry.versionDigest !== input.versionDigest)
       throw new StudioError(
         "선택한 후보 등록본이 달라졌습니다. 등록본을 다시 확인해 주세요.",
@@ -56,14 +75,50 @@ export async function qualityProviderReviewRoute(request: Request) {
         404,
         "PROVIDER_REVIEW_CANDIDATE_NOT_FOUND",
       );
-    const inspectedAt = new Date().toISOString();
-    const proposal = createProviderConfigurationProposalView({
+    const proposalInput = {
       registry,
       candidateId: input.candidateId,
       inspectedAt,
       configuration: getProviderConfigurationProposal(),
-    });
-    if (proposal) return jsonResponse(proposal);
+    };
+    const proposal = createProviderConfigurationProposalView(proposalInput);
+    if (proposal) {
+      const policy = createProviderPolicyReview({ ...context, ...proposalInput });
+      if (policy.status !== "review")
+        throw new StudioError(
+          "운영 예산을 확인하지 못했습니다. 다시 읽기로 확인해 주세요.",
+          409,
+          "PROVIDER_POLICY_REVIEW_UNAVAILABLE",
+        );
+      const value = {
+        ...proposal,
+        viewVersion: 4 as const,
+        policyReview: policy.review,
+        blockers: providerPolicyViewBlockerCodes.map((code) => ({
+          code,
+          message: providerProposalBlockerMessages[code],
+        })),
+      };
+      if ("expectedPolicyHead" in context) {
+        const inspection = {
+          ...value,
+          viewVersion: 5 as const,
+          policyHead: context.expectedPolicyHead,
+        };
+        return jsonResponse(
+          providerPolicyInspectionSchema.parse({
+            ...inspection,
+            viewDigest: digest(providerReviewDigestInput(inspection)),
+          }),
+        );
+      }
+      return jsonResponse(
+        providerPolicyViewSchema.parse({
+          ...value,
+          viewDigest: digest(providerReviewDigestInput(value)),
+        }),
+      );
+    }
     const view: Omit<ProviderReviewMissingView, "viewDigest"> = {
       viewVersion: 1,
       providerContractVersion: 2,
@@ -98,10 +153,25 @@ export async function qualityProviderReviewRoute(request: Request) {
       })),
       notice: providerReviewNotice,
     };
+    const expiry = getProviderConfigurationExpiry(proposalInput);
+    const result:
+      | Omit<ProviderReviewMissingView, "viewDigest">
+      | Omit<ProviderReviewExpiredView, "viewDigest"> = expiry
+      ? {
+          ...view,
+          viewVersion: 3,
+          state: "configuration-expired",
+          expiry,
+          blockers: providerExpiredBlockerCodes.map((code) => ({
+            code,
+            message: providerExpiredBlockerMessages[code],
+          })),
+        }
+      : view;
     return jsonResponse(
       providerReviewViewSchema.parse({
-        ...view,
-        viewDigest: digest(providerReviewDigestInput(view)),
+        ...result,
+        viewDigest: digest(providerReviewDigestInput(result)),
       }),
     );
   } catch (error) {

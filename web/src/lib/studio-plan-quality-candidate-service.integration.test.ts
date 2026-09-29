@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join, relative, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PlanQualityStore } from "./studio-plan-quality-store";
+vi.mock("server-only", () => ({}));
 import { StudioError } from "./studio-http";
 import {
   candidateRegistryCatalogSchema,

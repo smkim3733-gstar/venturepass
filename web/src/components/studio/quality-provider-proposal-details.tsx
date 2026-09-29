@@ -1,6 +1,34 @@
 import type { ProviderReviewView } from "@/lib/studio-plan-quality-provider-review-types";
 
-type ProposalView = Extract<ProviderReviewView, { state: "proposal-only" }>;
+type ProposalView = Omit<
+  Extract<ProviderReviewView, { state: "proposal-only" }>,
+  "viewVersion" | "blockers"
+>;
+
+export function QualityProviderExpiredDetails({
+  view,
+}: {
+  view: Extract<ProviderReviewView, { state: "configuration-expired" }>;
+}) {
+  return (
+    <div className="min-w-0 space-y-3 text-sm leading-6">
+      <p>
+        확인했던 운영 근거의 내부 재확인 기한이 지났습니다. 공식 자료를 다시 확인한 뒤
+        모델·요율·보관 조건을 검토할 수 있습니다.
+      </p>
+      <p className="break-words [overflow-wrap:anywhere]">
+        내부 재확인 기한: {view.expiry.validUntil}
+      </p>
+      <p>이 기한은 공급자의 가격 보증일이 아닙니다. 이전 금액으로 예약하거나 전송하지 않습니다.</p>
+      <details className="min-w-0">
+        <summary className="cursor-pointer text-xs">만료된 근거의 식별 기록</summary>
+        <p className="mt-2 break-words text-xs [overflow-wrap:anywhere]">
+          설정 제안 SHA-256: {view.expiry.configurationDigest}
+        </p>
+      </details>
+    </div>
+  );
+}
 
 /** Exact decimal rendering; financial units must never pass through Number. */
 export function qualityProviderMoney(units: string, unitScale: number, currency: string) {
@@ -27,8 +55,8 @@ export function QualityProviderProposalDetails({ view }: { view: ProposalView })
   return (
     <div className="min-w-0 space-y-4">
       <p className="text-sm leading-6">
-        공식 자료를 바탕으로 만든 검토 제안입니다. 운영 모델 채택·예산 설정·전송 승인은 아직 하지
-        않았습니다.
+        공식 자료를 바탕으로 만든 검토 제안입니다. 이 조회로 운영 모델을 채택하거나 예산을
+        설정하거나 전송을 승인하지 않습니다.
       </p>
       <dl className="grid min-w-0 gap-3 text-sm sm:grid-cols-2">
         <div className="min-w-0">
@@ -46,7 +74,7 @@ export function QualityProviderProposalDetails({ view }: { view: ProposalView })
           </dd>
         </div>
         <div>
-          <dt className="text-muted-foreground">제안 누적 한도 · 아직 미설정</dt>
+          <dt className="text-muted-foreground">제안 누적 한도 · 미승인</dt>
           <dd className="break-words">
             {qualityProviderMoney(
               proposal.proposedBudget.capUnits,

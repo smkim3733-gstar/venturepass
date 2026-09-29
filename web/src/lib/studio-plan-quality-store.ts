@@ -8,12 +8,32 @@ import type {
   ProviderCancel,
 } from "./studio-plan-quality-provider-types";
 import { randomUUID } from "node:crypto";
+import {
+  createProviderProductionDispatchStore,
+  requireProviderProductionRuntime,
+  type ProviderProductionRuntime,
+} from "./studio-plan-quality-provider-production-runtime";
+import {
+  snapshotProviderSdkTestNetwork,
+  type ProviderSdkTestNetwork,
+} from "./studio-plan-quality-provider-sdk-dispatch";
 import { existsSync, mkdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { z } from "zod";
 import { nativePaths, safePath } from "../../scripts/local-data-files.mjs";
-import { migrateQualitySchemaV6 } from "../../scripts/local-data-quality-schema.mjs";
+import { inspectQualityDatabase, migrateQualitySchemaV9 } from "../../scripts/local-data-quality.mjs";
+import { ProviderPolicyAdoptionStore } from "./studio-plan-quality-provider-policy-adoption-store";
+import { ProviderReservationReviewStore } from "./studio-plan-quality-provider-reservation-review-store";
+import { ProviderReservationStore } from "./studio-plan-quality-provider-reservation-store";
+import { ProviderTransmissionApprovalStore } from "./studio-plan-quality-provider-transmission-approval-store";
+import {
+  ProviderGenerationDispatchStore,
+  type ProviderDispatchContext,
+  type ProviderGenerationMockTransport,
+  type ProviderReviewMockTransport,
+} from "./studio-plan-quality-provider-dispatch-store";
+import { ProviderTransmissionReviewStore } from "./studio-plan-quality-provider-transmission-review-store";
 import type { ProviderExecutionCommand } from "./studio-plan-quality-provider-execution-types";
 import {
   ActualLedgerStore,
@@ -149,11 +169,40 @@ export class PlanQualityStore {
   private currentDigest = digest(this.currentManifest);
   private actual: ActualLedgerStore;
   private provider: ProviderLedgerStore;
+  private providerPolicy: ProviderPolicyAdoptionStore;
+  private providerReservation: ProviderReservationReviewStore;
+  private providerReservationCommands: ProviderReservationStore;
+  private providerTransmission: ProviderTransmissionReviewStore;
+  private providerTransmissionCommands: ProviderTransmissionApprovalStore;
+  private providerGenerationDispatch: ProviderGenerationDispatchStore;
 
   constructor(
     directory = process.env.VENTURE_DATA_DIR || resolve(process.cwd(), ".venture-pass"),
-    options: { actualEnvironment?: "synthetic-test"; providerEnvironment?: "synthetic-test" } = {},
+    options: {
+      actualEnvironment?: "synthetic-test";
+      providerEnvironment?: "synthetic-test";
+      /** Explicit test-only network; never populated by application routes or environment. */
+      providerSdkTestNetwork?: ProviderSdkTestNetwork;
+      /** Explicit server runtime; only the dedicated approval-scoped runner may write/send. */
+      providerProductionRuntime?: ProviderProductionRuntime;
+    } = {},
   ) {
+    const suppliedRuntime = options.providerProductionRuntime;
+    if (
+      suppliedRuntime !== undefined &&
+      (options.actualEnvironment !== undefined ||
+        options.providerEnvironment !== undefined ||
+        options.providerSdkTestNetwork !== undefined)
+    )
+      throw new Error("PROVIDER_PRODUCTION_RUNTIME_TEST_MIXED");
+    const productionRuntime =
+      suppliedRuntime === undefined ? undefined : requireProviderProductionRuntime(suppliedRuntime);
+    if (options.providerSdkTestNetwork && options.providerEnvironment !== "synthetic-test")
+      throw new Error("PROVIDER_SDK_TEST_NETWORK_DISABLED");
+    const sdkTestNetwork =
+      options.providerSdkTestNetwork === undefined
+        ? undefined
+        : snapshotProviderSdkTestNetwork(options.providerSdkTestNetwork);
     this.root = join(resolve(directory), "quality-evaluation");
     this.file = join(this.root, "quality.sqlite");
     try {
@@ -205,11 +254,84 @@ export class PlanQualityStore {
       capacity: (bytes) => this.budget(bytes),
       synthetic: options.providerEnvironment === "synthetic-test",
     });
+    this.providerPolicy = new ProviderPolicyAdoptionStore({
+      db: this.db,
+      transaction: (work, write) => this.transaction(work, write),
+      registry: (version) => {
+        const found = this.candidateSnapshots().find((value) => value.version === version);
+        if (!found)
+          fail("QUALITY_PROVIDER_CANDIDATE_NOT_FOUND", "정확한 등록 후보를 찾을 수 없습니다.", 404);
+        return found;
+      },
+      capacity: (bytes) => this.budget(bytes),
+    });
+    this.providerReservation = new ProviderReservationReviewStore({
+      db: this.db,
+      transaction: (work) => this.transaction(work),
+      registry: (version) => {
+        const found = this.candidateSnapshots().find((value) => value.version === version);
+        if (!found)
+          fail("QUALITY_PROVIDER_CANDIDATE_NOT_FOUND", "정확한 등록 후보를 찾을 수 없습니다.", 404);
+        return found;
+      },
+    });
+    this.providerReservationCommands = new ProviderReservationStore({
+      db: this.db,
+      transaction: (work, write) => this.transaction(work, write),
+      registry: (version) => {
+        const found = this.candidateSnapshots().find((value) => value.version === version);
+        if (!found)
+          fail("QUALITY_PROVIDER_CANDIDATE_NOT_FOUND", "정확한 등록 후보를 찾을 수 없습니다.", 404);
+        return found;
+      },
+      capacity: (bytes) => this.budget(bytes),
+    });
+    this.providerTransmission = new ProviderTransmissionReviewStore({
+      db: this.db,
+      transaction: (work) => this.transaction(work),
+      registry: (version) => {
+        const found = this.candidateSnapshots().find((value) => value.version === version);
+        if (!found)
+          fail("QUALITY_PROVIDER_CANDIDATE_NOT_FOUND", "정확한 등록 후보를 찾을 수 없습니다.", 404);
+        return found;
+      },
+    });
+    this.providerTransmissionCommands = new ProviderTransmissionApprovalStore({
+      db: this.db,
+      transaction: (work, write) => this.transaction(work, write),
+      registry: (version) => {
+        const found = this.candidateSnapshots().find((value) => value.version === version);
+        if (!found)
+          fail("QUALITY_PROVIDER_CANDIDATE_NOT_FOUND", "정확한 등록 후보를 찾을 수 없습니다.", 404);
+        return found;
+      },
+      capacity: (bytes) => this.budget(bytes),
+    });
+    const dispatchContext: ProviderDispatchContext = {
+      db: this.db,
+      transaction: (work, write) => this.transaction(work, write),
+      registry: (version) => {
+        const found = this.candidateSnapshots().find((value) => value.version === version);
+        if (!found)
+          fail("QUALITY_PROVIDER_CANDIDATE_NOT_FOUND", "정확한 등록 후보를 찾을 수 없습니다.", 404);
+        return found;
+      },
+      capacity: (bytes) => this.budget(bytes),
+      get: (id, revision) => this.provider.get(id, revision),
+      artifact: (id, key) => this.provider.artifact(id, key),
+    };
+    this.providerGenerationDispatch = productionRuntime
+      ? createProviderProductionDispatchStore(dispatchContext, productionRuntime)
+      : new ProviderGenerationDispatchStore({
+          ...dispatchContext,
+          synthetic: options.providerEnvironment === "synthetic-test",
+          sdkTestNetwork,
+        });
     this.db.exec(`PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON; PRAGMA synchronous=FULL;
       PRAGMA journal_mode=DELETE; PRAGMA max_page_count=70000;`);
     this.db.exec("BEGIN IMMEDIATE");
     try {
-      migrateQualitySchemaV6(this.db);
+      migrateQualitySchemaV9(this.db);
       this.db.exec("COMMIT");
     } catch (error) {
       this.db.exec("ROLLBACK");
@@ -220,6 +342,10 @@ export class PlanQualityStore {
   }
   close() {
     this.db.close();
+  }
+  /** Complete audited metadata only; no writer, transport, or customer store is exposed. */
+  inspectDatabase() {
+    return this.transaction(() => inspectQualityDatabase(this.db, { inTransaction: true }));
   }
   private checkPaths() {
     try {
@@ -253,10 +379,12 @@ export class PlanQualityStore {
         (SELECT COUNT(*) FROM quality_candidate_requests) AS candidateRequests,
         (SELECT COUNT(*) FROM quality_execution_runs) AS executionRuns,
         (SELECT COUNT(*) FROM quality_execution_events) AS executionEvents,
-        (SELECT COUNT(*) FROM quality_execution_requests) AS executionRequests`,
+        (SELECT COUNT(*) FROM quality_execution_requests) AS executionRequests,
+        (SELECT COUNT(*) FROM quality_provider_policies) AS providerPolicies`,
         )
         .get()!;
       if (
+        Number(counts.providerPolicies) > 100 ||
         Number(counts.requests) !== Number(counts.runs) + Number(counts.revisions) ||
         Number(counts.runs) > limits.runs ||
         Number(counts.revisions) > limits.runs * limits.revisions ||
@@ -268,18 +396,19 @@ export class PlanQualityStore {
           Number(counts.executionRuns) * qualityExecutionLimits.events
       )
         return corrupt();
-      if (
-        this.db
-          .prepare(
-            `SELECT nonce FROM (
+      const nonceConflict = this.db.prepare(
+        `SELECT nonce FROM (
         SELECT nonce FROM quality_requests UNION ALL SELECT nonce FROM quality_candidate_requests
         UNION ALL SELECT nonce FROM quality_execution_requests UNION ALL SELECT nonce FROM quality_actual_requests
+        UNION ALL SELECT nonce FROM quality_provider_policies
       ) GROUP BY nonce HAVING COUNT(*) > 1 LIMIT 1`,
-          )
-          .get()
-      )
-        return corrupt();
+      );
+      if (nonceConflict.get()) return corrupt();
+      // Missing coverage/bindings must block legacy reads and replays, even with no policy rows.
+      this.budget(0);
       const result = work();
+      if (write && nonceConflict.get()) return corrupt();
+      if (write) this.budget(0);
       this.checkPaths();
       this.db.exec("COMMIT");
       return result;
@@ -304,6 +433,11 @@ export class PlanQualityStore {
       (SELECT COALESCE(SUM(length(CAST(body AS BLOB))),0) FROM quality_actual_runs) +
       (SELECT COALESCE(SUM(length(CAST(body AS BLOB))),0) FROM quality_actual_events) +
       (SELECT COALESCE(SUM(length(CAST(body AS BLOB))),0) FROM quality_actual_requests) +
+      (SELECT COALESCE(SUM(length(CAST(body AS BLOB))),0) FROM quality_provider_policies) +
+      (SELECT COALESCE(SUM(length(CAST(body AS BLOB))),0) FROM quality_provider_reservation_bindings) +
+      (SELECT COALESCE(SUM(length(CAST(body AS BLOB))),0) FROM quality_provider_reservation_coverage) +
+      (SELECT COALESCE(SUM(length(CAST(body AS BLOB))),0) FROM quality_provider_transmission_bindings) +
+      (SELECT COALESCE(SUM(length(CAST(body AS BLOB))),0) FROM quality_provider_transmission_coverage) +
       (SELECT COALESCE(SUM(length(payload)),0) FROM quality_actual_artifacts) AS total`,
       )
       .get()!;
@@ -639,12 +773,17 @@ export class PlanQualityStore {
     }, true);
   }
   private assertEvaluationNonce(nonce: string) {
+    this.assertPolicyNonce(nonce);
     if (this.db.prepare("SELECT nonce FROM quality_actual_requests WHERE nonce=?").get(nonce))
       fail("QUALITY_NONCE_CONFLICT", "같은 요청 번호가 비용 원장에 사용됐습니다.");
     if (this.db.prepare("SELECT nonce FROM quality_candidate_requests WHERE nonce=?").get(nonce))
       fail("QUALITY_NONCE_CONFLICT", "같은 요청 번호가 후보 등록에 사용됐습니다.");
     if (this.db.prepare("SELECT nonce FROM quality_execution_requests WHERE nonce=?").get(nonce))
       fail("QUALITY_NONCE_CONFLICT", "같은 요청 번호가 후보 실행에 사용됐습니다.");
+  }
+  private assertPolicyNonce(nonce: string) {
+    if (this.db.prepare("SELECT nonce FROM quality_provider_policies WHERE nonce=?").get(nonce))
+      fail("QUALITY_NONCE_CONFLICT", "같은 요청 번호가 정책 채택 기록에 사용됐습니다.");
   }
   private candidateReceipt(nonce: string): CandidateRegistryReceipt | null {
     const row = this.db
@@ -757,6 +896,7 @@ export class PlanQualityStore {
       }
       if (this.receipt(input.clientRequestId))
         fail("QUALITY_CANDIDATE_NONCE_CONFLICT", "같은 요청 번호가 기존 평가 기록에 사용됐습니다.");
+      this.assertPolicyNonce(input.clientRequestId);
       if (
         this.db
           .prepare("SELECT nonce FROM quality_actual_requests WHERE nonce=?")
@@ -979,6 +1119,7 @@ export class PlanQualityStore {
         if (!snapshot) return corrupt();
         return { snapshot, replayed: true };
       }
+      this.assertPolicyNonce(input.clientRequestId);
       if (
         this.receipt(input.clientRequestId) ||
         this.candidateReceipt(input.clientRequestId) ||
@@ -1149,6 +1290,9 @@ export class PlanQualityStore {
   providerBudgetGet(environment: ProviderEnvironment = "synthetic-test") {
     return this.provider.budgetGet(environment);
   }
+  providerReviewContext(version: number) {
+    return this.provider.reviewContext(version);
+  }
   providerBudgetConfigure(value: ProviderBudgetConfigure) {
     return this.provider.budgetConfigure(value);
   }
@@ -1158,12 +1302,24 @@ export class PlanQualityStore {
   providerCancel(id: string, value: ProviderCancel) {
     return this.provider.cancel(id, value);
   }
-  providerRecordApprove(id: string, value: ProviderExecutionCommand<"transmission-approved">) { return this.provider.recordApprove(id,value); }
-  providerRecordPrepared(id: string, value: ProviderExecutionCommand<"request-prepared">) { return this.provider.recordPrepared(id,value); }
-  providerRecordDispatch(id: string, value: ProviderExecutionCommand<"dispatch-intent">) { return this.provider.recordDispatch(id,value); }
-  providerRecordResponse(id: string, value: ProviderExecutionCommand<"response-received">) { return this.provider.recordResponse(id,value); }
-  providerRecordValidated(id: string, value: ProviderExecutionCommand<"domain-validated">) { return this.provider.recordValidated(id,value); }
-  providerRecordFinish(id: string, value: ProviderExecutionCommand<"execution-stopped">) { return this.provider.recordFinish(id,value); }
+  providerRecordApprove(id: string, value: ProviderExecutionCommand<"transmission-approved">) {
+    return this.provider.recordApprove(id, value);
+  }
+  providerRecordPrepared(id: string, value: ProviderExecutionCommand<"request-prepared">) {
+    return this.provider.recordPrepared(id, value);
+  }
+  providerRecordDispatch(id: string, value: ProviderExecutionCommand<"dispatch-intent">) {
+    return this.provider.recordDispatch(id, value);
+  }
+  providerRecordResponse(id: string, value: ProviderExecutionCommand<"response-received">) {
+    return this.provider.recordResponse(id, value);
+  }
+  providerRecordValidated(id: string, value: ProviderExecutionCommand<"domain-validated">) {
+    return this.provider.recordValidated(id, value);
+  }
+  providerRecordFinish(id: string, value: ProviderExecutionCommand<"execution-stopped">) {
+    return this.provider.recordFinish(id, value);
+  }
   providerGet(id: string, revision?: number) {
     return this.provider.get(id, revision);
   }
@@ -1172,6 +1328,140 @@ export class PlanQualityStore {
   }
   providerLookup(nonce: string) {
     return this.provider.lookup(nonce);
+  }
+  providerPolicyHead() {
+    return this.providerPolicy.head();
+  }
+  providerPolicyReviewContext(version: number) {
+    return this.providerPolicy.reviewContext(version);
+  }
+  providerPolicyLookup(nonce: string) {
+    return this.providerPolicy.lookup(nonce);
+  }
+  providerPolicyAdopt(command: unknown, approvedReview: unknown) {
+    return this.providerPolicy.adopt(command, approvedReview);
+  }
+  providerReservationReview(selection: unknown) {
+    return this.providerReservation.review(selection);
+  }
+  providerReservationLookup(nonce: string) {
+    return this.providerReservationCommands.lookup(nonce);
+  }
+  providerReserve(command: unknown, approvedReview: unknown) {
+    return this.providerReservationCommands.reserve(command, approvedReview);
+  }
+  providerTransmissionReview(selection: unknown) {
+    return this.providerTransmission.review(selection);
+  }
+  providerTransmissionApprovalLookup(nonce: string) {
+    return this.providerTransmissionCommands.lookup(nonce);
+  }
+  providerApproveTransmission(command: unknown, approvedReview: unknown) {
+    return this.providerTransmissionCommands.approve(command, approvedReview);
+  }
+  providerGenerationDispatchLookup(identity: unknown) {
+    return this.providerGenerationDispatch.lookup(identity);
+  }
+  providerProductionGenerationReadiness(identity: unknown) {
+    return this.providerGenerationDispatch.productionReadiness(identity);
+  }
+  providerResolveProductionIdentity(selection: unknown) {
+    return this.providerGenerationDispatch.resolveProductionIdentity(selection);
+  }
+  providerProductionStatus(selection: unknown) {
+    return this.providerGenerationDispatch.productionStatus(selection);
+  }
+  /** Explicit trusted server entry only; commands contain the original approved identity. */
+  providerRunApprovedProduction(identity: unknown) {
+    return this.providerGenerationDispatch.executeProduction(identity);
+  }
+  /** Sensitive retained capture recovery, never HTTP/client input or an automatic resend. */
+  providerRecoverProductionGenerationCapture(capture: unknown) {
+    return this.providerGenerationDispatch.recoverProductionGeneration(capture);
+  }
+  providerRecoverProductionReviewCapture(capture: unknown) {
+    return this.providerGenerationDispatch.recoverProductionReview(capture);
+  }
+  providerGenerationResponseLookup(input: unknown) {
+    return this.providerGenerationDispatch.responseLookup(input);
+  }
+  providerRecordGenerationResponse(input: unknown) {
+    return this.providerGenerationDispatch.recordResponse(input);
+  }
+  providerPrepareReviewResponse(capture: unknown) {
+    return this.providerGenerationDispatch.prepareReviewResponse(capture);
+  }
+  providerPrepareFinalization(identity: unknown) {
+    return this.providerGenerationDispatch.prepareFinalization(identity);
+  }
+  providerRecordFinalization(identity: unknown) {
+    return this.providerGenerationDispatch.recordFinalization(identity);
+  }
+  providerFinalizationLookup(identity: unknown) {
+    return this.providerGenerationDispatch.finalizationLookup(identity);
+  }
+  providerPrepareReviewValidation(identity: unknown) {
+    return this.providerGenerationDispatch.prepareReviewValidation(identity);
+  }
+  providerRecordReviewValidation(identity: unknown) {
+    return this.providerGenerationDispatch.recordReviewValidation(identity);
+  }
+  providerReviewValidationLookup(identity: unknown) {
+    return this.providerGenerationDispatch.reviewValidationLookup(identity);
+  }
+  providerReviewResponseLookup(capture: unknown) {
+    return this.providerGenerationDispatch.reviewResponseLookup(capture);
+  }
+  providerRecordReviewResponse(capture: unknown) {
+    return this.providerGenerationDispatch.recordReviewResponse(capture);
+  }
+  providerPrepareReviewDispatch(identity: unknown) {
+    return this.providerGenerationDispatch.prepareReviewDispatch(identity);
+  }
+  providerReviewDispatchLookup(identity: unknown) {
+    return this.providerGenerationDispatch.reviewDispatchLookup(identity);
+  }
+  providerSimulateReviewDispatch(identity: unknown, transport: ProviderReviewMockTransport) {
+    return this.providerGenerationDispatch.simulateReview(identity, transport);
+  }
+  providerSimulateReviewSdkDispatch(identity: unknown) {
+    return this.providerGenerationDispatch.simulateReviewSdk(identity);
+  }
+  providerSimulateGenerationSdkDispatch(identity: unknown) {
+    return this.providerGenerationDispatch.simulateSdk(identity);
+  }
+  providerPrepareGenerationValidation(identity: unknown) {
+    return this.providerGenerationDispatch.prepareGenerationValidation(identity);
+  }
+  providerPrepareReviewStop(identity: unknown) {
+    return this.providerGenerationDispatch.prepareReviewStop(identity);
+  }
+  providerRecordReviewStop(identity: unknown) {
+    return this.providerGenerationDispatch.recordReviewStop(identity);
+  }
+  providerReviewStopLookup(identity: unknown) {
+    return this.providerGenerationDispatch.reviewStopLookup(identity);
+  }
+  providerPrepareGenerationStop(identity: unknown) {
+    return this.providerGenerationDispatch.prepareGenerationStop(identity);
+  }
+  providerRecordGenerationStop(identity: unknown) {
+    return this.providerGenerationDispatch.recordGenerationStop(identity);
+  }
+  providerGenerationStopLookup(identity: unknown) {
+    return this.providerGenerationDispatch.generationStopLookup(identity);
+  }
+  providerRecordGenerationValidation(identity: unknown) {
+    return this.providerGenerationDispatch.recordGenerationValidation(identity);
+  }
+  providerGenerationValidationLookup(identity: unknown) {
+    return this.providerGenerationDispatch.generationValidationLookup(identity);
+  }
+  providerSimulateGenerationDispatch(
+    identity: unknown,
+    transport: ProviderGenerationMockTransport,
+  ) {
+    return this.providerGenerationDispatch.simulate(identity, transport);
   }
   providerArtifact(id: string, key = "generation-request") {
     return this.provider.artifact(id, key);

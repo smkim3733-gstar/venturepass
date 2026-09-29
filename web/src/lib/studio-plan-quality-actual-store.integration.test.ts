@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join, relative, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { failQualityReceiptInsert } from "./studio-plan-quality-policy-storage-test-helpers";
 vi.mock("server-only", () => ({}));
 const forbidden = vi.hoisted(() =>
   vi.fn(() => {
@@ -197,12 +198,12 @@ function sql(work: (db: DatabaseSync) => void) {
 }
 
 describe("synthetic actual ledger storage", () => {
-  it("installs exact v6 schema and blocks legacy writers without changing prior bytes", () => {
+  it("installs exact v9 schema and blocks legacy writers without changing prior bytes", () => {
     const before = store.candidateRegistryDownload(1).body;
     sql((db) => {
       const schema = inspectQualitySchema(db);
-      expect(schema.version).toBe(6);
-      expect(schema.schema).toHaveLength(52);
+      expect(schema.version).toBe(9);
+      expect(schema.schema).toHaveLength(72);
       expect(() =>
         db
           .prepare("INSERT INTO quality_requests VALUES(?,?,?)")
@@ -253,36 +254,28 @@ describe("synthetic actual ledger storage", () => {
     configure();
     const request = input(),
       before = store.actualBudgetGet();
-    sql((db) =>
-      db.exec(
-        "CREATE TRIGGER fail_actual_receipt BEFORE INSERT ON quality_actual_requests BEGIN SELECT RAISE(ABORT,'synthetic failure'); END",
-      ),
-    );
-    expect(() => store.actualStart(request)).toThrow();
+    const failure = failQualityReceiptInsert("quality_actual_requests");
+    expect(() => store.actualStart(request)).toThrow("synthetic receipt insertion failure");
+    expect(failure).toHaveBeenCalledOnce();
     expect(store.actualList().executions).toHaveLength(0);
     expect(store.actualBudgetGet()).toEqual(before);
     expect(store.actualLookup(request.clientRequestId)).toEqual({ state: "not-observed" });
     sql((db) => {
       expect(db.prepare("SELECT COUNT(*) AS n FROM quality_actual_artifacts").get()!.n).toBe(0);
-      db.exec("DROP TRIGGER fail_actual_receipt");
     });
   });
   it("rolls back received bytes and recognized usage when its durable receipt fails", () => {
     configure();
     const sent = dispatch(prepare(store.actualStart(input()).snapshot).snapshot);
     const before = store.actualBudgetGet();
-    sql((db) =>
-      db.exec(
-        "CREATE TRIGGER fail_actual_receipt BEFORE INSERT ON quality_actual_requests BEGIN SELECT RAISE(ABORT,'synthetic failure'); END",
-      ),
-    );
-    expect(() => respond(sent.snapshot)).toThrow();
+    const failure = failQualityReceiptInsert("quality_actual_requests");
+    expect(() => respond(sent.snapshot)).toThrow("synthetic receipt insertion failure");
+    expect(failure).toHaveBeenCalledOnce();
     expect(store.actualBudgetGet()).toEqual(before);
     expect(store.actualGet(sent.snapshot.run.id).revision).toBe(sent.snapshot.revision);
     expect(() => store.actualArtifact(sent.snapshot.run.id, "generation-response")).toThrowError(
       expect.objectContaining({ code: "QUALITY_ACTUAL_ARTIFACT_NOT_FOUND" }),
     );
-    sql((db) => db.exec("DROP TRIGGER fail_actual_receipt"));
   });
   it("holds space for future bytes and atomically refuses an eighth active reservation", () => {
     configure();

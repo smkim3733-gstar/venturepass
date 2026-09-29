@@ -18,10 +18,13 @@ import { runQualityProviderSimulation } from "./studio-plan-quality-provider-run
 import { planQualityEvaluationDigest as digest } from "./studio-plan-quality-evaluation";
 import type { CandidateRegistrySnapshot } from "./studio-plan-quality-candidate-registry-types";
 import type { ProviderStart } from "./studio-plan-quality-provider-types";
+import { providerReviewResponseSchema } from "./studio-plan-quality-provider-policy-view-types";
 import {
   providerReviewViewSchema,
   providerReviewDigestInput,
   providerReviewBlockerCodes,
+  providerExpiredBlockerCodes,
+  providerConfigurationDigestInput,
 } from "./studio-plan-quality-provider-review-types";
 
 const state = vi.hoisted(() => ({
@@ -194,10 +197,10 @@ describe("read-only v2 review", () => {
     state.proposal = configuration.getProviderConfigurationProposal();
     const response = await inspectRoute.POST(post());
     expect(response.status).toBe(200);
-    const value = providerReviewViewSchema.parse(await response.json());
+    const value = providerReviewResponseSchema.parse(await response.json());
     expect(value).toMatchObject({
       state: "proposal-only",
-      viewVersion: 2,
+      viewVersion: 4,
       model: "gpt-5.4-2026-03-05",
       budget: null,
       preparation: null,
@@ -210,24 +213,83 @@ describe("read-only v2 review", () => {
       },
     });
     expect(value.financialBasis?.costs?.totalUnits).toBe("11220000");
+    if (value.viewVersion !== 4) throw new Error("Expected verified policy review");
+    expect(value.policyReview.budget).toMatchObject({
+      revision: 0,
+      headDigest: null,
+      capUnits: "0",
+      heldUnits: "0",
+      recognizedUnits: "0",
+    });
+    expect(value.policyReview.assessment.basis).toBe("unapproved-proposal");
+    expect(value.policyReview.inspectedAt).toBe(value.inspectedAt);
+    expect(value.viewDigest).toBe(digest(providerReviewDigestInput(value)));
     expect(store.providerBudgetGet().currency).toBe("TST");
     expect(store.providerBudgetGet("production").revision).toBe(0);
   });
-  it("falls back to the unchanged missing view when the source proposal expires", async () => {
+  it("distinguishes expired evidence from missing configuration without returning old financial facts", async () => {
     const configuration = await vi.importActual<
       typeof import("./studio-plan-quality-provider-configuration")
     >("./studio-plan-quality-provider-configuration");
-    state.proposal = configuration.getProviderConfigurationProposal();
+    const proposal = configuration.getProviderConfigurationProposal()!;
+    state.proposal = proposal;
     vi.setSystemTime(new Date("2030-01-01T00:00:00.000Z"));
     try {
-      const expired = await (await inspectRoute.POST(post())).text();
+      const expired = providerReviewViewSchema.parse(
+        await (await inspectRoute.POST(post())).json(),
+      );
+      expect(expired).toMatchObject({
+        viewVersion: 3,
+        state: "configuration-expired",
+        expiry: {
+          configurationDigest: proposal.configurationDigest,
+          validUntil: proposal.sources[0].validUntil,
+        },
+        model: null,
+        financialBasis: null,
+        retention: null,
+        budget: null,
+        preparation: null,
+        transmissionManifest: null,
+        actualExecutionEnabled: false,
+        accountAccess: "not-checked",
+      });
+      expect(expired.blockers.map(({ code }) => code)).toEqual(providerExpiredBlockerCodes);
+      expect(expired.viewDigest).toBe(digest(providerReviewDigestInput(expired)));
+      expect(expired).not.toHaveProperty("proposal");
       state.proposal = null;
-      expect(await (await inspectRoute.POST(post())).text()).toBe(expired);
-      expect(JSON.parse(expired).state).toBe("configuration-missing");
+      expect(await (await inspectRoute.POST(post())).json()).toMatchObject({
+        viewVersion: 1,
+        state: "configuration-missing",
+      });
     } finally {
       vi.setSystemTime(new Date(actualTestNow));
     }
   });
+  it.each(["digest", "synthetic", "source"])(
+    "keeps expired but invalid %s configuration in the missing branch",
+    async (mode) => {
+      const configuration = await vi.importActual<
+        typeof import("./studio-plan-quality-provider-configuration")
+      >("./studio-plan-quality-provider-configuration");
+      const proposal = configuration.getProviderConfigurationProposal()!;
+      if (mode === "synthetic") proposal.context.provenance = "synthetic-test";
+      if (mode === "source") proposal.sources[0].excerptSha256 = "0".repeat(64);
+      proposal.configurationDigest =
+        mode === "digest" ? "0".repeat(64) : digest(providerConfigurationDigestInput(proposal));
+      state.proposal = proposal;
+      vi.setSystemTime(new Date("2030-01-01T00:00:00.000Z"));
+      try {
+        const response = await inspectRoute.POST(post());
+        expect(response.status).toBe(200);
+        const value = await response.json();
+        expect(value).toMatchObject({ viewVersion: 1, state: "configuration-missing" });
+        expect(value).not.toHaveProperty("expiry");
+      } finally {
+        vi.setSystemTime(new Date(actualTestNow));
+      }
+    },
+  );
   it("returns exact registered scope and null operating facts without reusing synthetic money", async () => {
     const response = await inspectRoute.POST(post());
     expect(response.status).toBe(200);
@@ -260,13 +322,22 @@ describe("read-only v2 review", () => {
     expect(value.viewDigest).toBe(digest(providerReviewDigestInput(value)));
     expect(store.providerBudgetGet().heldUnits).toBe("4");
   });
-  it.each(["model", "price", "budget", "approval", "environment", "transport", "body", "profile"])(
-    "rejects client-controlled %s",
-    async (field) => {
-      expect((await inspectRoute.POST(post({ ...input(), [field]: "injected" }))).status).toBe(400);
-      expect(state.opened).not.toHaveBeenCalled();
-    },
-  );
+  it.each([
+    "model",
+    "price",
+    "budget",
+    "approval",
+    "environment",
+    "transport",
+    "body",
+    "profile",
+    "policyReview",
+    "budgetEvents",
+    "expectedBudgetHead",
+  ])("rejects client-controlled %s", async (field) => {
+    expect((await inspectRoute.POST(post({ ...input(), [field]: "injected" }))).status).toBe(400);
+    expect(state.opened).not.toHaveBeenCalled();
+  });
   it.each([
     ["query", {}, "?environment=synthetic-test", 400],
     [
@@ -339,7 +410,7 @@ describe("read-only v2 review", () => {
     });
   });
   it("sanitizes unexpected storage errors", async () => {
-    vi.spyOn(store, "candidateRegistryGet").mockImplementationOnce(() => {
+    vi.spyOn(store, "providerReviewContext").mockImplementationOnce(() => {
       throw new Error("secret raw upstream input");
     });
     const response = await inspectRoute.POST(post());

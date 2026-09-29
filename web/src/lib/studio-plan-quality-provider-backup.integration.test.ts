@@ -11,6 +11,7 @@ import {
   verifyQualityBackup,
 } from "../../scripts/local-data-quality.mjs";
 import { PlanQualityStore } from "./studio-plan-quality-store";
+import { freezePolicyFreeSchema } from "./studio-plan-quality-policy-storage-test-helpers";
 import { actualTestNow, actualTestPreparation } from "./studio-plan-quality-actual-test-helpers";
 import {
   providerTestConfigure,
@@ -25,7 +26,6 @@ import {
   qualityImmutableTriggerSql,
   qualityWriterTriggerSql,
   qualityV5WriterTriggerSql,
-  qualityV6WriterTriggerSql,
 } from "../../scripts/local-data-quality-schema.mjs";
 import {
   createProviderBudgetEvent,
@@ -174,11 +174,7 @@ describe("mixed v1/v2 ledger backup", () => {
     // Freeze this suite's copy as v5; app-default writer upgrades must not erase legacy coverage.
     const fixture = new DatabaseSync(join(seedDirectory, "quality-evaluation", "quality.sqlite"));
     try {
-      if (inspectQualitySchema(fixture).version === 6) {
-        for (const name of Object.keys(qualityV6WriterTriggerSql))
-          fixture.exec(`DROP TRIGGER ${name}`);
-        for (const sql of Object.values(qualityV5WriterTriggerSql)) fixture.exec(sql);
-      }
+      freezePolicyFreeSchema(fixture, 5);
     } finally {
       fixture.close();
     }

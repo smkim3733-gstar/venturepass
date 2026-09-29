@@ -364,6 +364,45 @@ export const providerProposalBlockerCodes = [
   "ACCOUNT_ACCESS_NOT_CHECKED",
   "PRODUCTION_EXECUTION_DISABLED",
 ] as const;
+export const providerExpiredBlockerMessages = {
+  CONFIGURATION_EVIDENCE_EXPIRED:
+    "운영 근거의 내부 재확인 기한이 지났습니다. 공식 자료를 다시 확인해야 합니다.",
+  ...providerProposalBlockerMessages,
+} as const;
+export const providerExpiredBlockerCodes = [
+  "CONFIGURATION_EVIDENCE_EXPIRED",
+  ...providerProposalBlockerCodes,
+] as const;
+export const providerReviewExpiredViewSchema = z
+  .object(providerReviewMissingViewSchema.shape)
+  .omit({ viewVersion: true, state: true, blockers: true })
+  .extend({
+    viewVersion: z.literal(3),
+    state: z.literal("configuration-expired"),
+    expiry: z
+      .object({
+        configurationDigest: sha,
+        validUntil: date,
+      })
+      .strict(),
+    blockers: z
+      .array(z.object({ code: z.enum(providerExpiredBlockerCodes), message: z.string() }).strict())
+      .length(providerExpiredBlockerCodes.length),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (Date.parse(value.expiry.validUntil) > Date.parse(value.inspectedAt))
+      context.addIssue({ code: "custom", message: "만료 진단의 기한이 조회 시각보다 늦습니다." });
+    if (
+      value.blockers.some(
+        (item, i) =>
+          item.code !== providerExpiredBlockerCodes[i] ||
+          item.message !== providerExpiredBlockerMessages[item.code],
+      )
+    )
+      context.addIssue({ code: "custom", message: "만료 상태의 안내가 일치하지 않습니다." });
+  });
+export type ProviderReviewExpiredView = z.infer<typeof providerReviewExpiredViewSchema>;
 export const providerReviewProposalViewSchema = z
   .object(providerReviewMissingViewSchema.shape)
   .omit({
@@ -409,9 +448,12 @@ export type ProviderReviewProposalView = z.infer<typeof providerReviewProposalVi
 export const providerReviewViewSchema = z.union([
   providerReviewMissingViewSchema,
   providerReviewProposalViewSchema,
+  providerReviewExpiredViewSchema,
 ]);
 export type ProviderReviewView = z.infer<typeof providerReviewViewSchema>;
-export function providerProposalConfigurationDigestInput(value: ProviderReviewProposalView) {
+export function providerProposalConfigurationDigestInput(
+  value: Omit<ProviderReviewProposalView, "viewVersion" | "blockers">,
+) {
   const { financialBasisDigest: _ignored, ...usagePolicyTemplate } = value.proposal.usagePolicy;
   void _ignored;
   return {
@@ -429,14 +471,16 @@ export function providerProposalConfigurationDigestInput(value: ProviderReviewPr
     sources: value.proposal.sources,
   };
 }
-export function providerReviewDigestInput(
-  value: Omit<ProviderReviewView, "viewDigest"> | ProviderReviewView,
+export function providerReviewDigestInput<T extends { inspectedAt: string; viewDigest?: string }>(
+  value: T,
 ) {
-  const { viewDigest: _digest, ...body } = value as ProviderReviewView;
+  const { viewDigest: _digest, ...body } = value;
   void _digest;
   return body;
 }
-export function providerReviewDownloadName(value: ProviderReviewView) {
+export function providerReviewDownloadName(
+  value: Pick<ProviderReviewView, "scope" | "viewDigest">,
+) {
   return `venturepass-provider-review-v${value.scope.version}-${value.scope.candidateId}-${value.viewDigest.slice(0, 12)}.json`;
 }
 export const providerLedgerArtifactKeySchema = z.enum([

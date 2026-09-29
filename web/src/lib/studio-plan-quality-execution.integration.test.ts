@@ -537,11 +537,18 @@ describe("quality execution immutable archives and storage boundary", () => {
           .prepare("DELETE FROM quality_execution_requests WHERE nonce=?")
           .run(saved.input.clientRequestId),
       ).toThrow();
+      const trigger = db
+        .prepare("SELECT sql FROM sqlite_schema WHERE name='quality_execution_runs_no_update'")
+        .get()!.sql as string;
       db.exec("DROP TRIGGER quality_execution_runs_no_update");
       db.prepare("UPDATE quality_execution_runs SET body=? WHERE id=?").run(
         "{}",
         saved.snapshot.run.id,
       );
+      // v8 audits the entire schema before legacy reads. Restore the fixture's gate
+      // to exercise the original execution-body error contract independently.
+      expect(() => store.executionGet(saved.snapshot.run.id)).toThrow();
+      db.exec(trigger);
       expect(() => store.executionGet(saved.snapshot.run.id)).toThrowError(
         expect.objectContaining({ code: "QUALITY_STORAGE_CORRUPT" }),
       );

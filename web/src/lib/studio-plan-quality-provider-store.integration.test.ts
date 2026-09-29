@@ -152,7 +152,11 @@ describe("provider v2 reservation storage", () => {
     expect(store.providerBudgetGet().heldUnits).toBe("4");
     expect(store.providerBudgetGet("production").revision).toBe(0);
     const connection = db();
-    expect(inspectQualityDatabase(connection)).toMatchObject({ storageVersion: 6, actualRuns: 4 });
+    expect(inspectQualityDatabase(connection)).toMatchObject({
+      storageVersion: 9,
+      actualRuns: 4,
+      providerPolicies: 0,
+    });
     connection.close();
     store.close();
     store = open();

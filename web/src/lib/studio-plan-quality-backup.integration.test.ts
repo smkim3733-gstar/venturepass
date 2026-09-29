@@ -15,6 +15,7 @@ import { join, relative, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PlanQualityStore } from "./studio-plan-quality-store";
+vi.mock("server-only", () => ({}));
 import { backupQualityData, restoreQualityData } from "../../scripts/local-data-quality.mjs";
 
 const fault = vi.hoisted(() => ({ partialCopy: false }));

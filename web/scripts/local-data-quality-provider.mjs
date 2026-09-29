@@ -172,6 +172,8 @@ const body = object({
   text: object({ format }),
   ...options.shape,
 });
+// Shared by the passive transport boundary. Parsing alone grants no sending authority.
+export const providerRequestBodySchema = body;
 const baseContract = z.fromJSONSchema(
   actualArchiveJsonSchemas.actualLedgerRunSchema.properties.preparation.properties.engine,
 );
@@ -533,10 +535,17 @@ function validateFinance(value) {
     fail();
   return f;
 }
+export { validateFinance as validateProviderFinancialBasis };
+export const providerRequestEvidenceSchema = providerPreparationSchema.pick({
+  scope: true,
+  model: true,
+  contract: true,
+  generation: true,
+  reviewTemplate: true,
+});
 export function validateProviderPreparation(value, registry) {
   const p = providerPreparationSchema.parse(value),
-    f = validateFinance(p.financialBasis),
-    s = p.scope;
+    f = validateFinance(p.financialBasis);
   if (
     p.preparationDigest !== providerDigest(omit(p, "preparationDigest")) ||
     p.financialBasisDigest !== providerDigest(f) ||
@@ -562,6 +571,23 @@ export function validateProviderPreparation(value, registry) {
     expires > Date.parse(p.retention.validUntil)
   )
     fail();
+  validateProviderRequestEvidence(
+    {
+      scope: p.scope,
+      model: p.model,
+      contract: p.contract,
+      generation: p.generation,
+      reviewTemplate: p.reviewTemplate,
+    },
+    registry,
+  );
+  return p;
+}
+
+/** Frozen request evidence checks shared by preparations and policy archives; no current engine. */
+export function validateProviderRequestEvidence(value, registry) {
+  const p = providerRequestEvidenceSchema.parse(value),
+    s = p.scope;
   const entry = registry.entries.filter((v) => v.candidateId === s.candidateId),
     manifest = registry.manifest.filter((v) => v.candidateId === s.candidateId);
   if (

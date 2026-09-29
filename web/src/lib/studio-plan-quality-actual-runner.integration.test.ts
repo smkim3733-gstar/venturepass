@@ -116,45 +116,52 @@ afterEach(() => {
 }, 15000);
 
 describe("synthetic cost-ledger observed-engine runner", () => {
-  it("durably connects exact requests, two responses, original validation and final output", async () => {
-    const result = await runQualityActualSimulation(store, start, options);
-    expect(result).toMatchObject({
-      replayed: false,
-      recordingStatus: "complete",
-      failureCode: null,
-      snapshot: { state: "completed", actualAiCalls: 0, costState: "settled" },
-    });
-    expect(send).toHaveBeenCalledTimes(2);
-    expect(measure).toHaveBeenCalledTimes(2);
-    const id = result.snapshot.run.id;
-    expect(result.snapshot.events.map((event) => event.payload.kind)).toEqual([
-      "request-prepared",
-      "dispatch-intent",
-      "response-received",
-      "domain-validated",
-      "request-prepared",
-      "dispatch-intent",
-      "response-received",
-      "domain-validated",
-      "execution-stopped",
-    ]);
-    expect(result.snapshot.artifacts).toHaveLength(7);
-    const generation = JSON.parse(store.actualArtifact(id, "generation-validated").body.toString());
-    const review = JSON.parse(store.actualArtifact(id, "review-request").body.toString());
-    expect(JSON.parse(review.input[1].content).draft).toEqual(generation.content);
-    expect(store.actualArtifact(id, "generation-request").body.toString()).toBe(
-      JSON.stringify(send.mock.calls[0][0].body),
-    );
-    expect(store.actualArtifact(id, "review-request").body.toString()).toBe(
-      JSON.stringify(send.mock.calls[1][0].body),
-    );
-    expect(store.actualBudgetGet()).toMatchObject({ heldUnits: "0", recognizedUsageUnits: "4" });
-    const archive = store.actualDownload(id, result.snapshot.revision).body;
-    store.close();
-    store = new PlanQualityStore(directory);
-    expect(store.actualDownload(id, result.snapshot.revision).body).toBe(archive);
-    expect(store.actualArtifact(id, "final-result").body.length).toBeGreaterThan(0);
-  });
+  // Full SQLite audits and reopen exceed 5s on Windows; keep all persistence assertions.
+  it(
+    "durably connects exact requests, two responses, original validation and final output",
+    async () => {
+      const result = await runQualityActualSimulation(store, start, options);
+      expect(result).toMatchObject({
+        replayed: false,
+        recordingStatus: "complete",
+        failureCode: null,
+        snapshot: { state: "completed", actualAiCalls: 0, costState: "settled" },
+      });
+      expect(send).toHaveBeenCalledTimes(2);
+      expect(measure).toHaveBeenCalledTimes(2);
+      const id = result.snapshot.run.id;
+      expect(result.snapshot.events.map((event) => event.payload.kind)).toEqual([
+        "request-prepared",
+        "dispatch-intent",
+        "response-received",
+        "domain-validated",
+        "request-prepared",
+        "dispatch-intent",
+        "response-received",
+        "domain-validated",
+        "execution-stopped",
+      ]);
+      expect(result.snapshot.artifacts).toHaveLength(7);
+      const generation = JSON.parse(
+        store.actualArtifact(id, "generation-validated").body.toString(),
+      );
+      const review = JSON.parse(store.actualArtifact(id, "review-request").body.toString());
+      expect(JSON.parse(review.input[1].content).draft).toEqual(generation.content);
+      expect(store.actualArtifact(id, "generation-request").body.toString()).toBe(
+        JSON.stringify(send.mock.calls[0][0].body),
+      );
+      expect(store.actualArtifact(id, "review-request").body.toString()).toBe(
+        JSON.stringify(send.mock.calls[1][0].body),
+      );
+      expect(store.actualBudgetGet()).toMatchObject({ heldUnits: "0", recognizedUsageUnits: "4" });
+      const archive = store.actualDownload(id, result.snapshot.revision).body;
+      store.close();
+      store = new PlanQualityStore(directory);
+      expect(store.actualDownload(id, result.snapshot.revision).body).toBe(archive);
+      expect(store.actualArtifact(id, "final-result").body.length).toBeGreaterThan(0);
+    },
+    process.platform === "win32" ? 15000 : 5000,
+  );
   it("permits only the caller that commits start; concurrent and historical replays invoke no adapters", async () => {
     const [first, second] = await Promise.all([
       runQualityActualSimulation(store, start, options),

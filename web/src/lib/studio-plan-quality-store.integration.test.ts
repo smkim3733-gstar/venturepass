@@ -5,6 +5,8 @@ import { join, relative, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PlanQualityStore } from "./studio-plan-quality-store";
+vi.mock("server-only", () => ({}));
+import { failQualityReceiptInsert } from "./studio-plan-quality-policy-storage-test-helpers";
 import * as evaluation from "./studio-plan-quality-evaluation";
 import {
   createPlanQualityRecordTemplate,
@@ -236,8 +238,14 @@ describe("fixed synthetic quality history persistence", () => {
       expect(() => db.prepare("UPDATE quality_runs SET body='{}' WHERE id=?").run(run.id)).toThrow(
         "immutable",
       );
+      const trigger = db
+        .prepare("SELECT sql FROM sqlite_schema WHERE name='quality_runs_no_update'")
+        .get()!.sql as string;
       db.exec("DROP TRIGGER quality_runs_no_update");
       db.prepare("UPDATE quality_runs SET body='{}' WHERE id=?").run(run.id);
+      // Isolate body corruption from v8's earlier whole-schema rejection.
+      expect(() => store.get(run.id)).toThrow();
+      db.exec(trigger);
       expect(() => store.get(run.id)).toThrowError(
         expect.objectContaining({ code: "QUALITY_STORAGE_CORRUPT" }),
       );
@@ -286,18 +294,11 @@ describe("fixed synthetic quality history persistence", () => {
   it("rolls back the revision if recording its nonce fails", () => {
     const run = create(),
       input = { revision: 0, clientRequestId: randomUUID(), record: run.records[0] };
-    const db = new DatabaseSync(join(directory, "quality-evaluation", "quality.sqlite"));
-    try {
-      db.exec(
-        "CREATE TRIGGER test_receipt_failure BEFORE INSERT ON quality_requests BEGIN SELECT RAISE(ABORT,'test-only failure'); END;",
-      );
-      expect(() => store.save(run.id, input)).toThrow("test-only failure");
-      expect(store.get(run.id).revision).toBe(0);
-      expect(store.lookup(input.clientRequestId)).toEqual({ state: "not-observed" });
-    } finally {
-      db.exec("DROP TRIGGER test_receipt_failure");
-      db.close();
-    }
+    const failure = failQualityReceiptInsert("quality_requests");
+    expect(() => store.save(run.id, input)).toThrow("synthetic receipt insertion failure");
+    expect(failure).toHaveBeenCalledOnce();
+    expect(store.get(run.id).revision).toBe(0);
+    expect(store.lookup(input.clientRequestId)).toEqual({ state: "not-observed" });
   });
   it("orders by revision when the local clock moves backwards, preserving observed timestamps", () => {
     vi.useFakeTimers({ toFake: ["Date"] });

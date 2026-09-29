@@ -33,6 +33,9 @@ import {
   providerReviewBlockerCodes,
   providerReviewBlockerMessages,
   providerReviewNotice,
+  providerExpiredBlockerCodes,
+  providerExpiredBlockerMessages,
+  type ProviderReviewExpiredView,
   type ProviderReviewView,
 } from "@/lib/studio-plan-quality-provider-review-types";
 import type { CandidateRegistrySnapshot } from "@/lib/studio-plan-quality-candidate-registry-types";
@@ -195,6 +198,53 @@ afterAll(() => {
 });
 
 describe("provider read-only browser bindings", () => {
+  const expiredView = () =>
+    rehash(
+      {
+        ...clone(view),
+        viewVersion: 3 as const,
+        state: "configuration-expired" as const,
+        inspectedAt: "2030-01-01T00:00:00.000Z",
+        expiry: { configurationDigest: "a".repeat(64), validUntil: "2026-09-27T23:57:59.000Z" },
+        blockers: providerExpiredBlockerCodes.map((code) => ({
+          code,
+          message: providerExpiredBlockerMessages[code],
+        })),
+      } as ProviderReviewExpiredView,
+      "viewDigest",
+    );
+  it("binds expired diagnostics to the selected registry and preserves the exact diagnostic download", async () => {
+    const expired = await expiredView();
+    expect(await qualityProviderReview(expired, registry, registry.entries[0].candidateId)).toEqual(
+      expired,
+    );
+    const archive = await qualityProviderReviewArchive(
+      expired,
+      registry,
+      registry.entries[0].candidateId,
+    );
+    expect(JSON.parse(archive.text)).toEqual(expired);
+    expect(archive.filename).toContain(expired.viewDigest.slice(0, 12));
+    await expect(
+      qualityProviderReview(expired, registry, registry.entries[1].candidateId),
+    ).rejects.toThrow();
+  });
+  it.each(["future", "model", "permission", "blocker", "digest", "extra"])(
+    "rejects forged expired diagnostic %s",
+    async (mode) => {
+      const expired = await expiredView();
+      if (mode === "future") expired.expiry.validUntil = "2031-01-01T00:00:00.000Z";
+      if (mode === "model") Object.assign(expired, { model: "old-model" });
+      if (mode === "permission") Object.assign(expired, { actualExecutionEnabled: true });
+      if (mode === "blocker") expired.blockers[0].message = "운영 가능";
+      if (mode === "extra") Object.assign(expired.expiry, { capUnits: "15000000" });
+      if (mode !== "digest") await rehash(expired, "viewDigest");
+      else expired.expiry.configurationDigest = "b".repeat(64);
+      await expect(
+        qualityProviderReview(expired, registry, registry.entries[0].candidateId),
+      ).rejects.toThrow();
+    },
+  );
   it("validates configuration-missing with exact registry and preserves inspected time in view download", async () => {
     expect(await qualityProviderReview(view, registry, registry.entries[0].candidateId)).toEqual(
       view,

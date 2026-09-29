@@ -2,6 +2,12 @@ import type { DatabaseSync } from "node:sqlite";
 import { createHash } from "node:crypto";
 import { inspectQualityLedgers } from "../../scripts/local-data-quality-ledgers.mjs";
 import { actualCanonicalDigest } from "../../scripts/local-data-quality-actual.mjs";
+import { inspectQualitySchema } from "../../scripts/local-data-quality-schema.mjs";
+import { decodeProviderPolicyRows } from "../../scripts/local-data-quality-provider-policy.mjs";
+import { inspectProviderReservationArchive } from "../../scripts/local-data-quality-provider-reservation-binding.mjs";
+import { readProviderReservationDatabaseRows } from "../../scripts/local-data-quality-provider-reservation-database.mjs";
+import { inspectProviderTransmissionApprovalArchive } from "../../scripts/local-data-quality-provider-transmission-binding.mjs";
+import { readProviderTransmissionApprovalDatabaseRows } from "../../scripts/local-data-quality-provider-transmission-database.mjs";
 import type { CandidateRegistrySnapshot } from "./studio-plan-quality-candidate-registry-types";
 import { StudioError } from "./studio-http";
 
@@ -18,6 +24,48 @@ export function inspectLedgerDatabase(
   registry: (version: number) => CandidateRegistrySnapshot,
 ) {
   try {
+    const ledger = readLedgerDatabaseInput(db, registry);
+    const schema = inspectQualitySchema(db);
+    if (schema.transmissions)
+      return inspectProviderTransmissionApprovalArchive({
+        archive: { ledger, ...readProviderReservationDatabaseRows(db) },
+        ...readProviderTransmissionApprovalDatabaseRows(db),
+      }).reservationArchive.ledger;
+    if (schema.reservations)
+      return inspectProviderReservationArchive({
+        ledger,
+        ...readProviderReservationDatabaseRows(db),
+      }).ledger;
+    return inspectQualityLedgers(ledger);
+  } catch {
+    return corrupt();
+  }
+}
+
+/** Decode a single caller-owned snapshot, preserving immutable run order and stable array order.
+ * This is not a complete audit: consumers must run inspectQualityLedgers (and full DB inspection
+ * where required) inside the same transaction before trusting or returning these rows.
+ */
+export function readLedgerDatabaseInput(
+  db: DatabaseSync,
+  registry: (version: number) => CandidateRegistrySnapshot,
+  additionalVersions: readonly number[] = [],
+): Parameters<typeof inspectQualityLedgers>[0] {
+  try {
+    const hasPolicies = inspectQualitySchema(db).policies;
+    if (
+      hasPolicies &&
+      Number(db.prepare("SELECT COUNT(*) AS n FROM quality_provider_policies").get()!.n) > 100
+    )
+      corrupt();
+    const policyRows = hasPolicies
+      ? db
+          .prepare(
+            "SELECT rowid AS storage_order,scope_id,revision,nonce,body,body_hash FROM quality_provider_policies ORDER BY rowid",
+          )
+          .all()
+      : [];
+    const { records: policies } = decodeProviderPolicyRows(policyRows);
     const specs = [
       ["quality_actual_runs", 20],
       ["quality_actual_events", 640],
@@ -63,7 +111,7 @@ export function inspectLedgerDatabase(
         return value;
       });
     const receipts = db
-      .prepare("SELECT * FROM quality_actual_requests")
+      .prepare("SELECT * FROM quality_actual_requests ORDER BY nonce")
       .all()
       .map((row) => {
         const value = decode(row, 4096);
@@ -71,7 +119,7 @@ export function inspectLedgerDatabase(
         return value;
       });
     const artifacts = db
-      .prepare("SELECT * FROM quality_actual_artifacts")
+      .prepare("SELECT * FROM quality_actual_artifacts ORDER BY run_id,artifact_key")
       .all()
       .map((row) => {
         if (
@@ -95,12 +143,18 @@ export function inspectLedgerDatabase(
       });
     const otherNonces = db
       .prepare(
-        "SELECT nonce FROM quality_requests UNION ALL SELECT nonce FROM quality_candidate_requests UNION ALL SELECT nonce FROM quality_execution_requests",
+        "SELECT nonce FROM quality_requests UNION ALL SELECT nonce FROM quality_candidate_requests UNION ALL SELECT nonce FROM quality_execution_requests ORDER BY nonce",
       )
       .all()
       .map((row) => String(row.nonce));
-    const versions = [...new Set<number>(runs.map((run) => run.preparation.scope.version))];
-    return inspectQualityLedgers({
+    const versions = [
+      ...new Set<number>([
+        ...runs.map((run) => run.preparation.scope.version),
+        ...policies.map((record) => record.command.version),
+        ...additionalVersions,
+      ]),
+    ].sort((a, b) => a - b);
+    return {
       runs,
       events,
       budgetEvents,
@@ -108,7 +162,8 @@ export function inspectLedgerDatabase(
       artifacts,
       registries: versions.map(registry),
       otherNonces,
-    });
+      policies,
+    };
   } catch {
     return corrupt();
   }

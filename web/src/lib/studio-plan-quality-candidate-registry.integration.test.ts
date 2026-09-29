@@ -5,6 +5,8 @@ import { join, relative, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PlanQualityStore } from "./studio-plan-quality-store";
+import { failQualityReceiptInsert } from "./studio-plan-quality-policy-storage-test-helpers";
+vi.mock("server-only", () => ({}));
 import * as candidates from "./studio-plan-quality-validation-candidates";
 import { planQualityEvaluationDigest as digest } from "./studio-plan-quality-evaluation";
 import {
@@ -168,13 +170,12 @@ describe("candidate registry immutable local persistence", () => {
     ).toThrowError(expect.objectContaining({ code: "QUALITY_NONCE_CONFLICT" }));
   });
   it("does not fabricate success when transaction receipt insertion fails", () => {
-    unsafeDbChange((db) =>
-      db.exec(
-        "CREATE TRIGGER reject_candidate_receipt BEFORE INSERT ON quality_candidate_requests BEGIN SELECT RAISE(ABORT,'injected'); END",
-      ),
-    );
     const request = input();
-    expect(() => store.candidateRegistryRegister(request)).toThrow();
+    const failure = failQualityReceiptInsert("quality_candidate_requests");
+    expect(() => store.candidateRegistryRegister(request)).toThrow(
+      "synthetic receipt insertion failure",
+    );
+    expect(failure).toHaveBeenCalledOnce();
     expect(store.candidateRegistryList().versions).toEqual([]);
     expect(store.candidateRegistryLookup(request.clientRequestId)).toEqual({
       state: "not-observed",
@@ -191,6 +192,9 @@ describe("candidate registry immutable local persistence", () => {
       unsafeDbChange((db) => {
         const table =
           kind === "receipt" ? "quality_candidate_requests" : "quality_candidate_versions";
+        const trigger = db
+          .prepare("SELECT sql FROM sqlite_schema WHERE name=?")
+          .get(`${table}_no_update`)!.sql as string;
         db.exec(`DROP TRIGGER ${table}_no_update`);
         const row = db
           .prepare(`SELECT rowid,body FROM ${table} ORDER BY rowid DESC LIMIT 1`)
@@ -204,6 +208,7 @@ describe("candidate registry immutable local persistence", () => {
           digest(body),
           row.rowid!,
         );
+        db.exec(trigger);
       });
       expect(() => store.candidateRegistryGet(1)).toThrowError(
         expect.objectContaining({ code: "QUALITY_STORAGE_CORRUPT" }),

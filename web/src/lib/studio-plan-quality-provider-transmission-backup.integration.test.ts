@@ -22,6 +22,7 @@ import {
   verifyQualityBackup,
 } from "../../scripts/local-data-quality.mjs";
 import { PlanQualityStore } from "./studio-plan-quality-store";
+import { freezePolicyFreeSchema } from "./studio-plan-quality-policy-storage-test-helpers";
 import {
   actualTestNow,
   actualTestPlan,
@@ -416,6 +417,13 @@ describe("v6 recorded transmission backup", () => {
       store.close();
       vi.useRealTimers();
     }
+    // Preserve explicit v6 archival coverage independently of the application's current writer.
+    const historical = new DatabaseSync(join(seed, "quality-evaluation", "quality.sqlite"));
+    try {
+      freezePolicyFreeSchema(historical, 6);
+    } finally {
+      historical.close();
+    }
     originalBytes = readFileSync(join(seed, "quality-evaluation", "quality.sqlite"));
     const db = new DatabaseSync(join(seed, "quality-evaluation", "quality.sqlite"), {
       readOnly: true,
@@ -468,9 +476,7 @@ describe("v6 recorded transmission backup", () => {
     }
   }
   function downgradeFixture(db: DatabaseSync) {
-    for (const name of Object.keys(qualityV6WriterTriggerSql)) db.exec(`DROP TRIGGER ${name}`);
-    for (const sql of Object.values(qualityV5WriterTriggerSql)) db.exec(sql);
-    db.function("quality_storage_contract", () => "quality-v5");
+    freezePolicyFreeSchema(db, 5);
   }
   it.each([
     "quality_actual_events",
@@ -547,7 +553,11 @@ describe("v6 recorded transmission backup", () => {
       expect(() =>
         validateActualArtifact({ ...artifact, body: artifact.body.toString("utf8") }),
       ).toThrow(/Actual artifact bytes mismatch/);
-      expect(inspect(root)).toMatchObject({ storageVersion: 6, actualArtifacts: 12 });
+      expect(inspect(root)).toMatchObject({
+        storageVersion: 9,
+        actualArtifacts: 12,
+        providerPolicies: 0,
+      });
     } finally {
       intercept.mockRestore();
       store.close();

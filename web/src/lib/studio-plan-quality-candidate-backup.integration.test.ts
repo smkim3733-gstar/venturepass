@@ -14,6 +14,8 @@ import { join, relative, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { PlanQualityStore } from "./studio-plan-quality-store";
+vi.mock("server-only", () => ({}));
+import { freezePolicyFreeSchema } from "./studio-plan-quality-policy-storage-test-helpers";
 import * as registry from "./studio-plan-quality-candidate-registry";
 import {
   candidateRegistryRequestDigestInput,
@@ -30,24 +32,7 @@ function legacyCandidateDatabase(bytes: Buffer) {
   writeFileSync(file, bytes);
   const db = new DatabaseSync(file);
   try {
-    // Fixture-only legacy reconstruction. This is not detection of erased v4 history.
-    for (const row of db
-      .prepare(
-        "SELECT name FROM sqlite_schema WHERE type='trigger' AND (name LIKE '%_v4_writer' OR name LIKE '%_v5_writer' OR name LIKE '%_v6_writer')",
-      )
-      .all())
-      db.exec(`DROP TRIGGER ${row.name}`);
-    for (const table of [
-      "quality_actual_events",
-      "quality_actual_artifacts",
-      "quality_actual_requests",
-      "quality_actual_runs",
-      "quality_actual_budget_events",
-      "quality_execution_events",
-      "quality_execution_requests",
-      "quality_execution_runs",
-    ])
-      db.exec(`DROP TABLE IF EXISTS ${table}`);
+    freezePolicyFreeSchema(db, 2);
   } finally {
     db.close();
   }

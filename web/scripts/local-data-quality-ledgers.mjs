@@ -1,5 +1,5 @@
 import { inspectActualLedger } from "./local-data-quality-actual.mjs";
-import { inspectProviderLedger } from "./local-data-quality-provider.mjs";
+import { inspectProviderPolicyLedger } from "./local-data-quality-provider-policy.mjs";
 
 const invalid = () => {
   throw new Error("QUALITY_LEDGER_INVALID");
@@ -37,7 +37,15 @@ export function inspectQualityLedgers(input) {
     if (v === 2 && run.expectedGlobalRunCount !== index) invalid();
     owners.set(run.id, v);
   });
-  const nonces = new Set(input.otherNonces ?? []);
+  const otherNonces = array(input.otherNonces ?? []),
+    policies = array(input.policies === undefined ? [] : input.policies);
+  const nonces = new Set(otherNonces);
+  if (nonces.size !== otherNonces.length) invalid();
+  for (const policy of policies) {
+    if (typeof policy?.clientRequestId !== "string" || nonces.has(policy.clientRequestId))
+      invalid();
+    nonces.add(policy.clientRequestId);
+  }
   for (const receipt of receipts) {
     version(receipt);
     if (typeof receipt.clientRequestId !== "string" || nonces.has(receipt.clientRequestId))
@@ -55,17 +63,23 @@ export function inspectQualityLedgers(input) {
     receipts: receipts.filter((row) => version(row) === v),
     artifacts: artifacts.filter((row) => owners.get(row.runId) === v),
     registries: input.registries,
-    otherNonces: input.otherNonces ?? [],
+    otherNonces: [...otherNonces, ...policies.map((row) => row.clientRequestId)],
   });
   const legacyInput = pick(1),
     providerInput = pick(2);
   const legacy = { ...legacyInput, ...inspectActualLedger(legacyInput) };
-  const provider = { ...providerInput, ...inspectProviderLedger(providerInput) };
+  const policy = inspectProviderPolicyLedger({
+    records: policies,
+    registries: input.registries,
+    provider: providerInput,
+    otherNonces,
+  });
+  const provider = { ...providerInput, ...policy.provider };
   const reservedBytes = legacy.reservedBytes + provider.reservedBytes;
   const reservedBudgetEventSlots =
     legacy.reservedBudgetEventSlots + provider.reservedBudgetEventSlots;
   const reservedReceiptSlots = legacy.reservedReceiptSlots + provider.reservedReceiptSlots;
-  const usedBytes = legacy.usedBytes + provider.usedBytes;
+  const usedBytes = legacy.usedBytes + provider.usedBytes + policy.usedBytes;
   if (
     !Number.isSafeInteger(reservedBytes) ||
     reservedBytes < 0 ||
@@ -77,6 +91,7 @@ export function inspectQualityLedgers(input) {
   return {
     legacy,
     provider,
+    policy,
     reservedBytes,
     reservedBudgetEventSlots,
     reservedReceiptSlots,

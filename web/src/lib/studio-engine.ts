@@ -240,7 +240,7 @@ function sourceName(value: StudioCase, ref: Reference) {
 }
 
 const guaranteePattern =
-  /(?:반드시|무조건|100\s*[%％])\s*(?:심사에?\s*)?(?:통과|합격|승인)|(?:통과|합격|승인)(?:율|확률)\s*(?:은|이|:)?\s*\d|(?:통과|합격|승인)(?:를|을)?\s*보장(?:합니다|한다|됨|된다|할\s*수\s*있)/;
+  /(?:반드시|무조건|100\s*[%％])\s*(?:심사에?\s*)?(?:통과|합격|승인)|(?:통과|합격|승인)(?:율|확률)\s*(?:은|이|:)?\s*\d|(?:통과|합격|승인)(?:를|을)?\s*보장(?:합니다|한다|됨|된다|할\s*수\s*있)|벤처(?:기업)?\s*확인(?:을|를)?\s*(?:100\s*[%％]\s*)?보장(?:합니다|한다|됨|된다|할\s*수\s*있)/;
 
 const preparationQuestionPrefix = "[실무 준비 질문 · 기관 확정 질문 아님] ";
 function markPreparationQuestion(question: string) {

@@ -7,6 +7,7 @@ import { createProviderContextReservation } from "./studio-plan-quality-provider
 import {
   getProviderConfigurationProposal,
   createProviderConfigurationProposalView,
+  getProviderConfigurationExpiry,
 } from "./studio-plan-quality-provider-configuration";
 import {
   providerConfigurationDigestInput,
@@ -60,6 +61,82 @@ function changed(change: (value: ProviderConfigurationProposal) => void) {
 }
 
 describe("server-fixed official evidence proposal", () => {
+  it("diagnoses the exact internal deadline without turning old evidence into a current proposal", () => {
+    const configuration = config();
+    const before = JSON.stringify(configuration);
+    const validUntil = configuration.sources[0].validUntil;
+    expect(getProviderConfigurationExpiry(input())).toBeNull();
+    expect(getProviderConfigurationExpiry({ ...input(), inspectedAt: "invalid" })).toBeNull();
+    for (const inspectedAt of [validUntil, "2030-01-01T00:00:00.000Z"]) {
+      expect(getProviderConfigurationExpiry({ ...input(), configuration, inspectedAt })).toEqual({
+        configurationDigest: configuration.configurationDigest,
+        validUntil,
+      });
+      expect(
+        createProviderConfigurationProposalView({ ...input(), configuration, inspectedAt }),
+      ).toBeNull();
+    }
+    expect(JSON.stringify(configuration)).toBe(before);
+  });
+  it("uses the earliest source deadline and rejects evidence with no shared valid review time", () => {
+    const configuration = config();
+    const boundDigests = [
+      configuration.context.authority.documentDigest,
+      configuration.pricing.authority.documentDigest,
+      configuration.retention.documentDigest,
+      configuration.usagePolicyTemplate.authority.documentDigest,
+    ];
+    const source = configuration.sources.find((item) => !boundDigests.includes(item.recordDigest))!;
+    source.validUntil = "2026-09-27T01:00:00.000Z";
+    source.recordDigest = digest(providerProposalSourceDigestInput(source));
+    rehash(configuration);
+    expect(
+      getProviderConfigurationExpiry({ ...input(), configuration, inspectedAt: source.validUntil }),
+    ).toEqual({
+      configurationDigest: configuration.configurationDigest,
+      validUntil: source.validUntil,
+    });
+    source.validUntil = source.reviewedAt;
+    source.recordDigest = digest(providerProposalSourceDigestInput(source));
+    expect(
+      getProviderConfigurationExpiry({
+        ...input(),
+        configuration: rehash(configuration),
+        inspectedAt: "2030-01-01T00:00:00.000Z",
+      }),
+    ).toBeNull();
+  });
+  it.each(["digest", "source", "synthetic", "model", "retention", "budget", "usage"])(
+    "does not classify invalid %s evidence as merely expired",
+    (mode) => {
+      const configuration = config();
+      if (mode === "source") configuration.sources[0].excerptSha256 = "0".repeat(64);
+      if (mode === "synthetic") configuration.context.provenance = "synthetic-test";
+      if (mode === "model") configuration.pricing.model = "different-model";
+      if (mode === "retention") configuration.retention.documentDigest = "0".repeat(64);
+      if (mode === "budget") configuration.proposedBudget.capUnits = "0";
+      if (mode === "usage") configuration.usagePolicyTemplate.configuredModel = "different-model";
+      rehash(configuration);
+      if (mode === "digest") configuration.configurationDigest = "0".repeat(64);
+      expect(
+        getProviderConfigurationExpiry({
+          ...input(),
+          configuration,
+          inspectedAt: "2030-01-01T00:00:00.000Z",
+        }),
+      ).toBeNull();
+    },
+  );
+  it("keeps missing configurations and changed candidate bindings out of expiry diagnostics", () => {
+    const expired = { ...input(), inspectedAt: "2030-01-01T00:00:00.000Z" };
+    expect(getProviderConfigurationExpiry({ ...expired, configuration: null })).toBeNull();
+    expect(
+      getProviderConfigurationExpiry({ ...expired, candidateId: "validation-candidate-missing" }),
+    ).toBeNull();
+    const wrongRegistry = structuredClone(registry);
+    wrongRegistry.versionDigest = "0".repeat(64);
+    expect(getProviderConfigurationExpiry({ ...expired, registry: wrongRegistry })).toBeNull();
+  });
   it("pins one candidate request and USD15 proposal without creating a budget, approval or grant", () => {
     const value = createProviderConfigurationProposalView(input());
     expect(value).not.toBeNull();

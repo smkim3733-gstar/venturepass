@@ -1,16 +1,28 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import type { CandidateRegistrySnapshot } from "@/lib/studio-plan-quality-candidate-registry-types";
 import type { ProviderSnapshot } from "@/lib/studio-plan-quality-provider-types";
 import type {
-  ProviderReviewView,
   ProviderLedgerOverview,
   ProviderLedgerArtifactKey,
 } from "@/lib/studio-plan-quality-provider-review-types";
+import type { ProviderPolicyInspectionResponse } from "@/lib/studio-plan-quality-provider-policy-http-types";
+import { QualityProviderPolicyDetails } from "./quality-provider-policy-details";
+import { QualityProviderPolicyAdoptionPanel } from "./quality-provider-policy-adoption-panel";
+import { QualityProviderReservationPanel } from "./quality-provider-reservation-panel";
+import { QualityProviderTransmissionPanel } from "./quality-provider-transmission-panel";
+import { QualityProviderTransmissionCommandPanel } from "./quality-provider-transmission-command-panel";
+import { QualityProviderProductionPanel } from "./quality-provider-production-panel";
+import type { ProviderTransmissionInspectionResponse } from "@/lib/studio-plan-quality-provider-transmission-http-types";
+import { QualityProviderReservationCommandPanel } from "./quality-provider-reservation-command-panel";
+import type { ProviderReservationInspectionResponse } from "@/lib/studio-plan-quality-provider-reservation-http-types";
 import { studioFetch, jsonBody } from "./shared";
-import { QualityProviderProposalDetails } from "./quality-provider-proposal-details";
+import {
+  QualityProviderProposalDetails,
+  QualityProviderExpiredDetails,
+} from "./quality-provider-proposal-details";
 import {
   qualityProviderReview,
   qualityProviderOverview,
@@ -19,7 +31,7 @@ import {
   qualityProviderArtifact,
   qualityProviderReviewArchive,
   qualityProviderStateSummary,
-  qualityProviderReviewInspectUrl,
+  qualityProviderPolicyInspectUrl,
   qualityProviderLedgerBase,
 } from "./quality-provider-review-ui";
 
@@ -139,9 +151,40 @@ export function QualityProviderReviewPanel({
   const [candidate, setCandidate] = useState("");
   const [working, setWorking] = useState(false),
     [error, setError] = useState("");
+  const [adopting, setAdopting] = useState(false);
+  const [reservationWorking, setReservationWorking] = useState(false);
+  const [reserving, setReserving] = useState(false);
+  const [transmissionWorking, setTransmissionWorking] = useState(false);
+  const [approvingTransmission, setApprovingTransmission] = useState(false);
+  const [productionWorking, setProductionWorking] = useState(false);
+  const [transmissionReview, setTransmissionReview] = useState<{
+    view: ProviderTransmissionInspectionResponse;
+    snapshotDigest: string;
+  } | null>(null);
+  const transmissionInspected = useCallback(
+    (view: ProviderTransmissionInspectionResponse | null, snapshotDigest: string) => {
+      setTransmissionReview((previous) =>
+        view
+          ? { view, snapshotDigest }
+          : previous?.snapshotDigest === snapshotDigest
+            ? null
+            : previous,
+      );
+    },
+    [],
+  );
+  const [transmissionEpoch, setTransmissionEpoch] = useState(0);
+  const reservationBusy = reservationWorking || reserving;
+  const [reservationReview, setReservationReview] =
+    useState<ProviderReservationInspectionResponse | null>(null);
+  const reservationInspected = useCallback(
+    (value: ProviderReservationInspectionResponse | null) => setReservationReview(value),
+    [],
+  );
+  const [reservationEpoch, setReservationEpoch] = useState(0);
   const [loaded, setLoaded] = useState<{
     key: string;
-    view: ProviderReviewView;
+    view: ProviderPolicyInspectionResponse;
     overview: ProviderLedgerOverview;
   } | null>(null);
   const [record, setRecord] = useState<ProviderSnapshot | null>(null),
@@ -173,12 +216,59 @@ export function QualityProviderReviewPanel({
     };
   }, []);
   useEffect(() => {
-    onBusyChange(working || !!current);
+    onBusyChange(
+      working ||
+        adopting ||
+        reservationBusy ||
+        transmissionWorking ||
+        approvingTransmission ||
+        productionWorking ||
+        !!current,
+    );
     return () => onBusyChange(false);
-  }, [working, current, onBusyChange]);
-  const locked = working || !!blockedReason;
+  }, [
+    working,
+    adopting,
+    reservationBusy,
+    transmissionWorking,
+    approvingTransmission,
+    productionWorking,
+    current,
+    onBusyChange,
+  ]);
+  const locked =
+    working ||
+    adopting ||
+    reservationBusy ||
+    transmissionWorking ||
+    approvingTransmission ||
+    productionWorking ||
+    !!blockedReason;
+  const policyResolved = useCallback(() => {
+    setReservationEpoch((value) => value + 1);
+    setReservationReview(null);
+    setTransmissionReview(null);
+    setTransmissionEpoch((value) => value + 1);
+    setLoaded(null);
+    setRecord(null);
+    setHead(null);
+    setRaw(null);
+    setError("");
+    sequence.current++;
+  }, []);
   async function work(action: (active: () => boolean) => Promise<void>) {
-    if (busy.current || blockedReason || !registry || !candidateId) return;
+    if (
+      busy.current ||
+      adopting ||
+      reservationBusy ||
+      transmissionWorking ||
+      approvingTransmission ||
+      productionWorking ||
+      blockedReason ||
+      !registry ||
+      !candidateId
+    )
+      return;
     busy.current = true;
     setWorking(true);
     setError("");
@@ -195,14 +285,18 @@ export function QualityProviderReviewPanel({
         );
     } finally {
       busy.current = false;
-      if (mounted.current && serial === sequence.current) setWorking(false);
+      // A policy resolution can invalidate this read while it is in flight. This
+      // operation still owns busy, so it must release the UI even when its data is stale.
+      if (mounted.current) setWorking(false);
     }
   }
   async function inspect() {
     if (!registry) return;
     await work(async (active) => {
+      setReservationEpoch((value) => value + 1);
+      setTransmissionEpoch((value) => value + 1);
       const [view, overview] = await Promise.all([
-        studioFetch<unknown>(qualityProviderReviewInspectUrl, {
+        studioFetch<unknown>(qualityProviderPolicyInspectUrl, {
           method: "POST",
           ...jsonBody({
             version: registry.version,
@@ -225,6 +319,7 @@ export function QualityProviderReviewPanel({
   async function openRecord(target: ProviderSnapshot, revision = target.revision) {
     if (!registry) return;
     await work(async (active) => {
+      setTransmissionEpoch((value) => value + 1);
       const value = await qualityProviderSnapshot(
         await studioFetch<unknown>(
           `${qualityProviderLedgerBase}/runs/${target.run.id}/revisions/${revision}`,
@@ -325,8 +420,9 @@ export function QualityProviderReviewPanel({
               <Button
                 variant="outline"
                 className={buttonClass}
-                disabled={working}
+                disabled={locked}
                 onClick={() => {
+                  setReservationEpoch((value) => value + 1);
                   setLoaded(null);
                   setRecord(null);
                   setHead(null);
@@ -350,14 +446,28 @@ export function QualityProviderReviewPanel({
               <div className="space-y-3 rounded-xl border border-amber-200 bg-amber-50/50 p-4">
                 <p className="font-semibold" role="status">
                   {current.view.state === "proposal-only"
-                    ? "실행 전 검토 제안 · 승인 전"
-                    : "실제 실행 준비 미완료"}
+                    ? "조회 당시 실행 검토 제안"
+                    : current.view.state === "configuration-expired"
+                      ? "운영 근거 재확인 필요"
+                      : "실제 실행 준비 미완료"}
                 </p>
                 <p className="text-sm leading-6">
                   {current.view.scope.label} · 등록 v{current.view.scope.version}
                 </p>
                 {current.view.state === "proposal-only" ? (
-                  <QualityProviderProposalDetails view={current.view} />
+                  <>
+                    {(current.view.viewVersion === 4 || current.view.viewVersion === 5) && (
+                      <QualityProviderPolicyDetails
+                        review={current.view.policyReview}
+                        policyHead={
+                          current.view.viewVersion === 5 ? current.view.policyHead : undefined
+                        }
+                      />
+                    )}
+                    <QualityProviderProposalDetails view={current.view} />
+                  </>
+                ) : current.view.state === "configuration-expired" ? (
+                  <QualityProviderExpiredDetails view={current.view} />
                 ) : (
                   <dl className="grid gap-2 text-sm sm:grid-cols-2">
                     <div>
@@ -446,6 +556,44 @@ export function QualityProviderReviewPanel({
                     </select>
                   </label>
                   <QualityProviderRecordDetails snapshot={visibleRecord} />
+                  {visibleRecord.run.environment === "production" &&
+                    visibleRecord.archiveFormatVersion === 3 &&
+                    visibleRecord.revision >= 1 && (
+                      <QualityProviderProductionPanel
+                        key={`${selectionKey}:${visibleRecord.snapshotDigest}`}
+                        selection={{
+                          runId: visibleRecord.run.id,
+                          runDigest: visibleRecord.run.runDigest,
+                        }}
+                        minimumRevision={visibleRecord.revision}
+                        disabled={
+                          working ||
+                          adopting ||
+                          reservationBusy ||
+                          transmissionWorking ||
+                          approvingTransmission ||
+                          !!blockedReason
+                        }
+                        onBusyChange={setProductionWorking}
+                      />
+                    )}
+                  {visibleRecord.run.environment === "production" && (
+                    <QualityProviderTransmissionPanel
+                      key={`${selectionKey}:${visibleRecord.snapshotDigest}:${transmissionEpoch}:${adopting}:${reserving}:${blockedReason}`}
+                      registry={registry}
+                      snapshot={visibleRecord}
+                      disabled={
+                        working ||
+                        adopting ||
+                        reservationBusy ||
+                        approvingTransmission ||
+                        productionWorking ||
+                        !!blockedReason
+                      }
+                      onBusyChange={setTransmissionWorking}
+                      onReviewChange={transmissionInspected}
+                    />
+                  )}
                   <Button
                     className={buttonClass}
                     variant="outline"
@@ -494,6 +642,77 @@ export function QualityProviderReviewPanel({
           )}
         </>
       )}
+      {registry && candidateId && (
+        <QualityProviderReservationPanel
+          key={`${selectionKey}:${reservationEpoch}:${adopting}:${blockedReason}`}
+          registry={registry}
+          candidateId={candidateId}
+          disabled={
+            working ||
+            adopting ||
+            reserving ||
+            transmissionWorking ||
+            approvingTransmission ||
+            productionWorking ||
+            !!blockedReason
+          }
+          onBusyChange={setReservationWorking}
+          onReviewChange={reservationInspected}
+        />
+      )}
+      <QualityProviderReservationCommandPanel
+        registry={registry}
+        view={
+          reservationReview?.selection.versionDigest === registry?.versionDigest &&
+          reservationReview?.selection.candidateId === candidateId
+            ? reservationReview
+            : null
+        }
+        disabled={
+          working ||
+          adopting ||
+          reservationWorking ||
+          transmissionWorking ||
+          approvingTransmission ||
+          productionWorking ||
+          !!blockedReason
+        }
+        onBusyChange={setReserving}
+        onResolved={policyResolved}
+      />
+      <QualityProviderTransmissionCommandPanel
+        registry={registry}
+        snapshot={visibleRecord}
+        view={
+          visibleRecord && transmissionReview?.snapshotDigest === visibleRecord.snapshotDigest
+            ? transmissionReview.view
+            : null
+        }
+        disabled={
+          working ||
+          adopting ||
+          reservationBusy ||
+          transmissionWorking ||
+          productionWorking ||
+          !!blockedReason
+        }
+        onBusyChange={setApprovingTransmission}
+        onResolved={policyResolved}
+      />
+      <QualityProviderPolicyAdoptionPanel
+        registry={registry}
+        view={current?.view ?? null}
+        disabled={
+          working ||
+          reservationBusy ||
+          transmissionWorking ||
+          approvingTransmission ||
+          productionWorking ||
+          !!blockedReason
+        }
+        onBusyChange={setAdopting}
+        onResolved={policyResolved}
+      />
     </section>
   );
 }

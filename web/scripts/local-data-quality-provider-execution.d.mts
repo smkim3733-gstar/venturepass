@@ -25,8 +25,10 @@ import type {
 import type {
   ProviderUsagePolicy,
   ProviderUsageAssessment,
+  ProviderCapturedResponse,
 } from "./local-data-quality-provider-usage.mjs";
 import type { CandidateRegistrySnapshot } from "../src/lib/studio-plan-quality-candidate-registry-types";
+import type { PlanContent, ReviewFinding } from "../src/lib/studio-schema";
 export const providerExecutionLimits: Readonly<{
   requestBytes: 2097152;
   responseBytes: 4194304;
@@ -72,10 +74,29 @@ export function deriveProviderExecutionReviewRequest(
   run: ProviderRun,
   output: ProviderExecutionOutput,
 ): ProviderRun["preparation"]["generation"]["body"];
+export function validateProviderExecutionOutput(
+  phase: ProviderPhase,
+  value: unknown,
+  raw: ProviderCapturedResponse,
+  run: ProviderRun,
+  registry: CandidateRegistrySnapshot,
+  generation?: ProviderExecutionOutput | null,
+): ProviderExecutionOutput;
 export function getProviderExecutionBudgetSnapshot(
   events: ProviderBudgetEvent[],
   scope: ProviderScope,
 ): ProviderExecutionBudgetSnapshot;
+export function validateProviderExecutionFinalResult(
+  value: unknown,
+  contractDigest: string,
+  generation: ProviderExecutionOutput,
+  review: ProviderExecutionOutput,
+): {
+  content: PlanContent;
+  review: ReviewFinding[];
+  semanticReview: ReviewFinding[];
+  contractDigest: string;
+};
 export function providerUsageRecognitionPayload(
   run: ProviderRun,
   phase: ProviderPhase,

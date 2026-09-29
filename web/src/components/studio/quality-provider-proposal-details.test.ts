@@ -23,8 +23,14 @@ import {
 } from "@/lib/studio-plan-quality-provider-configuration";
 import {
   QualityProviderProposalDetails,
+  QualityProviderExpiredDetails,
   qualityProviderMoney,
 } from "./quality-provider-proposal-details";
+import {
+  providerReviewExpiredViewSchema,
+  providerExpiredBlockerCodes,
+  providerExpiredBlockerMessages,
+} from "@/lib/studio-plan-quality-provider-review-types";
 
 const registry = actualTestRegistry();
 const proposal = () => {
@@ -50,6 +56,33 @@ afterEach(() => {
 });
 
 describe("proposal details preserve approval and evidence boundaries", () => {
+  it("shows internal expiry without reusing the previous model, reservation or transmission controls", () => {
+    vi.stubGlobal("fetch", forbidden);
+    const { proposal: previous, ...base } = proposal();
+    const view = providerReviewExpiredViewSchema.parse({
+      ...base,
+      viewVersion: 3,
+      state: "configuration-expired",
+      inspectedAt: "2030-01-01T00:00:00.000Z",
+      model: null,
+      financialBasis: null,
+      retention: null,
+      expiry: {
+        configurationDigest: previous.configurationDigest,
+        validUntil: previous.sources[0].validUntil,
+      },
+      blockers: providerExpiredBlockerCodes.map((code) => ({
+        code,
+        message: providerExpiredBlockerMessages[code],
+      })),
+    });
+    const html = renderToStaticMarkup(createElement(QualityProviderExpiredDetails, { view }));
+    expect(html).toContain("내부 재확인 기한이 지났습니다");
+    expect(html).toContain(view.expiry.validUntil);
+    expect(html).toContain(view.expiry.configurationDigest);
+    expect(html).toContain("공급자의 가격 보증일이 아닙니다");
+    expect(html).not.toMatch(/<button|<form|USD|gpt-5\.4|전송할 내용/);
+  });
   it("shows reservation calculation and proposed cap with no adopted budget or transmission control", () => {
     vi.stubGlobal("fetch", forbidden);
     const view = proposal();
@@ -58,8 +91,8 @@ describe("proposal details preserve approval and evidence boundaries", () => {
     expect(html).toContain("USD 11.22");
     expect(html).toContain("USD 5.61");
     expect(html).toContain("USD 15");
-    expect(html).toContain("제안 누적 한도 · 아직 미설정");
-    expect(html).toContain("전송 승인은 아직 하지");
+    expect(html).toContain("제안 누적 한도 · 미승인");
+    expect(html).toContain("설정하거나 전송을 승인하지 않습니다");
     expect(html).toContain("실제 사용량·견적이나 모든");
     expect(html).not.toMatch(/<button|<form|승인 완료|예산 설정 완료/);
     expect(view.budget).toBeNull();

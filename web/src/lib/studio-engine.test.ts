@@ -472,6 +472,28 @@ describe("explicit AI mode and structured output validation", () => {
 });
 
 describe("deterministic submission review", () => {
+  it.each([
+    "벤처확인 100% 보장합니다.",
+    "벤처기업 확인을 보장한다.",
+    "벤처확인 100％ 보장할 수 있습니다.",
+  ])("detects a direct venture confirmation guarantee: %s", (claim) => {
+    const plan = validPlan();
+    plan.sections[0].content = claim;
+    expect(reviewPlan(fixture(), plan).some((finding) => finding.category === "guarantee")).toBe(
+      true,
+    );
+  });
+  it.each([
+    "벤처확인을 보장하지 않습니다.",
+    "벤처확인 100% 보장하지 않습니다.",
+    "제품 성능을 100% 보장합니다.",
+  ])("does not infer a venture approval guarantee from %s", (claim) => {
+    const plan = validPlan();
+    plan.sections[0].content = claim;
+    expect(reviewPlan(fixture(), plan).some((finding) => finding.category === "guarantee")).toBe(
+      false,
+    );
+  });
   it("does not misread a quoted guarantee inside a warning as the app's own claim", async () => {
     vi.stubEnv("OPENAI_API_KEY", "test");
     const content = aiAnalysis();

@@ -59,6 +59,79 @@ export const qualityV6WriterTriggerSql = Object.fromEntries(
     `CREATE TRIGGER ${table}_v6_writer BEFORE INSERT ON ${table} BEGIN SELECT CASE WHEN quality_storage_contract() IS NOT 'quality-v6' THEN RAISE(ABORT,'unsupported writer') END; END`,
   ]),
 );
+// Keep v1-v6 declarations frozen. Policy records have their own immutable chain and nonce.
+export const qualityPolicyTableSql = {
+  quality_provider_policies:
+    "CREATE TABLE quality_provider_policies (scope_id TEXT NOT NULL, revision INTEGER NOT NULL, nonce TEXT NOT NULL UNIQUE, body TEXT NOT NULL, body_hash TEXT NOT NULL, PRIMARY KEY(scope_id,revision))",
+};
+export const qualityV7TableSql = { ...qualityTableSql, ...qualityPolicyTableSql };
+export const qualityV7ImmutableTriggerSql = {
+  ...qualityImmutableTriggerSql,
+  ...Object.fromEntries(
+    Object.keys(qualityPolicyTableSql).flatMap((table) =>
+      ["update", "delete"].map((action) => [
+        `${table}_no_${action}`,
+        `CREATE TRIGGER ${table}_no_${action} BEFORE ${action} ON ${table} BEGIN SELECT RAISE(ABORT,'immutable'); END`,
+      ]),
+    ),
+  ),
+};
+export const qualityV7WriterTriggerSql = Object.fromEntries(
+  Object.keys(qualityV7TableSql).map((table) => [
+    `${table}_v7_writer`,
+    `CREATE TRIGGER ${table}_v7_writer BEFORE INSERT ON ${table} BEGIN SELECT CASE WHEN quality_storage_contract() IS NOT 'quality-v7' THEN RAISE(ABORT,'unsupported writer') END; END`,
+  ]),
+);
+// Binding nonces reference an existing native receipt; they are not new nonce owners.
+export const qualityReservationTableSql = {
+  quality_provider_reservation_bindings:
+    "CREATE TABLE quality_provider_reservation_bindings (run_id TEXT PRIMARY KEY REFERENCES quality_actual_runs(id), nonce TEXT NOT NULL UNIQUE REFERENCES quality_actual_requests(nonce), body TEXT NOT NULL, body_hash TEXT NOT NULL)",
+  quality_provider_reservation_coverage:
+    "CREATE TABLE quality_provider_reservation_coverage (id INTEGER PRIMARY KEY CHECK(id=1), body TEXT NOT NULL, body_hash TEXT NOT NULL)",
+};
+export const qualityV8TableSql = { ...qualityV7TableSql, ...qualityReservationTableSql };
+export const qualityV8ImmutableTriggerSql = {
+  ...qualityV7ImmutableTriggerSql,
+  ...Object.fromEntries(
+    Object.keys(qualityReservationTableSql).flatMap((table) =>
+      ["update", "delete"].map((action) => [
+        `${table}_no_${action}`,
+        `CREATE TRIGGER ${table}_no_${action} BEFORE ${action} ON ${table} BEGIN SELECT RAISE(ABORT,'immutable'); END`,
+      ]),
+    ),
+  ),
+};
+export const qualityV8WriterTriggerSql = Object.fromEntries(
+  Object.keys(qualityV8TableSql).map((table) => [
+    `${table}_v8_writer`,
+    `CREATE TRIGGER ${table}_v8_writer BEFORE INSERT ON ${table} BEGIN SELECT CASE WHEN quality_storage_contract() IS NOT 'quality-v8' THEN RAISE(ABORT,'unsupported writer') END; END`,
+  ]),
+);
+// Frozen v8 declarations stay intact. Approval nonces reference native approval receipts.
+export const qualityTransmissionApprovalTableSql = {
+  quality_provider_transmission_bindings:
+    "CREATE TABLE quality_provider_transmission_bindings (run_id TEXT PRIMARY KEY REFERENCES quality_actual_runs(id), nonce TEXT NOT NULL UNIQUE REFERENCES quality_actual_requests(nonce), body TEXT NOT NULL, body_hash TEXT NOT NULL)",
+  quality_provider_transmission_coverage:
+    "CREATE TABLE quality_provider_transmission_coverage (id INTEGER PRIMARY KEY CHECK(id=1), body TEXT NOT NULL, body_hash TEXT NOT NULL)",
+};
+export const qualityV9TableSql = { ...qualityV8TableSql, ...qualityTransmissionApprovalTableSql };
+export const qualityV9ImmutableTriggerSql = {
+  ...qualityV8ImmutableTriggerSql,
+  ...Object.fromEntries(
+    Object.keys(qualityTransmissionApprovalTableSql).flatMap((table) =>
+      ["update", "delete"].map((action) => [
+        `${table}_no_${action}`,
+        `CREATE TRIGGER ${table}_no_${action} BEFORE ${action} ON ${table} BEGIN SELECT RAISE(ABORT,'immutable'); END`,
+      ]),
+    ),
+  ),
+};
+export const qualityV9WriterTriggerSql = Object.fromEntries(
+  Object.keys(qualityV9TableSql).map((table) => [
+    `${table}_v9_writer`,
+    `CREATE TRIGGER ${table}_v9_writer BEFORE INSERT ON ${table} BEGIN SELECT CASE WHEN quality_storage_contract() IS NOT 'quality-v9' THEN RAISE(ABORT,'unsupported writer') END; END`,
+  ]),
+);
 const normalized = (sql) =>
   typeof sql === "string"
     ? sql
@@ -84,37 +157,117 @@ export function inspectQualitySchema(db, { allowEmpty = false } = {}) {
     .all();
   if (!schema.length) {
     if (!allowEmpty) fail("QUALITY_SCHEMA_UNSUPPORTED");
-    return { version: 0, schema, tables: [], candidates: false, executions: false, actual: false };
+    return {
+      version: 0,
+      schema,
+      tables: [],
+      candidates: false,
+      executions: false,
+      actual: false,
+      policies: false,
+      reservations: false,
+      transmissions: false,
+    };
   }
   const names = new Set(schema.map((row) => String(row.name)));
+  const transmissions = [
+    ...Object.keys(qualityTransmissionApprovalTableSql),
+    ...Object.keys(qualityV9WriterTriggerSql),
+  ].some((key) => names.has(key));
+  const reservations =
+    transmissions ||
+    [...Object.keys(qualityReservationTableSql), ...Object.keys(qualityV8WriterTriggerSql)].some(
+      (key) => names.has(key),
+    );
+  const policies =
+    reservations ||
+    [...Object.keys(qualityPolicyTableSql), ...Object.keys(qualityV7WriterTriggerSql)].some((key) =>
+      names.has(key),
+    );
   const v6 = Object.keys(qualityV6WriterTriggerSql).some((key) => names.has(key));
   const v5 = Object.keys(qualityV5WriterTriggerSql).some((key) => names.has(key));
-  const actual = [
-    ...Object.keys(qualityActualTableSql),
-    ...Object.keys(qualityWriterTriggerSql),
-    ...Object.keys(qualityV5WriterTriggerSql),
-    ...Object.keys(qualityV6WriterTriggerSql),
-  ].some((key) => names.has(key));
+  const actual =
+    reservations ||
+    [
+      ...Object.keys(qualityActualTableSql),
+      ...Object.keys(qualityWriterTriggerSql),
+      ...Object.keys(qualityV5WriterTriggerSql),
+      ...Object.keys(qualityV6WriterTriggerSql),
+      ...Object.keys(qualityV7WriterTriggerSql),
+      ...Object.keys(qualityPolicyTableSql),
+    ].some((key) => names.has(key));
   const execution = Object.keys(qualityLegacyTableSql)
     .slice(5)
     .some((key) => names.has(key));
   const candidate = Object.keys(qualityLegacyTableSql)
     .slice(3, 5)
     .some((key) => names.has(key));
-  const version = v6 ? 6 : v5 ? 5 : actual ? 4 : execution ? 3 : candidate ? 2 : 1;
-  const tables = Object.keys(qualityTableSql).slice(
+  const version = transmissions
+    ? 9
+    : reservations
+      ? 8
+      : policies
+        ? 7
+        : v6
+          ? 6
+          : v5
+            ? 5
+            : actual
+              ? 4
+              : execution
+                ? 3
+                : candidate
+                  ? 2
+                  : 1;
+  const tableSql = transmissions
+    ? qualityV9TableSql
+    : reservations
+      ? qualityV8TableSql
+      : policies
+        ? qualityV7TableSql
+        : qualityTableSql;
+  const immutableSql = transmissions
+    ? qualityV9ImmutableTriggerSql
+    : reservations
+      ? qualityV8ImmutableTriggerSql
+      : policies
+        ? qualityV7ImmutableTriggerSql
+        : qualityImmutableTriggerSql;
+  const tables = Object.keys(tableSql).slice(
     0,
-    actual ? 13 : execution ? 8 : candidate ? 5 : 3,
+    transmissions
+      ? 18
+      : reservations
+        ? 16
+        : policies
+          ? 14
+          : actual
+            ? 13
+            : execution
+              ? 8
+              : candidate
+                ? 5
+                : 3,
   );
-  const expected = new Map(tables.map((table) => [table, qualityTableSql[table]]));
+  const expected = new Map(tables.map((table) => [table, tableSql[table]]));
   for (const table of tables)
     for (const action of ["update", "delete"]) {
       const key = `${table}_no_${action}`;
-      expected.set(key, qualityImmutableTriggerSql[key]);
+      expected.set(key, immutableSql[key]);
     }
   if (actual)
     for (const [key, sql] of Object.entries(
-      v6 ? qualityV6WriterTriggerSql : v5 ? qualityV5WriterTriggerSql : qualityWriterTriggerSql,
+      transmissions
+        ? qualityV9WriterTriggerSql
+        : reservations
+          ? qualityV8WriterTriggerSql
+          : policies
+            ? qualityV7WriterTriggerSql
+            : v6
+              ? qualityV6WriterTriggerSql
+              : v5
+                ? qualityV5WriterTriggerSql
+                : qualityWriterTriggerSql,
     ))
       expected.set(key, sql);
   if (schema.length !== expected.size) fail("QUALITY_SCHEMA_UNSUPPORTED");
@@ -126,7 +279,17 @@ export function inspectQualitySchema(db, { allowEmpty = false } = {}) {
     )
       fail("QUALITY_SCHEMA_UNSUPPORTED");
   }
-  return { version, schema, tables, candidates: version >= 2, executions: version >= 3, actual };
+  return {
+    version,
+    schema,
+    tables,
+    candidates: version >= 2,
+    executions: version >= 3,
+    actual,
+    policies,
+    reservations,
+    transmissions,
+  };
 }
 
 /** Caller owns BEGIN IMMEDIATE/COMMIT. Partial/unknown legacy schemas are never repaired silently. */
@@ -270,6 +433,7 @@ export function assertQualityLegacyLedgerRows(db, version) {
 /** Caller owns BEGIN IMMEDIATE/COMMIT; no row, body, hash or original BLOB is rewritten. */
 export function migrateQualitySchemaV6(db) {
   const before = inspectQualitySchema(db, { allowEmpty: true });
+  if (before.version > 6) fail("QUALITY_SCHEMA_UNSUPPORTED");
   assertQualityLegacyLedgerRows(db, before.version);
   db.function("quality_storage_contract", { deterministic: true }, () => "quality-v6");
   if (before.version === 6) return before;
@@ -287,5 +451,31 @@ export function migrateQualitySchemaV6(db) {
         : {};
   for (const name of Object.keys(oldGates)) db.exec(`DROP TRIGGER ${name}`);
   for (const sql of Object.values(qualityV6WriterTriggerSql)) db.exec(sql);
+  return inspectQualitySchema(db);
+}
+
+/** Caller owns BEGIN IMMEDIATE/COMMIT. Only new tables and known gates change; old bytes stay intact. */
+export function migrateQualitySchemaV7(db) {
+  const before = inspectQualitySchema(db, { allowEmpty: true });
+  if (before.version > 7) fail("QUALITY_SCHEMA_UNSUPPORTED");
+  assertQualityLegacyLedgerRows(db, before.version);
+  db.function("quality_storage_contract", { deterministic: true }, () => "quality-v7");
+  if (before.version === 7) return before;
+  for (const [table, sql] of Object.entries(qualityV7TableSql)) {
+    if (before.tables.includes(table)) continue;
+    db.exec(sql);
+    for (const action of ["update", "delete"])
+      db.exec(qualityV7ImmutableTriggerSql[`${table}_no_${action}`]);
+  }
+  const gates =
+    before.version === 6
+      ? qualityV6WriterTriggerSql
+      : before.version === 5
+        ? qualityV5WriterTriggerSql
+        : before.version === 4
+          ? qualityWriterTriggerSql
+          : {};
+  for (const name of Object.keys(gates)) db.exec(`DROP TRIGGER ${name}`);
+  for (const sql of Object.values(qualityV7WriterTriggerSql)) db.exec(sql);
   return inspectQualitySchema(db);
 }

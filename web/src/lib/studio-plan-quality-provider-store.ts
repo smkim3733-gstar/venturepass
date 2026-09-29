@@ -87,6 +87,7 @@ export class ProviderLedgerStore {
       "quality_candidate_requests",
       "quality_execution_requests",
       "quality_actual_requests",
+      "quality_provider_policies",
     ])
       if (this.context.db.prepare(`SELECT nonce FROM ${table} WHERE nonce=?`).get(nonce))
         fail("QUALITY_PROVIDER_NONCE_CONFLICT", "같은 요청 번호가 이미 다른 기록에 사용됐습니다.");
@@ -134,6 +135,24 @@ export class ProviderLedgerStore {
   }
   budgetGet(environment: ProviderEnvironment = "synthetic-test") {
     return this.context.transaction(() => this.scopeBudget(this.inspect().provider, environment));
+  }
+  /** Candidate, full-ledger inspection and production head share one SQLite read transaction. */
+  reviewContext(version: number) {
+    z.number().int().min(1).max(20).parse(version);
+    return this.context.transaction(() => {
+      const registry = this.context.registry(version);
+      const state = this.inspect().provider;
+      const budgetEvents = state.budgetEvents.filter(
+        (event) => event.scopeId === providerBudgetScope("production"),
+      );
+      const budget = this.scopeBudget(state, "production");
+      return {
+        registry,
+        inspectedAt: new Date().toISOString(),
+        budgetEvents,
+        expectedBudgetHead: { revision: budget.revision, headDigest: budget.headDigest },
+      };
+    });
   }
   budgetConfigure(value: ProviderBudgetConfigure) {
     const input = z

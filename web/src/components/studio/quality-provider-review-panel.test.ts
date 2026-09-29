@@ -129,7 +129,8 @@ beforeAll(async () => {
   expect(snapshots.unknown.state).toBe("needs-cost-review");
   expect(snapshots.late.state).toBe("result-unobserved");
   expect(snapshots.overusage.state).toBe("bound-breached");
-}, 30000);
+  // Six complete ledger histories audit the growing archive on every write.
+}, 120000);
 afterEach(() => expect(forbidden).not.toHaveBeenCalled());
 afterAll(() => {
   store?.close();

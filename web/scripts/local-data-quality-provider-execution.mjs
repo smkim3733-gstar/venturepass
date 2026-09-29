@@ -474,7 +474,7 @@ function outputJson(raw) {
   if (texts.length !== 1) fail();
   return JSON.parse(texts[0]);
 }
-function domainOutput(phase, value, raw, run, registry, generation) {
+export function validateProviderExecutionOutput(phase, value, raw, run, registry, generation) {
   const output = actualArchiveSchemas.actualLedgerValidatedArtifactSchema.parse(value),
     original = outputJson(raw),
     entry = registry.entries.find((v) => v.candidateId === run.preparation.scope.candidateId);
@@ -531,6 +531,28 @@ function domainOutput(phase, value, raw, run, registry, generation) {
       fail();
   }
   return output;
+}
+
+/** Shared by the ledger audit and read-only finalization previews. No terminal event is created. */
+export function validateProviderExecutionFinalResult(value, contractDigest, generation, review) {
+  const final = actualArchiveSchemas.actualLedgerFinalArtifactSchema.parse(value);
+  if (generation?.kind !== "plan" || review?.kind !== "review") fail();
+  const initial = generation.content;
+  if (
+    final.contractDigest !== contractDigest ||
+    !same(final.semanticReview, review.findings) ||
+    final.content.title !== initial.title ||
+    final.content.summary !== initial.summary ||
+    final.content.sections.length !== initial.sections.length ||
+    final.content.sections.some(
+      (v, index) =>
+        !same(omit(v, "needsConfirmation"), omit(initial.sections[index], "needsConfirmation")) ||
+        (initial.sections[index].needsConfirmation && !v.needsConfirmation),
+    ) ||
+    !final.semanticReview.every((v) => final.review.some((r) => same(r, v)))
+  )
+    fail();
+  return final;
 }
 
 /** Start binding is checked by the public facade; no current engine, price or clock is read. */
@@ -787,7 +809,7 @@ export function validateProviderExecutionLedger({
       )
         fail();
       const a = artifact(`${p.phase}-validated`, p.artifactSha256),
-        output = domainOutput(
+        output = validateProviderExecutionOutput(
           p.phase,
           JSON.parse(a.body),
           rawResponses[p.phase],
@@ -834,27 +856,12 @@ export function validateProviderExecutionLedger({
           own.phases.some((v) => !v.settled)
         )
           fail();
-        const final = actualArchiveSchemas.actualLedgerFinalArtifactSchema.parse(
-            JSON.parse(artifact("final-result", p.finalArtifactSha256).body),
-          ),
-          initial = outputs.generation.content;
-        if (
-          final.contractDigest !== c.contractDigest ||
-          !same(final.semanticReview, outputs.review.findings) ||
-          final.content.title !== initial.title ||
-          final.content.summary !== initial.summary ||
-          final.content.sections.length !== initial.sections.length ||
-          final.content.sections.some(
-            (v, index) =>
-              !same(
-                omit(v, "needsConfirmation"),
-                omit(initial.sections[index], "needsConfirmation"),
-              ) ||
-              (initial.sections[index].needsConfirmation && !v.needsConfirmation),
-          ) ||
-          !final.semanticReview.every((v) => final.review.some((r) => same(r, v)))
-        )
-          fail();
+        validateProviderExecutionFinalResult(
+          JSON.parse(artifact("final-result", p.finalArtifactSha256).body),
+          c.contractDigest,
+          outputs.generation,
+          outputs.review,
+        );
       } else {
         if (p.failureCode === null || p.finalArtifactSha256 !== null) fail();
         if (p.outcome === "before-dispatch" && Object.keys(dispatched).length) fail();

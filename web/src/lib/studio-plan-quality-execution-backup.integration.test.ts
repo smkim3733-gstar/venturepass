@@ -14,6 +14,7 @@ import { join, relative, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { PlanQualityStore } from "./studio-plan-quality-store";
+import { freezePolicyFreeSchema } from "./studio-plan-quality-policy-storage-test-helpers";
 import { getPlanExecutionContract } from "./studio-engine";
 import { runQualityMockExecution } from "./studio-plan-quality-execution-runner";
 import { createQualityExecutionPreparation } from "./studio-plan-quality-execution";
@@ -49,20 +50,7 @@ function legacyExecutionDatabase(bytes: Buffer) {
   writeFileSync(file, bytes);
   const db = new DatabaseSync(file);
   try {
-    for (const row of db
-      .prepare(
-        "SELECT name FROM sqlite_schema WHERE type='trigger' AND (name LIKE '%_v4_writer' OR name LIKE '%_v5_writer' OR name LIKE '%_v6_writer')",
-      )
-      .all())
-      db.exec(`DROP TRIGGER ${row.name}`);
-    for (const table of [
-      "quality_actual_events",
-      "quality_actual_artifacts",
-      "quality_actual_requests",
-      "quality_actual_runs",
-      "quality_actual_budget_events",
-    ])
-      db.exec(`DROP TABLE IF EXISTS ${table}`);
+    freezePolicyFreeSchema(db, 3);
   } finally {
     db.close();
   }

@@ -67,6 +67,7 @@ type Context = {
 type State = ReturnType<typeof inspectLedgerDatabase>["legacy"];
 const uuid = z.string().uuid();
 const nonceTables = [
+  "quality_provider_policies",
   "quality_requests",
   "quality_candidate_requests",
   "quality_execution_requests",

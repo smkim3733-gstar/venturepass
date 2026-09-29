@@ -284,12 +284,12 @@ describe("observed runner records remain compatible with v4 archival validation"
         target = join(directory, "restored"),
         { digest: ignored, storageVersion, ...counts } = inspect(source);
       void ignored;
-      expect(storageVersion).toBe(6);
+      expect(storageVersion).toBe(9);
       const sourceBytes = readFileSync(join(source, "quality-evaluation", "quality.sqlite"));
       mkdirSync(target);
       writeFileSync(join(target, "studio.sqlite"), sentinel);
       expect(await backupQualityData(source, backup)).toEqual(counts);
-      expect(verifyQualityBackup(backup).manifest).toMatchObject({ version: 6, ...counts });
+      expect(verifyQualityBackup(backup).manifest).toMatchObject({ version: 9, ...counts });
       expect(restoreQualityData(backup, target)).toEqual(counts);
       expect(readFileSync(join(source, "quality-evaluation", "quality.sqlite"))).toEqual(
         sourceBytes,

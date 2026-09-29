@@ -6,8 +6,27 @@ import { z } from "zod";
 import {
   inspectQualitySchema,
   assertQualityLegacyLedgerRows,
+  migrateQualitySchemaV7,
+  qualityReservationTableSql,
+  qualityV7WriterTriggerSql,
+  qualityV8WriterTriggerSql,
+  qualityV8ImmutableTriggerSql,
+  qualityTransmissionApprovalTableSql,
+  qualityV9WriterTriggerSql,
+  qualityV9ImmutableTriggerSql,
 } from "./local-data-quality-schema.mjs";
 import { inspectQualityLedgers } from "./local-data-quality-ledgers.mjs";
+import { decodeProviderPolicyRows } from "./local-data-quality-provider-policy.mjs";
+import {
+  createProviderReservationMigrationCoverage,
+  inspectProviderReservationArchive,
+} from "./local-data-quality-provider-reservation-binding.mjs";
+import { readProviderReservationDatabaseRows } from "./local-data-quality-provider-reservation-database.mjs";
+import {
+  createProviderTransmissionApprovalMigrationCoverage,
+  inspectProviderTransmissionApprovalArchive,
+} from "./local-data-quality-provider-transmission-binding.mjs";
+import { readProviderTransmissionApprovalDatabaseRows } from "./local-data-quality-provider-transmission-database.mjs";
 import {
   createDestination,
   fail,
@@ -77,6 +96,27 @@ const manifestSchema = z.discriminatedUnion("version", [
   actualManifestSchema,
   actualManifestSchema.extend({ version: z.literal(5) }).strict(),
   actualManifestSchema.extend({ version: z.literal(6) }).strict(),
+  actualManifestSchema
+    .extend({ version: z.literal(7), providerPolicies: z.number().int().min(0).max(100) })
+    .strict(),
+  actualManifestSchema
+    .extend({
+      version: z.literal(8),
+      providerPolicies: z.number().int().min(0).max(100),
+      providerReservationBindings: z.number().int().min(0).max(20),
+      providerReservationCoverage: z.literal(1),
+    })
+    .strict(),
+  actualManifestSchema
+    .extend({
+      version: z.literal(9),
+      providerPolicies: z.number().int().min(0).max(100),
+      providerReservationBindings: z.number().int().min(0).max(20),
+      providerReservationCoverage: z.literal(1),
+      providerTransmissionBindings: z.number().int().min(0).max(20),
+      providerTransmissionCoverage: z.literal(1),
+    })
+    .strict(),
 ]);
 const candidateSetId = "ai-validation-candidates";
 const candidateId = z
@@ -752,6 +792,21 @@ function inspectExecutionRows(runRows, eventRows, receiptRows, registryBindings,
 }
 function snapshotCounts(snapshot) {
   return {
+    ...(Object.hasOwn(snapshot, "providerTransmissionBindings")
+      ? {
+          providerTransmissionBindings: snapshot.providerTransmissionBindings,
+          providerTransmissionCoverage: snapshot.providerTransmissionCoverage,
+        }
+      : {}),
+    ...(Object.hasOwn(snapshot, "providerReservationBindings")
+      ? {
+          providerReservationBindings: snapshot.providerReservationBindings,
+          providerReservationCoverage: snapshot.providerReservationCoverage,
+        }
+      : {}),
+    ...(Object.hasOwn(snapshot, "providerPolicies")
+      ? { providerPolicies: snapshot.providerPolicies }
+      : {}),
     runs: snapshot.runs,
     revisions: snapshot.revisions,
     requests: snapshot.requests,
@@ -780,7 +835,15 @@ function snapshotCounts(snapshot) {
   };
 }
 /** Decode bounded stored bytes; semantic rules are shared with the actual ledger store. */
-function inspectActualRows(rows, registries, otherNonces, storageVersion) {
+function inspectActualRows(
+  rows,
+  registries,
+  otherNonces,
+  storageVersion,
+  policyRows,
+  reservationRows,
+  transmissionRows,
+) {
   let total = 0;
   const decodeRows = (items, maximum, match) =>
     items.map((row) => {
@@ -869,9 +932,11 @@ function inspectActualRows(rows, registries, otherNonces, storageVersion) {
       sizeBytes: row.size_bytes,
     };
   });
-  let ledger;
+  let ledger, ledgerInput;
   try {
-    ledger = inspectQualityLedgers({
+    const policy = decodeProviderPolicyRows(policyRows);
+    total += policy.usedBytes;
+    ledgerInput = {
       runs: orderedRuns,
       events,
       budgetEvents,
@@ -879,7 +944,21 @@ function inspectActualRows(rows, registries, otherNonces, storageVersion) {
       receipts,
       registries,
       otherNonces: [...otherNonces],
-    });
+      policies: policy.records,
+    };
+    if (reservationRows) {
+      const archive = {
+        ledger: ledgerInput,
+        coverage: reservationRows.coverage,
+        records: reservationRows.records,
+      };
+      ledger = transmissionRows
+        ? inspectProviderTransmissionApprovalArchive({ archive, ...transmissionRows })
+            .reservationArchive.ledger
+        : inspectProviderReservationArchive(archive).ledger;
+      total += reservationRows.usedBytes;
+      if (transmissionRows) total += transmissionRows.usedBytes;
+    } else ledger = inspectQualityLedgers(ledgerInput);
   } catch {
     fail("QUALITY_DATABASE_INVALID");
   }
@@ -890,11 +969,20 @@ function inspectActualRows(rows, registries, otherNonces, storageVersion) {
     receipts.length + ledger.reservedReceiptSlots > 1000
   )
     fail("QUALITY_DATABASE_LIMIT");
-  return { total, reservedBytes: ledger.reservedBytes };
+  return { total, reservedBytes: ledger.reservedBytes, ledgerInput };
 }
 /** Structural and immutable-byte verification. No execution or current model-quality claim. */
-export function inspectQualityDatabase(db) {
-  db.exec("BEGIN");
+export function inspectQualityDatabase(db, { inTransaction = false } = {}) {
+  return auditQualityDatabase(db, { inTransaction }).snapshot;
+}
+/** Audited raw bytes in the caller's locked snapshot; includes all tables and original encoding. */
+export function inspectQualityDatabaseUsage(db) {
+  return auditQualityDatabase(db, { inTransaction: true }).usage;
+}
+function auditQualityDatabase(db, { inTransaction = false } = {}) {
+  // A policy write must audit the same locked snapshot without committing its caller's transaction.
+  if (inTransaction && !db.isTransaction) fail("QUALITY_TRANSACTION_REQUIRED");
+  if (!inTransaction) db.exec("BEGIN");
   try {
     const size =
       Number(db.prepare("PRAGMA page_count").get().page_count) *
@@ -911,6 +999,9 @@ export function inspectQualityDatabase(db) {
       candidates,
       executions,
       actual,
+      policies,
+      reservations,
+      transmissions,
     } = inspectQualitySchema(db);
     assertQualityLegacyLedgerRows(db, storageVersion);
     const counts = db
@@ -940,6 +1031,11 @@ export function inspectQualityDatabase(db) {
       (SELECT COUNT(*) FROM quality_actual_artifacts) AS actualArtifacts,
       (SELECT COUNT(*) FROM quality_actual_requests) AS actualRequests`
           : ""
+      }${
+        policies
+          ? `,
+      (SELECT COUNT(*) FROM quality_provider_policies) AS providerPolicies`
+          : ""
       }`,
       )
       .get();
@@ -960,7 +1056,8 @@ export function inspectQualityDatabase(db) {
           Number(counts.actualRuns) > 20 ||
           Number(counts.actualEvents) > 640 ||
           Number(counts.actualArtifacts) > 140 ||
-          Number(counts.actualRequests) > 1000))
+          Number(counts.actualRequests) > 1000)) ||
+      (policies && Number(counts.providerPolicies) > 100)
     )
       fail("QUALITY_DATABASE_LIMIT");
     const runRows = db.prepare("SELECT id,body,body_hash FROM quality_runs ORDER BY id").all();
@@ -999,6 +1096,17 @@ export function inspectQualityDatabase(db) {
           .prepare("SELECT nonce,body,body_hash FROM quality_execution_requests ORDER BY nonce")
           .all()
       : [];
+    const policyRows = policies
+      ? db
+          .prepare(
+            "SELECT rowid AS storage_order,scope_id,revision,nonce,body,body_hash FROM quality_provider_policies ORDER BY rowid",
+          )
+          .all()
+      : [];
+    const reservationRows = reservations ? readProviderReservationDatabaseRows(db) : null;
+    const transmissionRows = transmissions
+      ? readProviderTransmissionApprovalDatabaseRows(db)
+      : null;
     const actualRows = {
       budget: actual
         ? db
@@ -1186,6 +1294,9 @@ export function inspectQualityDatabase(db) {
             [...receiptRows, ...candidateReceipts, ...executionReceipts].map((row) => row.nonce),
           ),
           storageVersion,
+          policyRows,
+          reservationRows,
+          transmissionRows,
         )
       : { total: 0, reservedBytes: 0 };
     total += actualVerification.total;
@@ -1230,12 +1341,38 @@ export function inspectQualityDatabase(db) {
             ...(storageVersion >= 5 ? [["actualRunInsertionOrder", actualRows.runOrder]] : []),
           ]
         : []),
+      ...(policies ? [["providerPolicies", policyRows]] : []),
+      ...(reservations
+        ? [
+            ["providerReservationBindings", reservationRows.bindingRows],
+            ["providerReservationCoverage", reservationRows.coverageRows],
+          ]
+        : []),
+      ...(transmissions
+        ? [
+            ["providerTransmissionBindings", transmissionRows.bindingRows],
+            ["providerTransmissionCoverage", transmissionRows.coverageRows],
+          ]
+        : []),
     ]) {
       logicalHash.update(String(name)).update("\0");
       for (const row of rows) logicalHash.update(digest(row));
     }
     const result = {
       storageVersion,
+      ...(transmissions
+        ? {
+            providerTransmissionBindings: transmissionRows.bindingRows.length,
+            providerTransmissionCoverage: transmissionRows.coverageRows.length,
+          }
+        : {}),
+      ...(policies ? { providerPolicies: policyRows.length } : {}),
+      ...(reservations
+        ? {
+            providerReservationBindings: reservationRows.bindingRows.length,
+            providerReservationCoverage: reservationRows.coverageRows.length,
+          }
+        : {}),
       digest: logicalHash.digest("hex"),
       runs: runRows.length,
       revisions: revisionRows.length,
@@ -1260,12 +1397,79 @@ export function inspectQualityDatabase(db) {
           }
         : {}),
     };
-    db.exec("COMMIT");
-    return result;
+    if (!inTransaction) db.exec("COMMIT");
+    return {
+      snapshot: result,
+      ledger: actualVerification.ledgerInput,
+      usage: { usedBytes: total, reservedBytes: actualVerification.reservedBytes },
+    };
   } catch (error) {
-    db.exec("ROLLBACK");
+    if (!inTransaction) db.exec("ROLLBACK");
     throw error;
   }
+}
+/** Caller owns BEGIN IMMEDIATE and rollback on failure. Never rewrites historical row bytes.
+ * Full v1-v7 audit precedes cutover capture; a v8 store never synthesizes missing coverage.
+ */
+export function migrateQualitySchemaV8(db) {
+  if (!db.isTransaction) fail("QUALITY_TRANSACTION_REQUIRED");
+  const before = inspectQualitySchema(db, { allowEmpty: true });
+  if (before.version > 8) fail("QUALITY_SCHEMA_UNSUPPORTED");
+  if (before.version === 8) {
+    db.function("quality_storage_contract", { deterministic: true }, () => "quality-v8");
+    inspectQualityDatabase(db, { inTransaction: true });
+    return before;
+  }
+  // Validate under the original contract before upgrading, including legacy envelope limits.
+  if (before.version) inspectQualityDatabase(db, { inTransaction: true });
+  migrateQualitySchemaV7(db);
+  const verified = auditQualityDatabase(db, { inTransaction: true });
+  const coverage = createProviderReservationMigrationCoverage(verified.ledger);
+  for (const [table, sql] of Object.entries(qualityReservationTableSql)) {
+    db.exec(sql);
+    for (const action of ["update", "delete"])
+      db.exec(qualityV8ImmutableTriggerSql[`${table}_no_${action}`]);
+  }
+  for (const name of Object.keys(qualityV7WriterTriggerSql)) db.exec(`DROP TRIGGER ${name}`);
+  db.function("quality_storage_contract", { deterministic: true }, () => "quality-v8");
+  for (const sql of Object.values(qualityV8WriterTriggerSql)) db.exec(sql);
+  db.prepare(
+    "INSERT INTO quality_provider_reservation_coverage(id,body,body_hash) VALUES(1,?,?)",
+  ).run(JSON.stringify(coverage), digest(coverage));
+  inspectQualityDatabase(db, { inTransaction: true });
+  return inspectQualitySchema(db);
+}
+/** Full prior-version audit and one-time approval-event cutover in the caller's write transaction.
+ * A current v9 database must already contain its original coverage, even when it is empty. */
+export function migrateQualitySchemaV9(db) {
+  if (!db.isTransaction) fail("QUALITY_TRANSACTION_REQUIRED");
+  const before = inspectQualitySchema(db, { allowEmpty: true });
+  if (before.version === 9) {
+    db.function("quality_storage_contract", { deterministic: true }, () => "quality-v9");
+    inspectQualityDatabase(db, { inTransaction: true });
+    return before;
+  }
+  migrateQualitySchemaV8(db);
+  const verified = auditQualityDatabase(db, { inTransaction: true });
+  const reservation = readProviderReservationDatabaseRows(db);
+  const coverage = createProviderTransmissionApprovalMigrationCoverage({
+    ledger: verified.ledger,
+    coverage: reservation.coverage,
+    records: reservation.records,
+  });
+  for (const [table, sql] of Object.entries(qualityTransmissionApprovalTableSql)) {
+    db.exec(sql);
+    for (const action of ["update", "delete"])
+      db.exec(qualityV9ImmutableTriggerSql[`${table}_no_${action}`]);
+  }
+  for (const name of Object.keys(qualityV8WriterTriggerSql)) db.exec(`DROP TRIGGER ${name}`);
+  db.function("quality_storage_contract", { deterministic: true }, () => "quality-v9");
+  for (const sql of Object.values(qualityV9WriterTriggerSql)) db.exec(sql);
+  db.prepare(
+    "INSERT INTO quality_provider_transmission_coverage(id,body,body_hash) VALUES(1,?,?)",
+  ).run(JSON.stringify(coverage), digest(coverage));
+  inspectQualityDatabase(db, { inTransaction: true });
+  return inspectQualitySchema(db);
 }
 function open(file) {
   secureFile(file);
@@ -1313,6 +1517,18 @@ export function verifyQualityBackup(source) {
     manifest.version >= 2 !== Object.hasOwn(snapshot, "candidateVersions") ||
     manifest.version >= 3 !== Object.hasOwn(snapshot, "executionRuns") ||
     manifest.version >= 4 !== Object.hasOwn(snapshot, "actualRuns") ||
+    manifest.version >= 7 !== Object.hasOwn(snapshot, "providerPolicies") ||
+    (manifest.version >= 7 && snapshot.providerPolicies !== manifest.providerPolicies) ||
+    manifest.version >= 8 !== Object.hasOwn(snapshot, "providerReservationBindings") ||
+    manifest.version >= 8 !== Object.hasOwn(snapshot, "providerReservationCoverage") ||
+    (manifest.version >= 8 &&
+      (snapshot.providerReservationBindings !== manifest.providerReservationBindings ||
+        snapshot.providerReservationCoverage !== manifest.providerReservationCoverage)) ||
+    manifest.version >= 9 !== Object.hasOwn(snapshot, "providerTransmissionBindings") ||
+    manifest.version >= 9 !== Object.hasOwn(snapshot, "providerTransmissionCoverage") ||
+    (manifest.version >= 9 &&
+      (snapshot.providerTransmissionBindings !== manifest.providerTransmissionBindings ||
+        snapshot.providerTransmissionCoverage !== manifest.providerTransmissionCoverage)) ||
     (manifest.version >= 2 &&
       (snapshot.candidateVersions !== manifest.candidateVersions ||
         snapshot.candidateRequests !== manifest.candidateRequests)) ||

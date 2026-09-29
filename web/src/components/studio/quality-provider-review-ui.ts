@@ -1,6 +1,5 @@
 import { z } from "zod";
 import {
-  providerReviewViewSchema,
   providerReviewDigestInput,
   providerReviewDownloadName,
   providerProposalConfigurationDigestInput,
@@ -9,11 +8,20 @@ import {
   providerLedgerArtifactKeySchema,
   providerLedgerDownloadName,
   providerLedgerArtifactName,
-  type ProviderReviewView,
   type ProviderReviewProposalView,
   type ProviderLedgerOverview,
   type ProviderLedgerArtifactKey,
 } from "@/lib/studio-plan-quality-provider-review-types";
+import type { ProviderPolicyView } from "@/lib/studio-plan-quality-provider-policy-view-types";
+import {
+  providerPolicyInspectionResponseSchema,
+  type ProviderPolicyInspection,
+  type ProviderPolicyInspectionResponse,
+} from "@/lib/studio-plan-quality-provider-policy-http-types";
+import {
+  providerPolicyReviewDigestInput,
+  providerPolicyReviewLifetimeMs,
+} from "@/lib/studio-plan-quality-provider-policy-review-types";
 import { createProviderContextReservation } from "@/lib/studio-plan-quality-provider-reservation";
 import { sectionDefinitions, sourceKindLabels } from "@/lib/studio-schema";
 import { trackContext } from "@/lib/studio-preparation-context";
@@ -30,6 +38,7 @@ import {
 } from "./quality-candidate-registry-ui";
 
 export const qualityProviderReviewInspectUrl = "/api/studio/quality/provider-review/inspect";
+export const qualityProviderPolicyInspectUrl = "/api/studio/quality/provider-policy/inspect";
 export const qualityProviderLedgerBase = "/api/studio/quality/provider-ledger";
 const sha = z.string().regex(/^[a-f0-9]{64}$/);
 const uuid = z.string().uuid();
@@ -227,7 +236,7 @@ async function selected(registry: CandidateRegistrySnapshot, candidateId: string
 
 /** Proposal binding only; this does not authenticate sources or authorize provider execution. */
 async function checkProposal(
-  value: ProviderReviewProposalView,
+  value: Omit<ProviderReviewProposalView, "viewVersion" | "blockers">,
   registry: CandidateRegistrySnapshot,
 ) {
   const { proposal, financialBasis: basis } = value;
@@ -360,12 +369,43 @@ async function checkProposal(
     }) && same(template.fixedUserContext, { ...common, selectedCandidate: original.candidate }),
   );
 }
+/** Display/archive consistency only; authoritative ledger validation stays on the server. */
+async function checkPolicyReview(value: ProviderPolicyView | ProviderPolicyInspection) {
+  const review = value.policyReview,
+    costs = value.financialBasis.costs;
+  requireMatch(
+    same(review.scope, value.scope) &&
+      review.inspectedAt === value.inspectedAt &&
+      review.expiresAt ===
+        new Date(
+          Math.min(
+            Date.parse(value.inspectedAt) + providerPolicyReviewLifetimeMs,
+            ...value.proposal.sources.map((source) => Date.parse(source.validUntil)),
+          ),
+        ).toISOString() &&
+      same(review.bindings, {
+        configurationDigest: value.proposal.configurationDigest,
+        requestReviewDigest: await digest(value.proposal.requestReview),
+        financialBasisDigest: await digest(value.financialBasis),
+        retentionDigest: await digest(value.retention),
+        usagePolicyDigest: await digest(value.proposal.usagePolicy),
+        model: value.model,
+      }) &&
+      same(review.proposedBudget, value.proposal.proposedBudget) &&
+      same(review.reservation, {
+        generationUnits: costs.generation.totalUnits,
+        reviewUnits: costs.review.totalUnits,
+        totalUnits: costs.totalUnits,
+      }) &&
+      review.reviewDigest === (await digest(providerPolicyReviewDigestInput(review))),
+  );
+}
 export async function qualityProviderReview(
   raw: unknown,
   registry: CandidateRegistrySnapshot,
   candidateId: string,
-): Promise<ProviderReviewView> {
-  const value = providerReviewViewSchema.parse(raw),
+): Promise<ProviderPolicyInspectionResponse> {
+  const value = providerPolicyInspectionResponseSchema.parse(raw),
     entry = await selected(registry, candidateId);
   requireMatch(
     same(value.scope, {
@@ -383,6 +423,7 @@ export async function qualityProviderReview(
   );
   requireMatch((await digest(providerReviewDigestInput(value))) === value.viewDigest);
   if (value.state === "proposal-only") await checkProposal(value, registry);
+  if (value.viewVersion === 4 || value.viewVersion === 5) await checkPolicyReview(value);
   return value;
 }
 export async function qualityProviderReviewArchive(

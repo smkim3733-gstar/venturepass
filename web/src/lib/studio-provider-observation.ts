@@ -91,7 +91,7 @@ const options = {
   background: false,
   stream: false,
 } as const;
-function outputJson(response: ProviderCapturedResponse): unknown {
+export function parseProviderResponseOutput(response: ProviderCapturedResponse): unknown {
   if (response.status !== "completed" || !Array.isArray(response.output))
     return fail("AI_INCOMPLETE");
   const texts: string[] = [];
@@ -217,7 +217,7 @@ export async function generateObservedProviderPlan(
     if (usage.status !== "known") fail("PROVIDER_USAGE_UNKNOWN");
     if (usage.violations.length) fail("PROVIDER_USAGE_BOUND_EXCEEDED");
     assertCurrent();
-    return { request: metadata, raw: outputJson(capturedResponse) };
+    return { request: metadata, raw: parseProviderResponseOutput(capturedResponse) };
   }
   async function validated(
     request: ProviderObservationRequest,

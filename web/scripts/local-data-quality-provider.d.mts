@@ -12,6 +12,7 @@ export {
 import type { CandidateRegistrySnapshot } from "../src/lib/studio-plan-quality-candidate-registry-types";
 import type {
   ProviderPreparation,
+  ProviderRequestBody,
   ProviderApproval,
   ProviderStart,
   ProviderPolicy,
@@ -27,6 +28,7 @@ import type {
   ProviderSnapshot,
 } from "../src/lib/studio-plan-quality-provider-types";
 export const providerPreparationSchema: z.ZodType<ProviderPreparation>;
+export const providerRequestBodySchema: z.ZodType<ProviderRequestBody>;
 export const providerApprovalSchema: z.ZodType<ProviderApproval>;
 export const providerStartSchema: z.ZodType<ProviderStart>;
 export const providerPolicySchema: z.ZodType<ProviderPolicy>;
