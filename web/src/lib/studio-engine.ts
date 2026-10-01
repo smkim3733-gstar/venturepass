@@ -3,11 +3,11 @@ import "server-only";
 import OpenAI from "openai";
 import {
   aiInput,
-  buildPlanGenerationRequest,
-  buildPlanReviewRequest,
+  buildPlanGenerationRequestForVersion,
+  buildPlanReviewRequestForVersion,
   candidateClassificationInstructions,
   executionDigest,
-  getPlanExecutionContract,
+  getPlanExecutionContractForVersion,
   planGenerationInstruction,
   planReviewInstruction,
   planSemanticReviewSchema,
@@ -16,8 +16,14 @@ import {
   systemPrompt,
   trackContext,
   type EnginePlanPreparedRequest,
+  type VersionedPlanExecutionContract,
 } from "./studio-engine-request-preparation";
 export { getPlanExecutionContract, StudioEngineError } from "./studio-engine-request-preparation";
+import {
+  getPlanPromptDefinition,
+  type PlanPromptDefinition,
+  type PlanPromptVersion,
+} from "./studio-plan-prompt-versions";
 import { zodTextFormat } from "openai/helpers/zod";
 import { z } from "zod";
 import { evaluationFocusItems } from "./evaluation-guide";
@@ -30,7 +36,6 @@ import {
   engineExecutionResponseSchema,
   engineExecutionUsageSchema,
   engineExecutionValidatedSchema,
-  type EngineExecutionContract,
   type EngineExecutionOptions,
   type EngineExecutionRequest,
   type EngineExecutionOutput,
@@ -432,7 +437,8 @@ function immutableCopy<T>(value: T): T {
 }
 type PlanExecutionObservation = {
   options: EngineExecutionOptions;
-  contract: EngineExecutionContract;
+  contract: VersionedPlanExecutionContract;
+  prompt: PlanPromptDefinition;
   requests: EngineExecutionRequest[];
   validated: Set<EngineExecutionPhase>;
 };
@@ -615,15 +621,31 @@ async function requestObservedStructured<T>(
   observation: PlanExecutionObservation,
   prepared: EnginePlanPreparedRequest | undefined,
 ): Promise<T> {
-  const { options, contract } = observation;
+  const { options, contract, prompt } = observation;
   const definition = contract.phases.find((phase) => phase.name === name);
   const sequence = observation.requests.length + 1;
+  // Compare the complete wire body against independently composed run context, not just its hash.
+  const expectedBody: EnginePlanPreparedRequest["body"] = {
+    model: options.model,
+    store: contract.store,
+    max_output_tokens: contract.maxOutputTokens,
+    input: [
+      { role: "system", content: `${prompt.systemPrompt}\n\n${instruction}` },
+      { role: "user", content: input },
+    ],
+    text: {
+      format: definition?.phase === "generation" ? prompt.generationFormat : prompt.reviewFormat,
+    },
+  };
   if (
     !definition ||
     sequence > contract.maxCalls ||
     sequence !== (definition.phase === "generation" ? 1 : 2) ||
     (sequence === 2 && !observation.validated.has("generation")) ||
-    contract.contractDigest !== getPlanExecutionContract().contractDigest ||
+    contract.contractDigest !==
+      getPlanExecutionContractForVersion(contract.engineVersion).contractDigest ||
+    prompt.engineVersion !== contract.engineVersion ||
+    definition.systemDigest !== executionDigest(prompt.systemPrompt) ||
     definition.instructionDigest !== executionDigest(instruction) ||
     definition.schemaDigest !== executionDigest(requestFormat(schema, name)) ||
     input.length > contract.maxInputChars ||
@@ -632,16 +654,19 @@ async function requestObservedStructured<T>(
     prepared.contractDigest !== contract.contractDigest ||
     prepared.body.model !== options.model ||
     prepared.body.input[0]?.role !== "system" ||
-    prepared.body.input[0]?.content !== `${systemPrompt}\n\n${instruction}` ||
+    prepared.body.input[0]?.content !== `${prompt.systemPrompt}\n\n${instruction}` ||
     prepared.body.input[1]?.role !== "user" ||
     prepared.body.input[1]?.content !== input ||
     prepared.body.input.length !== 2 ||
     executionDigest(prepared.body.text.format) !== definition.schemaDigest ||
-    prepared.requestDigest !== executionDigest(prepared.body)
+    prepared.requestDigest !== executionDigest(prepared.body) ||
+    prepared.requestDigest !== executionDigest(expectedBody)
   )
     observationError("AI_EXECUTION_SCOPE_CHANGED", "승인한 AI 실행 범위가 달라졌습니다.");
   const body = prepared.body;
   const inputChars = body.input.reduce((sum, message) => sum + message.content.length, 0);
+  if (prepared.inputChars !== inputChars)
+    observationError("AI_EXECUTION_SCOPE_CHANGED", "AI 요청 입력 길이가 일치하지 않습니다.");
   if (inputChars > contract.maxInputChars)
     observationError("AI_INPUT_TOO_LARGE", "AI 요청 입력이 승인한 문자 한도를 초과했습니다.");
   const request = engineExecutionRequestSchema.parse({
@@ -718,16 +743,52 @@ async function recordObservedValidation(
   await observation.options.hooks.onValidated(immutableCopy(event));
   observation.validated.add(phase);
 }
-/** One generation and one independent review. No repair, retry, company writes, or input auto-selection. */
+/** Legacy execution entrypoint. Its version and actual-AI behavior stay pinned to v1. */
 export async function generateObservedPlan(
   value: StudioCase,
   candidate: Candidate,
   options: EngineExecutionOptions,
 ): Promise<EngineExecutionResult> {
-  const contract = getPlanExecutionContract();
+  return generatePlanWithSelectedVersion("plan-observation-v1", value, candidate, options);
+}
+
+/**
+ * Server composition only: captures an explicit version outside per-run input.
+ * Mock transport is required. This creates no production dispatch, approval, or ledger authority.
+ * Existing HTTP/production callers continue to use the v1 entrypoint above.
+ */
+export function createServerPlanMockRunner(version: PlanPromptVersion) {
+  const selected = immutableCopy(getPlanExecutionContractForVersion(version));
+  return Object.freeze({
+    getContract: () => structuredClone(selected),
+    async generate(
+      value: StudioCase,
+      candidate: Candidate,
+      options: Extract<EngineExecutionOptions, { mode: "mock" }>,
+    ): Promise<EngineExecutionResult> {
+      if (!options || options.mode !== "mock" || options.contractDigest !== selected.contractDigest)
+        observationError(
+          "AI_EXECUTION_SCOPE_CHANGED",
+          "서버에서 선택한 모의 실행 계약을 확인해 주세요.",
+        );
+      return generatePlanWithSelectedVersion(selected.engineVersion, value, candidate, options);
+    },
+  });
+}
+
+/** One generation and derived review, sharing a private immutable version for the whole run. */
+async function generatePlanWithSelectedVersion(
+  version: PlanPromptVersion,
+  value: StudioCase,
+  candidate: Candidate,
+  options: EngineExecutionOptions,
+): Promise<EngineExecutionResult> {
+  const contract = immutableCopy(getPlanExecutionContractForVersion(version));
+  const prompt = immutableCopy(getPlanPromptDefinition(version));
   if (
     !options ||
     !["mock", "actual-ai"].includes(options.mode) ||
+    typeof options.model !== "string" ||
     !options.model ||
     options.model.trim() !== options.model ||
     options.model.length > 200 ||
@@ -739,6 +800,7 @@ export async function generateObservedPlan(
   const observation: PlanExecutionObservation = {
     options: isolatedOptions,
     contract,
+    prompt,
     requests: [],
     validated: new Set(),
   };
@@ -905,17 +967,21 @@ async function generateReviewedAiPlan(
 ) {
   beforeRequest?.();
   const prepared = observation
-    ? buildPlanGenerationRequest(value, candidate, observation.options.model)
+    ? buildPlanGenerationRequestForVersion(
+        observation.contract.engineVersion,
+        value,
+        candidate,
+        observation.options.model,
+      )
     : undefined;
   const result = await requestStructured(
     planContentSchema,
     "business_plan",
-    planGenerationInstruction,
-    prepared?.body.input[1].content ??
-      aiInput(value, {
-        selectedCandidate: { ...candidate, classification: getCandidateClassification(candidate) },
-        sectionDefinitions,
-      }),
+    observation?.prompt.generationInstruction ?? planGenerationInstruction,
+    aiInput(value, {
+      selectedCandidate: { ...candidate, classification: getCandidateClassification(candidate) },
+      sectionDefinitions,
+    }),
     Boolean(beforeRequest),
     observation,
     prepared,
@@ -1023,14 +1089,19 @@ async function independentlyReviewPlan(
     await recordObservedValidation(observation, "generation", { kind: "plan", content: result });
   beforeRequest?.();
   const prepared = observation
-    ? buildPlanReviewRequest(value, candidate, result, observation.options.model)
+    ? buildPlanReviewRequestForVersion(
+        observation.contract.engineVersion,
+        value,
+        candidate,
+        result,
+        observation.options.model,
+      )
     : undefined;
   const independentReview = await requestStructured(
     planSemanticReviewSchema,
     "business_plan_review",
-    planReviewInstruction,
-    prepared?.body.input[1].content ??
-      aiInput(value, { selectedCandidate: candidate, draft: result, ...previous }),
+    observation?.prompt.reviewInstruction ?? planReviewInstruction,
+    aiInput(value, { selectedCandidate: candidate, draft: result, ...previous }),
     Boolean(beforeRequest),
     observation,
     prepared,
