@@ -101,6 +101,7 @@ import {
   providerReviewDispatchIdentitySchema,
   type ProviderReviewDispatchIdentity,
   type ProviderReviewDispatchPlan,
+  type VersionedProviderReviewDispatchPlan,
 } from "./studio-plan-quality-provider-review-dispatch-plan";
 import {
   prepareProviderGenerationValidation,
@@ -207,6 +208,10 @@ const same = (a: unknown, b: unknown) => digest(a) === digest(b);
 export class ProviderGenerationDispatchStore {
   #productionScopes = new WeakMap<object, ProviderGenerationDispatchIdentity>();
   readonly #context: Context;
+  #validationPlanning?: Awaited<
+    ReturnType<NonNullable<Context["selection"]>["loadValidationPlanning"]>
+  >;
+  #validationLoading?: Promise<void>;
   constructor(context: Context) {
     if (
       context.productionExecution &&
@@ -216,6 +221,47 @@ export class ProviderGenerationDispatchStore {
     )
       throw Error("PROVIDER_PRODUCTION_EXECUTION_INVALID");
     this.#context = Object.freeze(context);
+  }
+  /** Module readiness only, never a transaction or authority grant. The context was fixed at construction. */
+  loadValidationPlanning(): Promise<void> {
+    const selection = this.#context.selection;
+    if (!selection) return Promise.resolve();
+    return (this.#validationLoading ??= selection.loadValidationPlanning().then((planning) => {
+      this.#validationPlanning = planning;
+    }));
+  }
+  #selectedValidationPlanning() {
+    return this.#validationPlanning ?? fail("VALIDATION_PLANNING_NOT_LOADED");
+  }
+  #planValidation(
+    before: ReturnType<ProviderGenerationDispatchStore["inspect"]>,
+    identity: unknown,
+  ) {
+    const input = {
+      identity,
+      archive: before.input,
+      inspectedAt: new Date().toISOString(),
+      additionalUsedBytes: before.additionalUsedBytes,
+    };
+    return this.#context.selection
+      ? this.#selectedValidationPlanning().prepareGenerationValidation(input)
+      : prepareProviderGenerationValidation(input);
+  }
+  #planReview(before: ReturnType<ProviderGenerationDispatchStore["inspect"]>, identity: unknown) {
+    // Preserve the frozen v1 order: resolve configuration before sampling the planning clock.
+    const configuration = this.#context.selection ? null : getProviderConfigurationProposal();
+    const input = {
+      identity,
+      archive: before.input,
+      inspectedAt: new Date().toISOString(),
+      additionalUsedBytes: before.additionalUsedBytes,
+    };
+    return this.#context.selection
+      ? this.#selectedValidationPlanning().prepareReviewDispatch(input)
+      : prepareProviderReviewDispatch({
+          ...input,
+          configuration,
+        });
   }
   #productionInput(
     permit: object | undefined,
@@ -1160,24 +1206,13 @@ export class ProviderGenerationDispatchStore {
   prepareReviewDispatch(identity: unknown) {
     return this.#context.transaction(() => {
       const before = this.inspect();
-      return prepareProviderReviewDispatch({
-        identity,
-        archive: before.input,
-        configuration: getProviderConfigurationProposal(),
-        inspectedAt: new Date().toISOString(),
-        additionalUsedBytes: before.additionalUsedBytes,
-      });
+      return this.#planReview(before, identity);
     });
   }
   prepareGenerationValidation(identity: unknown) {
     return this.#context.transaction(() => {
       const before = this.inspect();
-      return prepareProviderGenerationValidation({
-        identity,
-        archive: before.input,
-        inspectedAt: new Date().toISOString(),
-        additionalUsedBytes: before.additionalUsedBytes,
-      });
+      return this.#planValidation(before, identity);
     });
   }
   prepareReviewStop(identity: unknown) {
@@ -1580,7 +1615,7 @@ export class ProviderGenerationDispatchStore {
     );
     if (
       !snapshot ||
-      snapshot.archiveFormatVersion !== 3 ||
+      (snapshot.archiveFormatVersion !== 3 && snapshot.archiveFormatVersion !== 5) ||
       snapshot.run.environment !== "production" ||
       response?.payload.kind !== "response-received" ||
       response.payload.phase !== "generation" ||
@@ -1629,7 +1664,12 @@ export class ProviderGenerationDispatchStore {
       artifact,
       payload: event.payload,
     };
-    if (receipt.inputDigest !== providerExecutionOperationDigest(snapshot.run.id, command))
+    if (
+      receipt.inputDigest !==
+      (snapshot.archiveFormatVersion === 5
+        ? versionedProviderExecutionOperationDigest
+        : providerExecutionOperationDigest)(snapshot.run.id, command)
+    )
       return fail("VALIDATION_CONFLICT");
     return freezeProviderValue(
       structuredClone({
@@ -1666,7 +1706,8 @@ export class ProviderGenerationDispatchStore {
     const state = before.audit.reservationArchive.ledger,
       id = identity.generation.dispatch.runId;
     const snapshot = state.provider.snapshots.find((row) => row.run.id === id);
-    if (!snapshot || snapshot.archiveFormatVersion !== 3) return fail("REVIEW_VALIDATION_REQUIRED");
+    if (!snapshot || (snapshot.archiveFormatVersion !== 3 && snapshot.archiveFormatVersion !== 5))
+      return fail("REVIEW_VALIDATION_REQUIRED");
     const ids = [identity.preparedRequestId, identity.dispatchRequestId];
     if (ids[0] === ids[1]) return fail("REVIEW_CONFLICT");
     const occupied = [...state.provider.receipts, ...state.legacy.receipts, ...state.policy.records]
@@ -1724,9 +1765,13 @@ export class ProviderGenerationDispatchStore {
       expectedRevision: 6,
       payload: de.payload,
     };
+    const operationDigest =
+      snapshot.archiveFormatVersion === 5
+        ? versionedProviderExecutionOperationDigest
+        : providerExecutionOperationDigest;
     if (
-      pr.inputDigest !== providerExecutionOperationDigest(id, prepared) ||
-      dr.inputDigest !== providerExecutionOperationDigest(id, dispatch)
+      pr.inputDigest !== operationDigest(id, prepared) ||
+      dr.inputDigest !== operationDigest(id, dispatch)
     )
       return fail("REVIEW_CONFLICT");
     return freezeProviderValue(
@@ -1754,19 +1799,17 @@ export class ProviderGenerationDispatchStore {
       () => this.reviewHistory(this.inspect(), identity) ?? { state: "not-observed" as const },
     );
   }
-  #commitReview(identity: ProviderReviewDispatchIdentity, checkNew?: () => void) {
+  #commitReview(
+    identity: ProviderReviewDispatchIdentity,
+    checkNew?: () => void,
+    mockVersioned = false,
+  ) {
     return this.#context.transaction(() => {
       const before = this.inspect(),
         previous = this.reviewHistory(before, identity);
       if (previous) return { record: previous, plan: null };
       checkNew?.();
-      const prepared = prepareProviderReviewDispatch({
-        identity,
-        archive: before.input,
-        configuration: getProviderConfigurationProposal(),
-        inspectedAt: new Date().toISOString(),
-        additionalUsedBytes: before.additionalUsedBytes,
-      });
+      const prepared = this.#planReview(before, identity);
       if (prepared.status !== "prepared")
         return fail(
           `REVIEW_${prepared.reason.replaceAll("-", "_").toUpperCase()}`,
@@ -1774,6 +1817,9 @@ export class ProviderGenerationDispatchStore {
         );
       const plan = prepared.plan,
         artifact = plan.rows.artifact;
+      // SDK capture/continuation remains v1. This new v2 writer is mock-callback only.
+      if (plan.planVersion === 2 && (!mockVersioned || !this.#context.synthetic))
+        return fail("REVIEW_NATIVE_VERSION_UNSUPPORTED");
       this.#context.capacity(0); // All five rows consume the original native storage reservation.
       this.#context.db
         .prepare(
@@ -1808,7 +1854,7 @@ export class ProviderGenerationDispatchStore {
   }
   #sendReviewWhileOwnedCurrent(
     identity: ProviderReviewDispatchIdentity,
-    plan: ProviderReviewDispatchPlan,
+    plan: ProviderReviewDispatchPlan | VersionedProviderReviewDispatchPlan,
     start: () => void,
   ) {
     this.#context.transaction(() => {
@@ -1824,7 +1870,7 @@ export class ProviderGenerationDispatchStore {
         !history ||
         history.dispatchEventDigest !== plan.rows.events[1].eventDigest ||
         !snapshot ||
-        snapshot.archiveFormatVersion !== 3 ||
+        snapshot.archiveFormatVersion !== (plan.planVersion === 2 ? 5 : 3) ||
         snapshot.terminal ||
         snapshot.revision !== 7 ||
         snapshot.state !== "dispatching" ||
@@ -1837,12 +1883,17 @@ export class ProviderGenerationDispatchStore {
         now = Date.parse(inspectedAt);
       if (now < Date.parse(plan.inspectedAt) || now >= Date.parse(plan.expiresAt))
         return fail("REVIEW_SCOPE_EXPIRED");
-      const current = createProviderTransmissionReview({
+      const inspection = {
         selection: { runId: id, runDigest: identity.generation.dispatch.runDigest },
         inspectedAt,
-        configuration: getProviderConfigurationProposal(),
         archive: before.input.archive,
-      });
+      };
+      const current = this.#context.selection
+        ? this.#context.selection.transmissionReview(inspection)
+        : createProviderTransmissionReview({
+            ...inspection,
+            configuration: getProviderConfigurationProposal(),
+          });
       if (current.status !== "review") return fail("REVIEW_SCOPE_CHANGED");
       const review = current.review;
       const binding = before.audit.records.find(
@@ -1896,7 +1947,7 @@ export class ProviderGenerationDispatchStore {
     const send = transport.send,
       identity = providerReviewDispatchIdentitySchema.parse(raw);
     // Only this invocation observing a NEW successful COMMIT retains the local plan.
-    const committed = this.#commitReview(identity);
+    const committed = this.#commitReview(identity, undefined, true);
     const result = (
       delivery: ProviderReviewSimulationResult["delivery"],
     ): ProviderReviewSimulationResult => ({
@@ -1940,12 +1991,7 @@ export class ProviderGenerationDispatchStore {
       const before = this.inspect(),
         previous = this.validationHistory(before, identity);
       if (previous) return { record: previous, newlyCommitted: false, replayed: true };
-      const prepared = prepareProviderGenerationValidation({
-        identity,
-        archive: before.input,
-        inspectedAt: new Date().toISOString(),
-        additionalUsedBytes: before.additionalUsedBytes,
-      });
+      const prepared = this.#planValidation(before, identity);
       if (prepared.status !== "prepared")
         return fail(
           `VALIDATION_${prepared.reason.replaceAll("-", "_").toUpperCase()}`,

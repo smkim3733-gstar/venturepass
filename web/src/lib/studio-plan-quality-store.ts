@@ -1461,6 +1461,10 @@ export class PlanQualityStore {
   providerSimulateGenerationSdkDispatch(identity: unknown) {
     return this.providerGenerationDispatch.simulateSdk(identity);
   }
+  /** Preload selected synchronous planners before entering any read/write transaction. */
+  providerLoadValidationPlanning() {
+    return this.providerGenerationDispatch.loadValidationPlanning();
+  }
   providerPrepareGenerationValidation(identity: unknown) {
     return this.providerGenerationDispatch.prepareGenerationValidation(identity);
   }
