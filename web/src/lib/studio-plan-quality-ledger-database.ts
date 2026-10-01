@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { inspectQualityLedgers } from "../../scripts/local-data-quality-ledgers.mjs";
 import { actualCanonicalDigest } from "../../scripts/local-data-quality-actual.mjs";
 import { inspectQualitySchema } from "../../scripts/local-data-quality-schema.mjs";
-import { decodeProviderPolicyRows } from "../../scripts/local-data-quality-provider-policy.mjs";
+import { decodeVersionedProviderPolicyRows } from "../../scripts/local-data-quality-provider-policy.mjs";
 import { inspectProviderReservationArchive } from "../../scripts/local-data-quality-provider-reservation-binding.mjs";
 import { readProviderReservationDatabaseRows } from "../../scripts/local-data-quality-provider-reservation-database.mjs";
 import { inspectProviderTransmissionApprovalArchive } from "../../scripts/local-data-quality-provider-transmission-binding.mjs";
@@ -65,7 +65,7 @@ export function readLedgerDatabaseInput(
           )
           .all()
       : [];
-    const { records: policies } = decodeProviderPolicyRows(policyRows);
+    const { records: policies } = decodeVersionedProviderPolicyRows(policyRows);
     const specs = [
       ["quality_actual_runs", 20],
       ["quality_actual_events", 640],

@@ -8,7 +8,7 @@ import {
   providerPolicyHttpLimits,
   type ProviderPolicyAdoptionResponse,
 } from "./studio-plan-quality-provider-policy-http-types";
-import type { ProviderPolicyAdoptionRecord } from "./studio-plan-quality-provider-policy-adoption-types";
+import type { StoredProviderPolicyAdoptionRecord } from "./studio-plan-quality-provider-policy-adoption-types";
 
 // Only planner/retry refusals reached after audit are known to have rejected this command.
 // Storage/commit/serialization failures remain unknown and require lookup or exact replay.
@@ -28,7 +28,10 @@ const commandRefusals = new Set(
   ].map((reason) => `QUALITY_PROVIDER_POLICY_${reason}`),
 );
 
-function committed(record: ProviderPolicyAdoptionRecord, delivery: "new" | "replay" | "lookup") {
+function committed(
+  record: StoredProviderPolicyAdoptionRecord,
+  delivery: "new" | "replay" | "lookup",
+) {
   return reply({
     responseVersion: 1,
     state: "committed",

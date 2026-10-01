@@ -69,9 +69,10 @@ export const providerPolicyAdoptionWritePlanSchema = z
   .strict();
 export type ProviderPolicyAdoptionWritePlan = z.infer<typeof providerPolicyAdoptionWritePlanSchema>;
 export function providerPolicyAdoptionRecordDigestInput(
-  value: Omit<ProviderPolicyAdoptionRecord, "recordDigest"> | ProviderPolicyAdoptionRecord,
+  value:
+    Omit<StoredProviderPolicyAdoptionRecord, "recordDigest"> | StoredProviderPolicyAdoptionRecord,
 ) {
-  const { recordDigest: _ignored, ...body } = value as ProviderPolicyAdoptionRecord;
+  const { recordDigest: _ignored, ...body } = value as StoredProviderPolicyAdoptionRecord;
   void _ignored;
   return body;
 }
@@ -84,6 +85,8 @@ export const versionedProviderPolicyAdoptionRecordSchema =
 export type VersionedProviderPolicyAdoptionRecord = z.infer<
   typeof versionedProviderPolicyAdoptionRecordSchema
 >;
+export type StoredProviderPolicyAdoptionRecord =
+  ProviderPolicyAdoptionRecord | VersionedProviderPolicyAdoptionRecord;
 export const versionedProviderPolicyAdoptionWritePlanSchema =
   providerPolicyAdoptionWritePlanSchema.extend({
     planVersion: z.literal(2),

@@ -12,24 +12,27 @@ import {
 } from "../../scripts/local-data-quality-provider.mjs";
 import { getProviderConfigurationProposal } from "./studio-plan-quality-provider-configuration";
 import {
-  compareProviderPolicyAdoptionRetry,
+  compareVersionedProviderPolicyAdoptionRetry,
   prepareProviderPolicyAdoption,
 } from "./studio-plan-quality-provider-policy-adoption";
 import {
   providerPolicyAdoptionCommandSchema,
   providerPolicyAdoptionLimits,
-  type ProviderPolicyAdoptionRecord,
+  type StoredProviderPolicyAdoptionRecord,
 } from "./studio-plan-quality-provider-policy-adoption-types";
+
+import type { createServerProviderPolicyContext } from "./studio-plan-quality-provider-policy-server";
 
 type Context = {
   db: DatabaseSync;
   transaction: <T>(work: () => T, write?: boolean) => T;
   registry: (version: number) => CandidateRegistrySnapshot;
   capacity: (addedBytes: number) => void;
+  selection?: ReturnType<typeof createServerProviderPolicyContext>;
 };
 export type ProviderPolicyAdoptionCommit = {
   state: "committed";
-  record: ProviderPolicyAdoptionRecord;
+  record: StoredProviderPolicyAdoptionRecord;
   newlyCommitted: boolean;
   replayed: boolean;
 };
@@ -44,7 +47,10 @@ const fail = (code: string, message: string, status = 409): never => {
 
 /** Explicit policy adoption only. Does not enable provider execution, reserve cost or access transport. */
 export class ProviderPolicyAdoptionStore {
-  constructor(private readonly context: Context) {}
+  private readonly selection: Context["selection"];
+  constructor(private readonly context: Context) {
+    this.selection = context.selection;
+  }
   private inspect() {
     try {
       // Include evaluation/registration receipts and archived execution bytes, even on replay/lookup.
@@ -64,24 +70,34 @@ export class ProviderPolicyAdoptionStore {
     });
   }
   /** One audited read snapshot; never combine a review with a separately fetched policy head. */
+  private readReviewContext(version: number) {
+    const state = this.inspect();
+    const registry = this.context.registry(version);
+    const scope = providerBudgetScope("production");
+    const budgetEvents = state.provider.budgetEvents.filter((event) => event.scopeId === scope);
+    const budget = validateProviderBudgetLedger(budgetEvents, scope);
+    return {
+      registry,
+      inspectedAt: new Date().toISOString(),
+      budgetEvents,
+      expectedBudgetHead: { revision: budget.revision, headDigest: budget.headDigest },
+      expectedPolicyHead: { revision: state.policy.revision, headDigest: state.policy.headDigest },
+    };
+  }
   reviewContext(version: number) {
     z.number().int().min(1).max(20).parse(version);
+    return this.context.transaction(() => this.readReviewContext(version));
+  }
+  /** Server-configured review and CAS head from one audited snapshot; no HTTP authority. */
+  review(version: number, candidateId: string) {
+    z.number().int().min(1).max(20).parse(version);
+    z.string().min(1).max(200).parse(candidateId);
+    const selection = this.selection;
+    if (!selection)
+      return fail("QUALITY_PROVIDER_POLICY_SELECTION_REQUIRED", "서버의 지침 선택이 필요합니다.");
     return this.context.transaction(() => {
-      const state = this.inspect();
-      const registry = this.context.registry(version);
-      const scope = providerBudgetScope("production");
-      const budgetEvents = state.provider.budgetEvents.filter((event) => event.scopeId === scope);
-      const budget = validateProviderBudgetLedger(budgetEvents, scope);
-      return {
-        registry,
-        inspectedAt: new Date().toISOString(),
-        budgetEvents,
-        expectedBudgetHead: { revision: budget.revision, headDigest: budget.headDigest },
-        expectedPolicyHead: {
-          revision: state.policy.revision,
-          headDigest: state.policy.headDigest,
-        },
-      };
+      const { expectedPolicyHead, ...current } = this.readReviewContext(version);
+      return { result: selection.review({ ...current, candidateId }), expectedPolicyHead };
     });
   }
   lookup(nonce: string) {
@@ -99,7 +115,7 @@ export class ProviderPolicyAdoptionStore {
         (row) => row.clientRequestId === command.clientRequestId,
       );
       if (previous) {
-        if (compareProviderPolicyAdoptionRetry(command, previous) !== "same-request")
+        if (compareVersionedProviderPolicyAdoptionRetry(command, previous) !== "same-request")
           fail("QUALITY_PROVIDER_POLICY_NONCE_CONFLICT", "같은 정책 요청 번호의 내용이 다릅니다.");
         return { state: "committed", record: previous, newlyCommitted: false, replayed: true };
       }
@@ -108,15 +124,14 @@ export class ProviderPolicyAdoptionStore {
       const budgetEvents = state.provider.budgetEvents.filter((event) => event.scopeId === scope);
       const budget = validateProviderBudgetLedger(budgetEvents, scope);
       // Resolve current server authority after acquiring the write lock, never from a client parameter.
-      const configuration = getProviderConfigurationProposal();
-      const prepared = prepareProviderPolicyAdoption({
+      const configuration = this.selection ? undefined : getProviderConfigurationProposal();
+      const input = {
         command,
         review: approvedReview,
         current: {
           registry,
           candidateId: command.candidateId,
           inspectedAt: new Date().toISOString(),
-          configuration,
           budgetEvents,
           expectedBudgetHead: { revision: budget.revision, headDigest: budget.headDigest },
         },
@@ -125,7 +140,13 @@ export class ProviderPolicyAdoptionStore {
           .prepare(nonceSql)
           .all()
           .map((row) => row.nonce),
-      });
+      };
+      const prepared = this.selection
+        ? this.selection.prepareAdoption(input)
+        : prepareProviderPolicyAdoption({
+            ...input,
+            current: { ...input.current, configuration },
+          });
       if (prepared.status !== "prepared")
         return fail(
           `QUALITY_PROVIDER_POLICY_${prepared.reason.replaceAll("-", "_").toUpperCase()}`,

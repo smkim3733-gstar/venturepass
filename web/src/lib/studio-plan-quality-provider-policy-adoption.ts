@@ -32,6 +32,7 @@ import {
   providerPolicyAdoptionHeadSchema,
   providerPolicyAdoptionLimits,
   providerPolicyAdoptionRecordSchema,
+  versionedProviderPolicyAdoptionRecordSchema,
   providerPolicyAdoptionRecordDigestInput,
   providerPolicyAdoptionWritePlanSchema,
   versionedProviderPolicyAdoptionWritePlanSchema,
@@ -273,8 +274,22 @@ export function compareProviderPolicyAdoptionRetry(
   rawCommand: unknown,
   rawRecord: unknown,
 ): "same-request" | "nonce-conflict" | "different-request" | "invalid-record" {
+  return compareRetry(rawCommand, rawRecord, false);
+}
+/** Archival identity across supported stored versions, independent of new server selection. */
+export function compareVersionedProviderPolicyAdoptionRetry(
+  rawCommand: unknown,
+  rawRecord: unknown,
+): ReturnType<typeof compareProviderPolicyAdoptionRetry> {
+  return compareRetry(rawCommand, rawRecord, true);
+}
+function compareRetry(rawCommand: unknown, rawRecord: unknown, versioned: boolean) {
   const command = providerPolicyAdoptionCommandSchema.safeParse(rawCommand);
-  const parsed = providerPolicyAdoptionRecordSchema.safeParse(rawRecord);
+  const parsed = (
+    versioned
+      ? z.union([providerPolicyAdoptionRecordSchema, versionedProviderPolicyAdoptionRecordSchema])
+      : providerPolicyAdoptionRecordSchema
+  ).safeParse(rawRecord);
   if (!command.success || !parsed.success) return "invalid-record";
   const record = parsed.data,
     review = record.approvedReview,

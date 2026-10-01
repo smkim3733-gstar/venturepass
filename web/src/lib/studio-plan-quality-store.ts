@@ -22,7 +22,12 @@ import { dirname, join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { z } from "zod";
 import { nativePaths, safePath } from "../../scripts/local-data-files.mjs";
-import { inspectQualityDatabase, migrateQualitySchemaV9 } from "../../scripts/local-data-quality.mjs";
+import {
+  inspectQualityDatabase,
+  migrateQualitySchemaV9,
+} from "../../scripts/local-data-quality.mjs";
+import { createServerProviderPolicyContext } from "./studio-plan-quality-provider-policy-server";
+import type { PlanPromptVersion } from "./studio-plan-prompt-versions";
 import { ProviderPolicyAdoptionStore } from "./studio-plan-quality-provider-policy-adoption-store";
 import { ProviderReservationReviewStore } from "./studio-plan-quality-provider-reservation-review-store";
 import { ProviderReservationStore } from "./studio-plan-quality-provider-reservation-store";
@@ -185,8 +190,18 @@ export class PlanQualityStore {
       providerSdkTestNetwork?: ProviderSdkTestNetwork;
       /** Explicit server runtime; only the dedicated approval-scoped runner may write/send. */
       providerProductionRuntime?: ProviderProductionRuntime;
+      /** Server construction only. Policy adoption does not enable reservation or execution. */
+      providerPolicySelection?: { version: PlanPromptVersion; configuration: unknown };
     } = {},
   ) {
+    // Validate/snapshot the explicit selection before opening or creating any database.
+    const policySelection =
+      options.providerPolicySelection === undefined
+        ? undefined
+        : createServerProviderPolicyContext(
+            options.providerPolicySelection.version,
+            options.providerPolicySelection.configuration,
+          );
     const suppliedRuntime = options.providerProductionRuntime;
     if (
       suppliedRuntime !== undefined &&
@@ -255,6 +270,7 @@ export class PlanQualityStore {
       synthetic: options.providerEnvironment === "synthetic-test",
     });
     this.providerPolicy = new ProviderPolicyAdoptionStore({
+      selection: policySelection,
       db: this.db,
       transaction: (work, write) => this.transaction(work, write),
       registry: (version) => {
@@ -1334,6 +1350,9 @@ export class PlanQualityStore {
   }
   providerPolicyReviewContext(version: number) {
     return this.providerPolicy.reviewContext(version);
+  }
+  providerPolicyReview(version: number, candidateId: string) {
+    return this.providerPolicy.review(version, candidateId);
   }
   providerPolicyLookup(nonce: string) {
     return this.providerPolicy.lookup(nonce);

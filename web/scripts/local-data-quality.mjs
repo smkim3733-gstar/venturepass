@@ -16,7 +16,7 @@ import {
   qualityV9ImmutableTriggerSql,
 } from "./local-data-quality-schema.mjs";
 import { inspectQualityLedgers } from "./local-data-quality-ledgers.mjs";
-import { decodeProviderPolicyRows } from "./local-data-quality-provider-policy.mjs";
+import { decodeVersionedProviderPolicyRows } from "./local-data-quality-provider-policy.mjs";
 import {
   createProviderReservationMigrationCoverage,
   inspectProviderReservationArchive,
@@ -934,7 +934,7 @@ function inspectActualRows(
   });
   let ledger, ledgerInput;
   try {
-    const policy = decodeProviderPolicyRows(policyRows);
+    const policy = decodeVersionedProviderPolicyRows(policyRows);
     total += policy.usedBytes;
     ledgerInput = {
       runs: orderedRuns,

@@ -15,7 +15,7 @@ import type {
 } from "../src/lib/studio-plan-quality-provider-types";
 import type { inspectActualLedger } from "./local-data-quality-actual.mjs";
 import type { inspectProviderLedger } from "./local-data-quality-provider.mjs";
-import type { inspectProviderPolicyLedger } from "./local-data-quality-provider-policy.mjs";
+import type { inspectVersionedProviderPolicyLedger } from "./local-data-quality-provider-policy.mjs";
 export function inspectQualityLedgers(input: {
   runs: unknown[];
   events: unknown[];
@@ -41,7 +41,7 @@ export function inspectQualityLedgers(input: {
     receipts: ProviderReceipt[];
   };
   reservedBytes: number;
-  policy: ReturnType<typeof inspectProviderPolicyLedger>;
+  policy: ReturnType<typeof inspectVersionedProviderPolicyLedger>;
   reservedBudgetEventSlots: number;
   reservedReceiptSlots: number;
   usedBytes: number;

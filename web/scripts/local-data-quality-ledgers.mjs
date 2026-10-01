@@ -1,5 +1,5 @@
 import { inspectActualLedger } from "./local-data-quality-actual.mjs";
-import { inspectProviderPolicyLedger } from "./local-data-quality-provider-policy.mjs";
+import { inspectVersionedProviderPolicyLedger } from "./local-data-quality-provider-policy.mjs";
 
 const invalid = () => {
   throw new Error("QUALITY_LEDGER_INVALID");
@@ -68,7 +68,7 @@ export function inspectQualityLedgers(input) {
   const legacyInput = pick(1),
     providerInput = pick(2);
   const legacy = { ...legacyInput, ...inspectActualLedger(legacyInput) };
-  const policy = inspectProviderPolicyLedger({
+  const policy = inspectVersionedProviderPolicyLedger({
     records: policies,
     registries: input.registries,
     provider: providerInput,

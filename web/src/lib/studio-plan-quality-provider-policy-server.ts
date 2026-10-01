@@ -18,7 +18,7 @@ type Adoption = Omit<ProviderPolicyAdoptionPlannerInput, "current"> & { current:
 /**
  * Server construction selects the version and snapshots the fixed evidence.
  * Registry, budget and nonce evidence must come from the same fully audited store transaction.
- * These methods only inspect/plan. The current store/HTTP still accepts v1 records only.
+ * These methods only inspect/plan. A configured store owns adoption; default writers stay v1.
  */
 export function createServerProviderPolicyContext(
   version: PlanPromptVersion,
