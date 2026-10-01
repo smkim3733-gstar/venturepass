@@ -38,6 +38,9 @@ import {
 import type { ProviderGenerationValidationInput } from "./studio-plan-quality-provider-generation-validation";
 import type { ProviderReviewDispatchInput } from "./studio-plan-quality-provider-review-dispatch-plan";
 type ReviewDispatch = Omit<ProviderReviewDispatchInput, "configuration">;
+import type { ProviderReviewValidationInput } from "./studio-plan-quality-provider-review-validation";
+import type { ProviderFinalizationInput } from "./studio-plan-quality-provider-finalization";
+
 type GenerationDispatch = Omit<ProviderGenerationDispatchInput, "configuration">;
 type TransmissionApproval = Omit<ProviderTransmissionPlannerInput, "current"> & {
   current: TransmissionInspection;
@@ -96,11 +99,33 @@ export function createServerProviderPolicyContext(
       const [
         { prepareVersionedProviderGenerationValidation },
         { prepareVersionedProviderReviewDispatch },
+        { prepareVersionedProviderReviewValidation },
+        { prepareVersionedProviderFinalization },
       ] = await Promise.all([
         import("./studio-plan-quality-provider-generation-validation"),
         import("./studio-plan-quality-provider-review-dispatch-plan"),
+        import("./studio-plan-quality-provider-review-validation"),
+        import("./studio-plan-quality-provider-finalization"),
       ]);
       return Object.freeze({
+        prepareReviewValidation: (input: ProviderReviewValidationInput) => {
+          if (
+            Object.keys(input).some(
+              (key) => !["identity", "inspectedAt", "archive", "additionalUsedBytes"].includes(key),
+            )
+          )
+            throw new Error("Unsupported review validation evidence");
+          return prepareVersionedProviderReviewValidation(version, structuredClone(input));
+        },
+        prepareFinalization: (input: ProviderFinalizationInput) => {
+          if (
+            Object.keys(input).some(
+              (key) => !["identity", "inspectedAt", "archive", "additionalUsedBytes"].includes(key),
+            )
+          )
+            throw new Error("Unsupported finalization evidence");
+          return prepareVersionedProviderFinalization(version, structuredClone(input));
+        },
         prepareGenerationValidation: (input: ProviderGenerationValidationInput) => {
           if (
             Object.keys(input).some(

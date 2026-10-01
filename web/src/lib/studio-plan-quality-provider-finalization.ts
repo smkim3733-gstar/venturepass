@@ -1,9 +1,17 @@
 import "server-only";
+import type { PlanPromptVersion } from "./studio-plan-prompt-versions";
+import { createVersionedProviderPreparationBuilder } from "./studio-plan-quality-provider-core";
+import { getPlanExecutionContractForVersion } from "./studio-engine-request-preparation";
 import { z } from "zod";
-import { inspectProviderTransmissionApprovalArchive } from "../../scripts/local-data-quality-provider-transmission-binding.mjs";
+import {
+  inspectProviderTransmissionApprovalArchive,
+  inspectVersionedProviderTransmissionApprovalArchive,
+} from "../../scripts/local-data-quality-provider-transmission-binding.mjs";
 import {
   createProviderExecutionArtifact,
   createProviderExecutionEvent,
+  createVersionedProviderExecutionEvent,
+  versionedProviderExecutionOperationDigest,
   createProviderExecutionReceipt,
   getProviderExecutionBudgetSnapshot,
   providerExecutionOperationDigest,
@@ -20,6 +28,7 @@ import { caseSchema } from "./studio-schema";
 import type {
   ProviderExecutionCommand,
   ProviderExecutionEvent,
+  VersionedProviderExecutionEvent,
   ProviderExecutionOutput,
 } from "./studio-plan-quality-provider-execution-types";
 
@@ -39,6 +48,7 @@ export type ProviderFinalizationInput = {
   additionalUsedBytes: number;
 };
 type Refusal =
+  | "server-version-mismatch"
   | "invalid-input"
   | "archive-invalid"
   | "bindings-changed"
@@ -57,7 +67,37 @@ const refused = (reason: Refusal) => ({ status: "refused" as const, reason, plan
 
 /** Pure r9 -> proposed completed r10. Derives only from audited stored outputs, never a
  * caller's final body or an earlier preview. No persistence, budget change or dispatch. */
-export function prepareProviderFinalization(input: ProviderFinalizationInput) {
+export function prepareProviderFinalization(
+  input: ProviderFinalizationInput,
+): ProviderFinalizationResult {
+  // Frozen v1 entry point retains historical reader and complete plan bytes.
+  return prepareFinalization(input, null) as ProviderFinalizationResult;
+}
+
+/** Server-selected version. Proposed evidence grants neither storage nor execution authority. */
+export function prepareVersionedProviderFinalization(
+  version: PlanPromptVersion,
+  input: ProviderFinalizationInput,
+): VersionedProviderFinalizationResult {
+  createVersionedProviderPreparationBuilder(version);
+  if (
+    !input ||
+    Object.keys(input).some(
+      (key) => !["identity", "inspectedAt", "archive", "additionalUsedBytes"].includes(key),
+    )
+  )
+    return refused("invalid-input");
+  return prepareFinalization(input, version);
+}
+function prepareFinalization(input: ProviderFinalizationInput, version: PlanPromptVersion | null) {
+  const nativeV2 = version === "plan-observation-v2";
+  const inspect =
+    version === null
+      ? inspectProviderTransmissionApprovalArchive
+      : inspectVersionedProviderTransmissionApprovalArchive;
+  const operationDigest = nativeV2
+    ? versionedProviderExecutionOperationDigest
+    : providerExecutionOperationDigest;
   const parsed = providerFinalizationIdentitySchema.safeParse(input.identity);
   if (
     !parsed.success ||
@@ -71,9 +111,9 @@ export function prepareProviderFinalization(input: ProviderFinalizationInput) {
     dispatchIdentity = validation.dispatch,
     generationIdentity = dispatchIdentity.generation,
     id = generationIdentity.dispatch.runId;
-  let archive: ReturnType<typeof inspectProviderTransmissionApprovalArchive>;
+  let archive: ReturnType<typeof inspectVersionedProviderTransmissionApprovalArchive>;
   try {
-    archive = inspectProviderTransmissionApprovalArchive(input.archive);
+    archive = inspect(input.archive);
   } catch {
     return refused("archive-invalid");
   }
@@ -90,8 +130,15 @@ export function prepareProviderFinalization(input: ProviderFinalizationInput) {
     snapshot = state.provider.snapshots.find((row) => row.run.id === id),
     binding = archive.records.find((row) => row.runId === id);
   if (
+    snapshot &&
+    version !== null &&
+    snapshot.run.preparation.contract.baseContract.engineVersion !== version
+  )
+    return refused("server-version-mismatch");
+  if (
     !snapshot ||
-    snapshot.archiveFormatVersion !== 3 ||
+    (snapshot.archiveFormatVersion !== 3 && snapshot.archiveFormatVersion !== 5) ||
+    snapshot.archiveFormatVersion !== (nativeV2 ? 5 : 3) ||
     snapshot.run.environment !== "production" ||
     snapshot.run.runDigest !== generationIdentity.dispatch.runDigest ||
     !binding ||
@@ -100,7 +147,11 @@ export function prepareProviderFinalization(input: ProviderFinalizationInput) {
     return refused("bindings-changed");
   const [approval, genPrepared, genDispatch, genResponse, genValidated, prepared, dispatch] =
     snapshot.events;
-  const matches = (nonce: string, kind: string, event: ProviderExecutionEvent) =>
+  const matches = (
+    nonce: string,
+    kind: string,
+    event: ProviderExecutionEvent | VersionedProviderExecutionEvent,
+  ) =>
     state.provider.receipts.some(
       (row) =>
         row.clientRequestId === nonce &&
@@ -186,7 +237,10 @@ export function prepareProviderFinalization(input: ProviderFinalizationInput) {
     return refused("budget-unsettled");
   const prep = snapshot.run.preparation;
   try {
-    if (getPlanExecutionContract().contractDigest !== prep.contract.baseContract.contractDigest)
+    if (
+      (version === null ? getPlanExecutionContract() : getPlanExecutionContractForVersion(version))
+        .contractDigest !== prep.contract.baseContract.contractDigest
+    )
       return refused("validation-contract-changed");
   } catch {
     return refused("validation-unavailable");
@@ -262,22 +316,31 @@ export function prepareProviderFinalization(input: ProviderFinalizationInput) {
         finalArtifactSha256: artifact.sha256,
       },
     };
-    const event = createProviderExecutionEvent({
-      schemaVersion: 2,
-      executionContractVersion: 1,
+    const eventBody = {
       runId: id,
       revision: 10,
       budgetRevision: budget.revision,
       previousEventDigest: validated.eventDigest,
       recordedAt: input.inspectedAt,
       payload: { ...command.payload, releasedBudgetEventDigests: [] },
-    });
+    };
+    const event = nativeV2
+      ? createVersionedProviderExecutionEvent({
+          schemaVersion: 2,
+          executionContractVersion: 2,
+          ...eventBody,
+        })
+      : createProviderExecutionEvent({
+          schemaVersion: 2,
+          executionContractVersion: 1,
+          ...eventBody,
+        });
     const receipt = createProviderExecutionReceipt({
       schemaVersion: 2,
       scopeId,
       kind: "provider-finish",
       clientRequestId: identity.finalizationRequestId,
-      inputDigest: providerExecutionOperationDigest(id, command),
+      inputDigest: operationDigest(id, command),
       runId: id,
       runRevision: 10,
       budgetRevision: budget.revision,
@@ -285,7 +348,7 @@ export function prepareProviderFinalization(input: ProviderFinalizationInput) {
       recordedAt: input.inspectedAt,
     });
     const ledger = input.archive.archive.ledger,
-      after = inspectProviderTransmissionApprovalArchive({
+      after = inspect({
         ...input.archive,
         archive: {
           ...input.archive.archive,
@@ -303,14 +366,15 @@ export function prepareProviderFinalization(input: ProviderFinalizationInput) {
       (row) => row.run.id === id,
     );
     if (
-      completed?.archiveFormatVersion !== 3 ||
+      (completed?.archiveFormatVersion !== 3 && completed?.archiveFormatVersion !== 5) ||
+      completed.archiveFormatVersion !== (nativeV2 ? 5 : 3) ||
       !completed.terminal ||
       completed.state !== "completed" ||
       completed.revision !== 10
     )
       return refused("planned-archive-invalid");
     const plan = {
-      planVersion: 1 as const,
+      planVersion: nativeV2 ? (2 as const) : (1 as const),
       kind: "provider-finalization-plan" as const,
       status: "prepared-not-committed" as const,
       transaction: "single-immediate-transaction-required" as const,
@@ -350,11 +414,18 @@ export function prepareProviderFinalization(input: ProviderFinalizationInput) {
     return refused("planned-archive-invalid");
   }
 }
-export type ProviderFinalizationResult = ReturnType<typeof prepareProviderFinalization>;
-export type ProviderFinalizationPlan = Extract<
-  ProviderFinalizationResult,
+export type VersionedProviderFinalizationResult = ReturnType<typeof prepareFinalization>;
+export type VersionedProviderFinalizationPlan = Extract<
+  VersionedProviderFinalizationResult,
   { status: "prepared" }
 >["plan"];
+type SharedPlan = VersionedProviderFinalizationPlan;
+export type ProviderFinalizationPlan = Omit<SharedPlan, "planVersion" | "rows"> & {
+  planVersion: 1;
+  rows: Omit<SharedPlan["rows"], "event"> & { event: ProviderExecutionEvent };
+};
+export type ProviderFinalizationResult =
+  { status: "prepared"; plan: ProviderFinalizationPlan } | ReturnType<typeof refused>;
 
 /** Historical completion evidence. The final body is read from its audited stored artifact;
  * neither recovery nor replay derives a new body or creates an execution capability. */
