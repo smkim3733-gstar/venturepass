@@ -44,7 +44,10 @@ const reference = (p) => ({
 });
 const approvals = (events) =>
   events.filter(
-    (e) => e.executionContractVersion === 1 && e.payload.kind === "transmission-approved",
+    // Count every supported native approval. The frozen record reader below deliberately
+    // rejects v2 until its separate binding format is implemented; never ignore its presence.
+    (e) =>
+      [1, 2].includes(e.executionContractVersion) && e.payload.kind === "transmission-approved",
   );
 
 /** Indexed row/shape checks only. Complete archive inspection is still mandatory. */

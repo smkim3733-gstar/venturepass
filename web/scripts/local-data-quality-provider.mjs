@@ -911,8 +911,8 @@ export function validateProviderBudgetLedger(values, scopeId) {
 export function validateProviderRunLedger(input) {
   return validateRunLedger(input, false);
 }
-/** Passive archive reader, not a transport grant. Only reservation/cancellation is supported
- * for format3; existing format2 execution history keeps its original validation path. */
+/** Passive archive reader, not a transport grant. Format3 additionally supports its explicit
+ * first approval, never dispatch. Format2 execution history keeps its original validation path. */
 export function validateVersionedProviderRunLedger(input) {
   return validateRunLedger(input, true);
 }
@@ -928,17 +928,24 @@ function validateRunLedger(
   versioned,
 ) {
   const newFormat = versioned && raw?.archiveFormatVersion === 3;
-  if (newFormat && rawEvents.some((v) => v.executionContractVersion !== undefined)) fail();
-  if (rawEvents.some((v) => v.executionContractVersion === 1)) {
-    const startSnapshot = validateProviderRunLedger({
-      run: raw,
-      events: [],
-      artifacts: rawArtifacts.filter((v) => v.key === "generation-request"),
-      budgetEvents: budgetEvents.slice(0, raw.reservedBudgetRevision),
-      receipts: rawReceipts.filter((v) => v.kind === "provider-start"),
-      registry,
-    });
-    return execution.validateProviderExecutionLedger({
+  const hasVersionedApproval =
+    newFormat && rawEvents.some((v) => v.executionContractVersion !== undefined);
+  if (hasVersionedApproval || rawEvents.some((v) => v.executionContractVersion === 1)) {
+    const startSnapshot = validateRunLedger(
+      {
+        run: raw,
+        events: [],
+        artifacts: rawArtifacts.filter((v) => v.key === "generation-request"),
+        budgetEvents: budgetEvents.slice(0, raw.reservedBudgetRevision),
+        receipts: rawReceipts.filter((v) => v.kind === "provider-start"),
+        registry,
+      },
+      newFormat,
+    );
+    const validate = hasVersionedApproval
+      ? execution.validateVersionedProviderApprovalLedger
+      : execution.validateProviderExecutionLedger;
+    return validate({
       run: raw,
       events: rawEvents,
       artifacts: rawArtifacts,

@@ -1,6 +1,7 @@
 import type { PlanContent, ReviewFinding } from "./studio-schema";
 import type {
   ProviderRun,
+  VersionedProviderRun,
   ProviderScope,
   ProviderEnvironment,
   ProviderPreparation,
@@ -78,6 +79,35 @@ export type ProviderTransmissionApproval = {
   acknowledgedUnknownCostHoldAndNoRetry: true;
   budgetRevision: number;
   budgetDigest: string;
+};
+export type VersionedProviderTransmissionApproval = Omit<
+  ProviderTransmissionApproval,
+  "manifest"
+> & {
+  manifest: VersionedProviderTransmissionManifest;
+};
+export type VersionedProviderApprovalEvent = Omit<
+  ProviderExecutionEvent,
+  "executionContractVersion" | "revision" | "previousEventDigest" | "payload"
+> & {
+  executionContractVersion: 2;
+  revision: 1;
+  previousEventDigest: null;
+  payload: VersionedProviderTransmissionApproval;
+};
+export type VersionedProviderApprovalCommand = {
+  clientRequestId: string;
+  expectedRevision: 0;
+  payload: VersionedProviderTransmissionApproval;
+};
+export type VersionedProviderApprovalSnapshot = Omit<
+  ProviderExecutionSnapshot,
+  "archiveFormatVersion" | "run" | "events" | "state"
+> & {
+  archiveFormatVersion: 5;
+  run: VersionedProviderRun;
+  events: VersionedProviderApprovalEvent[];
+  state: "approved";
 };
 export type ProviderExecutionOutput =
   { kind: "plan"; content: PlanContent } | { kind: "review"; findings: ReviewFinding[] };

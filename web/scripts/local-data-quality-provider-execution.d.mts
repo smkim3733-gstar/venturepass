@@ -2,6 +2,7 @@ import type { z } from "zod";
 import type {
   ProviderRun,
   VersionedProviderRun,
+  VersionedProviderReservationSnapshot,
   ProviderScope,
   ProviderBudgetEvent,
   ProviderRunEvent,
@@ -11,6 +12,10 @@ import type {
 } from "../src/lib/studio-plan-quality-provider-types";
 import type {
   ProviderExecutionContract,
+  VersionedProviderTransmissionApproval,
+  VersionedProviderApprovalEvent,
+  VersionedProviderApprovalCommand,
+  VersionedProviderApprovalSnapshot,
   VersionedProviderExecutionContract,
   VersionedProviderTransmissionManifest,
   ProviderTransmissionManifest,
@@ -43,6 +48,25 @@ export const providerExecutionContractSchema: z.ZodType<ProviderExecutionContrac
 export const providerTransmissionManifestSchema: z.ZodType<ProviderTransmissionManifest>;
 export const versionedProviderExecutionContractSchema: z.ZodType<VersionedProviderExecutionContract>;
 export const versionedProviderTransmissionManifestSchema: z.ZodType<VersionedProviderTransmissionManifest>;
+export const versionedProviderTransmissionApprovalSchema: z.ZodType<VersionedProviderTransmissionApproval>;
+export const versionedProviderApprovalEventSchema: z.ZodType<VersionedProviderApprovalEvent>;
+export const versionedProviderApprovalCommandSchema: z.ZodType<VersionedProviderApprovalCommand>;
+export function createVersionedProviderApprovalEvent(
+  input: Omit<VersionedProviderApprovalEvent, "eventDigest">,
+): VersionedProviderApprovalEvent;
+export function versionedProviderApprovalOperationDigest(
+  runId: string,
+  input: VersionedProviderApprovalCommand,
+): string;
+export function validateVersionedProviderApprovalLedger(input: {
+  run: VersionedProviderRun;
+  events: VersionedProviderApprovalEvent[];
+  artifacts: ProviderArtifact[];
+  budgetEvents: ProviderBudgetEvent[];
+  receipts: ProviderReceipt[];
+  registry: CandidateRegistrySnapshot;
+  startSnapshot: VersionedProviderReservationSnapshot;
+}): VersionedProviderApprovalSnapshot;
 export const providerExecutionPayloadSchema: z.ZodType<ProviderExecutionPayload>;
 export const providerExecutionEventSchema: z.ZodType<ProviderExecutionEvent>;
 export const providerExecutionBudgetEventSchema: z.ZodType<ProviderExecutionBudgetEvent>;

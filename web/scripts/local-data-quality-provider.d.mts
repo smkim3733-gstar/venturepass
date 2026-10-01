@@ -15,6 +15,7 @@ import type {
   VersionedProviderStart,
   VersionedProviderRun,
   StoredProviderRun,
+  StoredProviderRunEvent,
   StoredProviderSnapshot,
   VersionedProviderPreparation,
   ProviderRequestBody,
@@ -126,7 +127,7 @@ export function createVersionedProviderRun(input: {
 }): VersionedProviderRun;
 export function validateVersionedProviderRunLedger(input: {
   run: StoredProviderRun;
-  events: ProviderRunEvent[];
+  events: StoredProviderRunEvent[];
   artifacts: ProviderArtifact[];
   budgetEvents: ProviderBudgetEvent[];
   receipts: ProviderReceipt[];
@@ -134,7 +135,7 @@ export function validateVersionedProviderRunLedger(input: {
 }): StoredProviderSnapshot;
 export function inspectVersionedProviderLedger(input: {
   runs: StoredProviderRun[];
-  events: ProviderRunEvent[];
+  events: StoredProviderRunEvent[];
   artifacts: ProviderArtifact[];
   budgetEvents: ProviderBudgetEvent[];
   receipts: ProviderReceipt[];

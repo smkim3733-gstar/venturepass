@@ -365,7 +365,7 @@ export class ProviderLedgerStore {
   }
   private snapshot(state: State, id: string, revision?: number) {
     const value = this.archiveSnapshot(state, id, revision);
-    if (value.archiveFormatVersion === 4)
+    if (value.archiveFormatVersion === 4 || value.archiveFormatVersion === 5)
       return fail(
         "PROVIDER_NATIVE_VERSION_UNSUPPORTED",
         "이 보관 버전의 전송·실행은 아직 지원하지 않습니다.",
@@ -824,7 +824,10 @@ export class ProviderLedgerStore {
           payload: Buffer.from(artifact.body).toString("base64"),
         }));
       const format = snapshot.archiveFormatVersion;
-      const kind = format === 3 ? "provider-execution-archive" : "provider-reservation-archive";
+      const kind =
+        format === 3 || format === 5
+          ? "provider-execution-archive"
+          : "provider-reservation-archive";
       const body = `{"schemaVersion":2,"archiveFormatVersion":${format},"kind":"${kind}","run":${raw("quality_actual_runs", "WHERE id=?", [id])[0]},"events":[${raw("quality_actual_events", "WHERE run_id=? AND revision<=? ORDER BY revision", [id, revision]).join(",")}],"budgetEvents":[${raw("quality_actual_budget_events", "WHERE scope_id=? AND revision<=? ORDER BY revision", [scope, head]).join(",")}],"receipts":[${receipts.map((row) => raw("quality_actual_requests", "WHERE nonce=?", [row.clientRequestId])[0]).join(",")}],"artifacts":${JSON.stringify(artifacts)}}\n`;
       return { snapshot, body };
     });

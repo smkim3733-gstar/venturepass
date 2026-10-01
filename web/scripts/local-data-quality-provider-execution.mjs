@@ -157,6 +157,16 @@ export const providerExecutionEventSchema = object({
   payload: providerExecutionPayloadSchema,
   eventDigest: hash,
 });
+// Native v2 approval only. Prepared/dispatch/response events remain unsupported in this format.
+export const versionedProviderTransmissionApprovalSchema = approval.extend({
+  manifest: versionedProviderTransmissionManifestSchema,
+});
+export const versionedProviderApprovalEventSchema = providerExecutionEventSchema.extend({
+  executionContractVersion: z.literal(2),
+  revision: z.literal(1),
+  previousEventDigest: z.null(),
+  payload: versionedProviderTransmissionApprovalSchema,
+});
 const recognize = object({
   kind: z.literal("recognize-usage"),
   runId: uuid,
@@ -225,6 +235,14 @@ export const providerExecutionCommandSchema = object({
   payload: commandPayload,
   artifact: providerExecutionArtifactSchema.optional(),
 });
+export const versionedProviderApprovalCommandSchema = providerExecutionCommandSchema
+  .omit({ artifact: true })
+  .extend({
+    expectedRevision: z.literal(0),
+    payload: versionedProviderTransmissionApprovalSchema,
+  });
+export const createVersionedProviderApprovalEvent = (v) =>
+  versionedProviderApprovalEventSchema.parse({ ...v, eventDigest: digest(v) });
 export const createProviderExecutionEvent = (v) =>
   providerExecutionEventSchema.parse({ ...v, eventDigest: digest(v) });
 export const createProviderExecutionBudgetEvent = (v) =>
@@ -248,12 +266,21 @@ function artifactLimit(key) {
         : providerExecutionLimits.finalBytes;
 }
 export function providerExecutionOperationDigest(runId, input) {
-  const v = providerExecutionCommandSchema.parse(input);
+  return executionOperationDigest(runId, input, false);
+}
+export function versionedProviderApprovalOperationDigest(runId, input) {
+  return executionOperationDigest(runId, input, true);
+}
+function executionOperationDigest(runId, input, versioned) {
+  const v = (
+    versioned ? versionedProviderApprovalCommandSchema : providerExecutionCommandSchema
+  ).parse(input);
   const existingGeneration =
     v.payload.kind === "request-prepared" && v.payload.phase === "generation";
   return digest({
     kind: "provider-execution-operation",
     runId,
+    ...(versioned ? { executionContractVersion: 2 } : {}),
     clientRequestId: v.clientRequestId,
     expectedRevision: v.expectedRevision,
     payload: v.payload,
@@ -592,16 +619,32 @@ export function validateProviderExecutionFinalResult(value, contractDigest, gene
 }
 
 /** Start binding is checked by the public facade; no current engine, price or clock is read. */
-export function validateProviderExecutionLedger({
-  run,
-  events: rawEvents,
-  artifacts: rawArtifacts,
-  budgetEvents,
-  receipts: rawReceipts,
-  registry,
-  startSnapshot,
-}) {
-  const events = rawEvents.map((v) => providerExecutionEventSchema.parse(v)),
+export function validateProviderExecutionLedger(input) {
+  return validateExecutionLedger(input, false);
+}
+/** Passive native approval audit. The caller first validates the original reservation ledger.
+ * This does not audit the upper policy/transmission binding or grant dispatch authority. */
+export function validateVersionedProviderApprovalLedger(input) {
+  return validateExecutionLedger(input, true);
+}
+function validateExecutionLedger(
+  {
+    run,
+    events: rawEvents,
+    artifacts: rawArtifacts,
+    budgetEvents,
+    receipts: rawReceipts,
+    registry,
+    startSnapshot,
+  },
+  versioned,
+) {
+  if (versioned && (run.archiveFormatVersion !== 3 || startSnapshot.archiveFormatVersion !== 4))
+    fail();
+  const eventSchema = versioned
+    ? versionedProviderApprovalEventSchema
+    : providerExecutionEventSchema;
+  const events = rawEvents.map((v) => eventSchema.parse(v)),
     artifacts = rawArtifacts.map((v) => providerExecutionArtifactSchema.parse(v)),
     receipts = rawReceipts;
   if (
@@ -673,7 +716,7 @@ export function validateProviderExecutionLedger({
       r.budgetRevision !== event.budgetRevision ||
       r.recordedAt !== event.recordedAt ||
       r.operationDigest !== event.eventDigest ||
-      r.inputDigest !== providerExecutionOperationDigest(run.id, command)
+      r.inputDigest !== executionOperationDigest(run.id, command, versioned)
     )
       fail();
     return r;
@@ -704,7 +747,7 @@ export function validateProviderExecutionLedger({
     };
     if (p.kind === "transmission-approved") {
       if (i !== 0 || approvalEvent || stopped) fail();
-      validateProviderExecutionManifest(run, p.manifest);
+      validateExecutionManifest(run, p.manifest, versioned);
       const policy = p.manifest.executionContract.usagePolicy;
       if (
         p.provenance !==
@@ -952,7 +995,7 @@ export function validateProviderExecutionLedger({
     responseCount = Object.keys(responded).length;
   const snapshot = {
     schemaVersion: 2,
-    archiveFormatVersion: 3,
+    archiveFormatVersion: versioned ? 5 : 3,
     run,
     revision: events.length,
     events,

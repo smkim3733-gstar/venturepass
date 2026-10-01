@@ -8,7 +8,7 @@ import type {
 } from "../src/lib/studio-plan-quality-actual-ledger-types";
 import type {
   StoredProviderRun,
-  ProviderRunEvent,
+  StoredProviderRunEvent,
   ProviderBudgetEvent,
   ProviderArtifact,
   ProviderReceipt,
@@ -35,7 +35,7 @@ export function inspectQualityLedgers(input: {
   };
   provider: ReturnType<typeof inspectVersionedProviderLedger> & {
     runs: StoredProviderRun[];
-    events: ProviderRunEvent[];
+    events: StoredProviderRunEvent[];
     budgetEvents: ProviderBudgetEvent[];
     artifacts: ProviderArtifact[];
     receipts: ProviderReceipt[];

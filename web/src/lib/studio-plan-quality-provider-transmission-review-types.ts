@@ -181,7 +181,9 @@ const transmissionReviewShape = z
   .strict();
 const versionedTransmissionReviewShape = transmissionReviewShape.extend({
   schemaVersion: z.literal(2),
-  run: transmissionReviewShape.shape.run.extend({ archiveFormatVersion: z.literal(4) }),
+  run: transmissionReviewShape.shape.run.extend({
+    archiveFormatVersion: z.union([z.literal(4), z.literal(5)]),
+  }),
   request: versionedPolicyRequestSchema.extend({
     contract: versionedPolicyRequestSchema.shape.contract.extend({
       baseContract: versionedPolicyRequestSchema.shape.contract.shape.baseContract.extend({

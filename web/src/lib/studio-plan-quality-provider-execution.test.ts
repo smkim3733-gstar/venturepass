@@ -629,7 +629,7 @@ describe("v2 explicit transmission ledger", () => {
       }),
     ).toThrow();
   });
-  it("reads completed legacy execution with a format3/v2 reservation and keeps recognized cost and old bytes", () => {
+  it("reads completed legacy execution with a format3/v2 reservation and approval, preserving cost and old bytes", () => {
     const f = completed(),
       before = JSON.stringify(snapshot(f)),
       b = budget(f),
@@ -722,6 +722,67 @@ describe("v2 explicit transmission ledger", () => {
     });
     expect(result.budgets[0].recognizedUnits).toBe("4");
     expect(JSON.stringify(result.snapshots[0])).toBe(before);
+    // The same native ledger keeps the settled v1 cost/bytes when v2 gains its first approval.
+    const command = core.versionedProviderApprovalCommandSchema.parse({
+      clientRequestId: randomUUID(),
+      expectedRevision: 0,
+      payload: {
+        kind: "transmission-approved",
+        manifest: core.createVersionedProviderTransmissionManifest(run, {
+          ...usagePolicy(f),
+          financialBasisDigest: p.financialBasisDigest,
+        }),
+        provenance: "synthetic-test",
+        approvedAt: actualTestNow,
+        expiresAt: providerTestExpires,
+        acknowledgedExternalTransmission: true,
+        acknowledgedGenerationAndDerivedReview: true,
+        acknowledgedRetentionNoticeDigest: p.retentionDigest,
+        acknowledgedFinancialReservationNotTokenFit: true,
+        acknowledgedUnknownCostHoldAndNoRetry: true,
+        budgetRevision: e.revision,
+        budgetDigest: e.eventDigest,
+      },
+    });
+    const approval = core.createVersionedProviderApprovalEvent({
+      schemaVersion: 2,
+      executionContractVersion: 2,
+      runId: id,
+      revision: 1,
+      budgetRevision: e.revision,
+      previousEventDigest: null,
+      recordedAt: actualTestNow,
+      payload: command.payload,
+    });
+    const approvalReceipt = core.createProviderExecutionReceipt({
+      schemaVersion: 2,
+      scopeId: b.scopeId,
+      kind: "provider-approve",
+      clientRequestId: command.clientRequestId,
+      inputDigest: core.versionedProviderApprovalOperationDigest(id, command),
+      runId: id,
+      runRevision: 1,
+      budgetRevision: e.revision,
+      operationDigest: approval.eventDigest,
+      recordedAt: actualTestNow,
+    });
+    const approved = core.inspectVersionedProviderLedger({
+      ...f.all(),
+      runs: [f.data.run, run],
+      events: [...f.data.events, approval],
+      artifacts: [...f.data.artifacts, artifact],
+      budgetEvents: [...f.data.budgetEvents, e],
+      receipts: [...f.all().receipts, receipt, approvalReceipt],
+    });
+    expect(approved.snapshots[1]).toMatchObject({
+      archiveFormatVersion: 5,
+      state: "approved",
+      dispatchAllowed: false,
+      canResume: false,
+    });
+    expect(approved.budgets).toEqual(result.budgets);
+    expect(JSON.stringify(approved.snapshots[0])).toBe(before);
+
     expect(() =>
       createVersionedProviderPreparationBuilder("plan-observation-v2").createPreparation({
         registry: f.registry,

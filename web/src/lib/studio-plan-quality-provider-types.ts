@@ -302,4 +302,10 @@ export type VersionedProviderReservationSnapshot = Omit<
   "archiveFormatVersion" | "run"
 > & { archiveFormatVersion: 4; run: VersionedProviderRun };
 export type StoredProviderRun = ProviderRun | VersionedProviderRun;
-export type StoredProviderSnapshot = ProviderSnapshot | VersionedProviderReservationSnapshot;
+export type StoredProviderRunEvent =
+  | ProviderRunEvent
+  | import("./studio-plan-quality-provider-execution-types").VersionedProviderApprovalEvent;
+export type StoredProviderSnapshot =
+  | ProviderSnapshot
+  | VersionedProviderReservationSnapshot
+  | import("./studio-plan-quality-provider-execution-types").VersionedProviderApprovalSnapshot;
