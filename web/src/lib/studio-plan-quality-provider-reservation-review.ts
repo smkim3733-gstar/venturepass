@@ -1,4 +1,6 @@
 import { z } from "zod";
+import type { PlanPromptVersion } from "./studio-plan-prompt-versions";
+import { createVersionedProviderPreparationBuilder } from "./studio-plan-quality-provider-core";
 import { inspectQualityLedgers } from "../../scripts/local-data-quality-ledgers.mjs";
 import {
   validateProviderBudgetLedger,
@@ -7,9 +9,13 @@ import {
 import { validateCandidateRegistrySnapshot } from "./studio-plan-quality-candidate-registry";
 import { planQualityEvaluationDigest as digest } from "./studio-plan-quality-evaluation";
 import { providerReviewInputSchema } from "./studio-plan-quality-provider-review-types";
-import { createProviderConfigurationProposalView } from "./studio-plan-quality-provider-configuration";
+import {
+  createProviderConfigurationProposalView,
+  createVersionedProviderConfigurationProposalView,
+} from "./studio-plan-quality-provider-configuration";
 import {
   createProviderPolicyReview,
+  createVersionedProviderPolicyReview,
   type ProviderPolicyReviewResult,
 } from "./studio-plan-quality-provider-policy-review";
 import {
@@ -47,6 +53,21 @@ const unavailable = (reason: UnavailableReason): ProviderReservationReviewResult
 /** Pure, read-only assessment. No write plan, preparation, credential lookup or provider capability. */
 export function createProviderReservationReview(
   input: ProviderReservationReviewInput,
+): ProviderReservationReviewResult {
+  return createReservationReview(input, null);
+}
+
+/** Explicit server selection; payloads cannot select a version. No write or dispatch grant. */
+export function createVersionedProviderReservationReview(
+  version: PlanPromptVersion,
+  input: ProviderReservationReviewInput,
+): ProviderReservationReviewResult {
+  createVersionedProviderPreparationBuilder(version);
+  return createReservationReview(input, version);
+}
+function createReservationReview(
+  input: ProviderReservationReviewInput,
+  version: PlanPromptVersion | null,
 ): ProviderReservationReviewResult {
   const selection = providerReviewInputSchema.safeParse(input.selection);
   if (!selection.success) return unavailable("selection-invalid");
@@ -100,7 +121,10 @@ export function createProviderReservationReview(
     budgetEvents: events,
     expectedBudgetHead: { revision: budget.revision, headDigest: budget.headDigest },
   };
-  const current = createProviderPolicyReview(policyInput);
+  const current =
+    version === null
+      ? createProviderPolicyReview(policyInput)
+      : createVersionedProviderPolicyReview(version, policyInput);
   if (current.status !== "review") return current;
   // Newer records for this registered candidate supersede older ones. Never fall back to an older match.
   const record = state.policy.records.findLast(
@@ -113,10 +137,19 @@ export function createProviderReservationReview(
     // Rebuild at the original inspection instant so calculatedAt-dependent financial/usage digests
     // remain comparable. Current authority validity was separately checked at inspectedAt above.
     // A consumed adoption approval's 15-minute review window is not the lifetime of the policy.
-    const rebuilt = createProviderConfigurationProposalView({
+    const originalInspection = {
       ...policyInput,
       inspectedAt: record.approvedReview.inspectedAt,
-    });
+    };
+    // Rebuild the stored encoding with the server-selected request, never select a version
+    // from the archived contract. Record1/v1 bytes remain unchanged.
+    const selectedVersion = version ?? "plan-observation-v1";
+    const rebuilt =
+      record.recordVersion === 1
+        ? selectedVersion === "plan-observation-v1"
+          ? createProviderConfigurationProposalView(originalInspection)
+          : null
+        : createVersionedProviderConfigurationProposalView(selectedVersion, originalInspection);
     policy = {
       state: rebuilt?.viewDigest === record.reviewedProposal.viewDigest ? "matched" : "changed",
       reference: {
@@ -163,6 +196,21 @@ export function isProviderReservationReviewCurrent(
   value: unknown,
   current: ProviderReservationReviewInput,
 ): boolean {
+  return isReviewCurrent(value, current, null);
+}
+export function isVersionedProviderReservationReviewCurrent(
+  version: PlanPromptVersion,
+  value: unknown,
+  current: ProviderReservationReviewInput,
+): boolean {
+  createVersionedProviderPreparationBuilder(version);
+  return isReviewCurrent(value, current, version);
+}
+function isReviewCurrent(
+  value: unknown,
+  current: ProviderReservationReviewInput,
+  version: PlanPromptVersion | null,
+): boolean {
   const parsed = providerReservationReviewSchema.safeParse(value);
   if (!parsed.success || !z.string().datetime().safeParse(current.inspectedAt).success)
     return false;
@@ -174,9 +222,12 @@ export function isProviderReservationReviewCurrent(
     review.reviewDigest !== digest(providerReservationReviewDigestInput(review))
   )
     return false;
-  const rebuilt = createProviderReservationReview({
-    ...current,
-    inspectedAt: review.policyReview.inspectedAt,
-  });
+  const rebuilt = createReservationReview(
+    {
+      ...current,
+      inspectedAt: review.policyReview.inspectedAt,
+    },
+    version,
+  );
   return rebuilt.status === "review" && rebuilt.review.reviewDigest === review.reviewDigest;
 }

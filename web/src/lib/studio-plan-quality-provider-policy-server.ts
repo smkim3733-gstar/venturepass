@@ -12,7 +12,21 @@ import {
   type ProviderPolicyAdoptionPlannerInput,
 } from "./studio-plan-quality-provider-policy-adoption";
 
+import {
+  createVersionedProviderReservationReview,
+  isVersionedProviderReservationReviewCurrent,
+  type ProviderReservationReviewInput,
+} from "./studio-plan-quality-provider-reservation-review";
+import {
+  prepareVersionedProviderReservation,
+  type ProviderReservationPlannerInput,
+} from "./studio-plan-quality-provider-reservation-plan";
+
 type Inspection = Omit<ProviderPolicyReviewInput, "configuration">;
+type ReservationInspection = Omit<ProviderReservationReviewInput, "configuration">;
+type Reservation = Omit<ProviderReservationPlannerInput, "current"> & {
+  current: ReservationInspection;
+};
 type Adoption = Omit<ProviderPolicyAdoptionPlannerInput, "current"> & { current: Inspection };
 
 /**
@@ -28,7 +42,9 @@ export function createServerProviderPolicyContext(
   const configuration = structuredClone(
     providerConfigurationProposalSchema.parse(fixedConfiguration),
   );
-  function bind(input: Inspection): ProviderPolicyReviewInput {
+  function bind<T extends Inspection | ReservationInspection>(
+    input: T,
+  ): T & { configuration: typeof configuration } {
     // Do not treat payload fields as server configuration or version selection.
     if (
       "configuration" in input ||
@@ -40,6 +56,17 @@ export function createServerProviderPolicyContext(
     return { ...structuredClone(input), configuration: structuredClone(configuration) };
   }
   return Object.freeze({
+    reservationReview: (input: ReservationInspection) =>
+      createVersionedProviderReservationReview(version, bind(input)),
+    isReservationReviewCurrent: (review: unknown, input: ReservationInspection) =>
+      isVersionedProviderReservationReviewCurrent(version, structuredClone(review), bind(input)),
+    prepareReservation: (input: Reservation) => {
+      const current = bind(input.current);
+      return prepareVersionedProviderReservation(version, {
+        ...structuredClone(input),
+        current,
+      });
+    },
     review: (input: Inspection) => createVersionedProviderPolicyReview(version, bind(input)),
     isReviewCurrent: (review: unknown, input: Inspection) =>
       isVersionedProviderPolicyReviewCurrent(version, structuredClone(review), bind(input)),

@@ -8,7 +8,10 @@ import { providerReviewInputSchema } from "./studio-plan-quality-provider-review
 import { getProviderConfigurationProposal } from "./studio-plan-quality-provider-configuration";
 import { createProviderReservationReview } from "./studio-plan-quality-provider-reservation-review";
 
+import type { createServerProviderPolicyContext } from "./studio-plan-quality-provider-policy-server";
+
 type Context = {
+  selection?: ReturnType<typeof createServerProviderPolicyContext>;
   db: DatabaseSync;
   transaction: <T>(work: () => T) => T;
   registry: (version: number) => CandidateRegistrySnapshot;
@@ -59,13 +62,17 @@ export class ProviderReservationReviewStore {
       } catch {
         return corrupt();
       }
-      const configuration = getProviderConfigurationProposal();
-      const result = createProviderReservationReview({
+      // A selected server never reads a later/default configuration instead of its snapshot.
+      // Legacy resolution still precedes the inspection clock.
+      const configuration = this.context.selection ? undefined : getProviderConfigurationProposal();
+      const input = {
         selection: selection.data,
         inspectedAt: new Date().toISOString(),
-        configuration,
         ledger,
-      });
+      };
+      const result = this.context.selection
+        ? this.context.selection.reservationReview(input)
+        : createProviderReservationReview({ ...input, configuration });
       if (result.status === "unavailable" && result.reason === "ledger-invalid") return corrupt();
       return result;
     });

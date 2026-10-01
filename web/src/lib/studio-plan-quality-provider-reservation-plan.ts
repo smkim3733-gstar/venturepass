@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { PlanPromptVersion } from "./studio-plan-prompt-versions";
 import { inspectQualityLedgers } from "../../scripts/local-data-quality-ledgers.mjs";
 import {
   providerDigest as digest,
@@ -11,6 +12,7 @@ import {
 } from "../../scripts/local-data-quality-provider.mjs";
 import {
   createProviderPreparation,
+  createVersionedProviderPreparationBuilder,
   validateNewProviderPreparation,
 } from "./studio-plan-quality-provider-core";
 import {
@@ -23,6 +25,7 @@ import type { ProviderReservationBinding } from "./studio-plan-quality-provider-
 import { validateProviderReservationBinding } from "../../scripts/local-data-quality-provider-reservation-binding.mjs";
 import {
   isProviderReservationReviewCurrent,
+  isVersionedProviderReservationReviewCurrent,
   type ProviderReservationReviewInput,
 } from "./studio-plan-quality-provider-reservation-review";
 import type {
@@ -79,7 +82,8 @@ type Refusal =
   | "approval-time-invalid"
   | "preparation-invalid"
   | "capacity-exceeded"
-  | "planned-ledger-invalid";
+  | "planned-ledger-invalid"
+  | "native-version-unsupported";
 export type ProviderReservationPlanResult =
   | { status: "prepared"; plan: ProviderReservationWritePlan }
   | { status: "refused"; reason: Refusal; plan: null };
@@ -104,6 +108,22 @@ export type ProviderReservationPlannerInput = {
  * binding AND the frozen native rows, with migration/backup coverage and exact-command replay. */
 export function prepareProviderReservation(
   input: ProviderReservationPlannerInput,
+): ProviderReservationPlanResult {
+  return prepareReservation(input, null);
+}
+
+/** Recheck the selected approval under the writer lock. A v2 selection must not downgrade
+ * into frozen v1 native rows while the separate v2 archive/runtime is being connected. */
+export function prepareVersionedProviderReservation(
+  version: PlanPromptVersion,
+  input: ProviderReservationPlannerInput,
+): ProviderReservationPlanResult {
+  createVersionedProviderPreparationBuilder(version);
+  return prepareReservation(input, version);
+}
+function prepareReservation(
+  input: ProviderReservationPlannerInput,
+  version: PlanPromptVersion | null,
 ): ProviderReservationPlanResult {
   const commandInput = providerReservationCommandSchema.safeParse(input.command);
   const reviewInput = providerReservationReviewSchema.safeParse(input.review);
@@ -152,7 +172,9 @@ export function prepareProviderReservation(
     return refuse("run-id-conflict");
   if (
     command.approvedReviewDigest !== review.reviewDigest ||
-    !isProviderReservationReviewCurrent(review, input.current)
+    !(version === null
+      ? isProviderReservationReviewCurrent(review, input.current)
+      : isVersionedProviderReservationReviewCurrent(version, review, input.current))
   )
     return refuse("review-not-current");
   if (review.assessment.state !== "conditions-met") return refuse("reservation-blocked");
@@ -176,6 +198,9 @@ export function prepareProviderReservation(
     approvedAt >= Date.parse(p.expiresAt)
   )
     return refuse("approval-time-invalid");
+
+  // Refuse before creating a v1 preparation, native rows, budget reservation or transport.
+  if (version === "plan-observation-v2") return refuse("native-version-unsupported");
 
   const configuration = providerConfigurationProposalSchema.safeParse(input.current.configuration);
   const registry = input.current.ledger.registries.find((row) => row.version === command.version);

@@ -167,7 +167,13 @@ it("commits selected v2 policy and budget atomically without enabling reservatio
     versionDigest: f.command.versionDigest,
     candidateId: f.command.candidateId,
   });
-  expect(reservation).toMatchObject({ status: "review", review: { policy: { state: "changed" } } });
+  expect(reservation).toMatchObject({
+    status: "review",
+    review: {
+      policy: { state: "matched" },
+      actions: { reservationAllowed: false, dispatchAllowed: false },
+    },
+  });
   expect(store.providerPolicyLookup(f.command.clientRequestId)).toEqual({
     state: "committed",
     record: committed.record,

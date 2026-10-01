@@ -14,7 +14,10 @@ import { providerReservationCommandSchema } from "./studio-plan-quality-provider
 import { prepareProviderReservation } from "./studio-plan-quality-provider-reservation-plan";
 import type { ProviderReservationBinding } from "./studio-plan-quality-provider-reservation-archive-types";
 
+import type { createServerProviderPolicyContext } from "./studio-plan-quality-provider-policy-server";
+
 type Context = {
+  selection?: ReturnType<typeof createServerProviderPolicyContext>;
   db: DatabaseSync;
   transaction: <T>(work: () => T, write?: boolean) => T;
   registry: (version: number) => CandidateRegistrySnapshot;
@@ -97,7 +100,8 @@ export class ProviderReservationStore {
         (version) => (version === selected.version ? selected : this.context.registry(version)),
         [command.version],
       );
-      const plan = prepareProviderReservation({
+      const configuration = this.context.selection ? undefined : getProviderConfigurationProposal();
+      const input = {
         command,
         review: approvedReview,
         current: {
@@ -107,12 +111,17 @@ export class ProviderReservationStore {
             candidateId: command.candidateId,
           },
           ledger,
-          configuration: getProviderConfigurationProposal(),
           inspectedAt: new Date().toISOString(),
         },
         runId: randomUUID(),
         additionalUsedBytes: before.additionalUsedBytes,
-      });
+      };
+      const plan = this.context.selection
+        ? this.context.selection.prepareReservation(input)
+        : prepareProviderReservation({
+            ...input,
+            current: { ...input.current, configuration },
+          });
       if (plan.status !== "prepared")
         return fail(
           `QUALITY_PROVIDER_RESERVATION_${plan.reason.replaceAll("-", "_").toUpperCase()}`,

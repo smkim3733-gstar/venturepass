@@ -449,27 +449,40 @@ describe("adopted policy reservation review", () => {
   });
   it("detects an exact request change even when the fixed configuration is unchanged", () => {
     const { value } = configuredInput();
-    const original = providerCore.createProviderRequestReview;
-    vi.spyOn(providerCore, "createProviderRequestReview").mockImplementation((input) => {
-      const request = original(input);
-      const body = {
-        ...request.generation.body,
-        input: request.generation.body.input.map((item, index) =>
-          index === 0 ? { ...item, content: item.content + "\nSynthetic prompt revision." } : item,
-        ),
-      };
-      return {
-        ...request,
-        generation: {
-          ...request.generation,
-          body,
-          requestDigest: providerWireDigest(body),
-          sha256: providerRawDigest(JSON.stringify(body)),
-          inputChars: request.generation.inputChars + 27,
-        },
-      };
-    });
+    const original = providerCore.createVersionedProviderPreparationBuilder;
+    const changedRequest = vi.fn();
+    vi.spyOn(providerCore, "createVersionedProviderPreparationBuilder").mockImplementation(
+      (version) => {
+        const builder = original(version);
+        return Object.freeze({
+          ...builder,
+          createRequestReview: (input) => {
+            changedRequest();
+            const request = builder.createRequestReview(input);
+            const body = {
+              ...request.generation.body,
+              input: request.generation.body.input.map((item, index) =>
+                index === 0
+                  ? { ...item, content: item.content + "\nSynthetic prompt revision." }
+                  : item,
+              ),
+            };
+            return {
+              ...request,
+              generation: {
+                ...request.generation,
+                body,
+                requestDigest: providerWireDigest(body),
+                sha256: providerRawDigest(JSON.stringify(body)),
+                inputChars: request.generation.inputChars + 27,
+              },
+            };
+          },
+        });
+      },
+    );
     expect(review(value).assessment.blockers).toEqual(["policy-changed"]);
+    expect(changedRequest).toHaveBeenCalled();
   });
   it("a current blocked review remains informational and grants no reservation capability", () => {
     const value = input(),
