@@ -1,9 +1,18 @@
 import "server-only";
+import type { PlanPromptVersion } from "./studio-plan-prompt-versions";
+import { createVersionedProviderPreparationBuilder } from "./studio-plan-quality-provider-core";
+import type { VersionedProviderExecutionEvent } from "./studio-plan-quality-provider-execution-types";
+
 import { z } from "zod";
-import { inspectProviderTransmissionApprovalArchive } from "../../scripts/local-data-quality-provider-transmission-binding.mjs";
+import {
+  inspectProviderTransmissionApprovalArchive,
+  inspectVersionedProviderTransmissionApprovalArchive,
+} from "../../scripts/local-data-quality-provider-transmission-binding.mjs";
 import {
   createProviderExecutionArtifact,
   createProviderExecutionEvent,
+  createVersionedProviderExecutionEvent,
+  versionedProviderExecutionOperationDigest,
   createProviderExecutionReceipt,
   deriveProviderExecutionReviewRequest,
   providerExecutionOperationDigest,
@@ -15,7 +24,10 @@ import {
 } from "../../scripts/local-data-quality-provider.mjs";
 import { providerGenerationValidationIdentitySchema } from "./studio-plan-quality-provider-generation-validation";
 import { providerGenerationDispatchPlanLimits } from "./studio-plan-quality-provider-dispatch-plan";
-import { createProviderTransmissionReview } from "./studio-plan-quality-provider-transmission-review";
+import {
+  createProviderTransmissionReview,
+  createVersionedProviderTransmissionReview,
+} from "./studio-plan-quality-provider-transmission-review";
 import type {
   ProviderExecutionCommand,
   ProviderExecutionEvent,
@@ -39,7 +51,9 @@ export type ProviderReviewDispatchInput = {
   /** Audited raw bytes outside native, reservation and transmission archives. */
   additionalUsedBytes: number;
 };
+
 type Refusal =
+  | "server-version-mismatch"
   | "invalid-input"
   | "archive-invalid"
   | "bindings-changed"
@@ -58,7 +72,43 @@ const same = (a: unknown, b: unknown) => digest(a) === digest(b);
 /** Read-only NEW review plan from audited r5. Stored validated output and the original template
  * determine the bytes. No new approval, extended deadline, reservation, transport or retry.
  * A future writer must regenerate this under its write lock; this plan conveys no ownership. */
-export function prepareProviderReviewDispatch(input: ProviderReviewDispatchInput) {
+export function prepareProviderReviewDispatch(
+  input: ProviderReviewDispatchInput,
+): ProviderReviewDispatchResult {
+  // Frozen v1 entry: neither widening the reader nor changing historical plan bytes.
+  return prepareReviewDispatch(input, null) as ProviderReviewDispatchResult;
+}
+
+/** Explicit server selection; planned rows convey no commit or transmission ownership. */
+export function prepareVersionedProviderReviewDispatch(
+  version: PlanPromptVersion,
+  input: ProviderReviewDispatchInput,
+): VersionedProviderReviewDispatchResult {
+  createVersionedProviderPreparationBuilder(version);
+  if (
+    !input ||
+    Object.keys(input).some(
+      (key) =>
+        !["configuration", "identity", "inspectedAt", "archive", "additionalUsedBytes"].includes(
+          key,
+        ),
+    )
+  )
+    return refused("invalid-input");
+  return prepareReviewDispatch(input, version);
+}
+function prepareReviewDispatch(
+  input: ProviderReviewDispatchInput,
+  version: PlanPromptVersion | null,
+) {
+  const nativeV2 = version === "plan-observation-v2";
+  const inspect =
+    version === null
+      ? inspectProviderTransmissionApprovalArchive
+      : inspectVersionedProviderTransmissionApprovalArchive;
+  const operationDigest = nativeV2
+    ? versionedProviderExecutionOperationDigest
+    : providerExecutionOperationDigest;
   const parsed = providerReviewDispatchIdentitySchema.safeParse(input.identity);
   if (
     !parsed.success ||
@@ -71,9 +121,9 @@ export function prepareProviderReviewDispatch(input: ProviderReviewDispatchInput
     generation = identity.generation,
     id = generation.dispatch.runId;
   if (identity.preparedRequestId === identity.dispatchRequestId) return refused("nonce-conflict");
-  let archive: ReturnType<typeof inspectProviderTransmissionApprovalArchive>;
+  let archive: ReturnType<typeof inspectVersionedProviderTransmissionApprovalArchive>;
   try {
-    archive = inspectProviderTransmissionApprovalArchive(input.archive);
+    archive = inspect(input.archive);
   } catch {
     return refused("archive-invalid");
   }
@@ -90,8 +140,15 @@ export function prepareProviderReviewDispatch(input: ProviderReviewDispatchInput
   const snapshot = state.provider.snapshots.find((row) => row.run.id === id);
   const binding = archive.records.find((row) => row.runId === id);
   if (
+    snapshot &&
+    version !== null &&
+    snapshot.run.preparation.contract.baseContract.engineVersion !== version
+  )
+    return refused("server-version-mismatch");
+  if (
     !snapshot ||
-    snapshot.archiveFormatVersion !== 3 ||
+    (snapshot.archiveFormatVersion !== 3 && snapshot.archiveFormatVersion !== 5) ||
+    snapshot.archiveFormatVersion !== (nativeV2 ? 5 : 3) ||
     snapshot.run.environment !== "production" ||
     snapshot.run.runDigest !== generation.dispatch.runDigest ||
     !binding ||
@@ -110,7 +167,11 @@ export function prepareProviderReviewDispatch(input: ProviderReviewDispatchInput
     validated.payload.phase !== "generation"
   )
     return refused("generation-validation-required");
-  const matches = (nonce: string, kind: string, event: ProviderExecutionEvent) =>
+  const matches = (
+    nonce: string,
+    kind: string,
+    event: ProviderExecutionEvent | VersionedProviderExecutionEvent,
+  ) =>
     state.provider.receipts.some(
       (row) =>
         row.clientRequestId === nonce &&
@@ -152,12 +213,16 @@ export function prepareProviderReviewDispatch(input: ProviderReviewDispatchInput
     now >= Date.parse(binding.approvedReview.expiresAt)
   )
     return refused("approval-expired-or-future");
-  const current = createProviderTransmissionReview({
+  const currentInput = {
     selection: { runId: id, runDigest: generation.dispatch.runDigest },
     inspectedAt,
     configuration: input.configuration,
     archive: input.archive.archive,
-  });
+  };
+  const current =
+    version === null
+      ? createProviderTransmissionReview(currentInput)
+      : createVersionedProviderTransmissionReview(version, currentInput);
   if (current.status !== "review") return refused("current-evidence-unavailable");
   const review = current.review;
   // First-approval runUntouched/reservationIntact are intentionally false after generation.
@@ -208,6 +273,14 @@ export function prepareProviderReviewDispatch(input: ProviderReviewDispatchInput
     artifactSha256: output.sha256,
     outputDigest: validated.payload.outputDigest,
   };
+  const createEvent = (
+    input: Omit<ProviderExecutionEvent, "executionContractVersion" | "eventDigest" | "payload"> & {
+      payload: ProviderExecutionCommand<"request-prepared" | "dispatch-intent">["payload"];
+    },
+  ) =>
+    nativeV2
+      ? createVersionedProviderExecutionEvent({ ...input, executionContractVersion: 2 })
+      : createProviderExecutionEvent({ ...input, executionContractVersion: 1 });
   try {
     const prepared: ProviderExecutionCommand<"request-prepared"> = {
       clientRequestId: identity.preparedRequestId,
@@ -223,9 +296,8 @@ export function prepareProviderReviewDispatch(input: ProviderReviewDispatchInput
         budgetDigest: review.budget.headDigest,
       },
     };
-    const event = createProviderExecutionEvent({
+    const event = createEvent({
       schemaVersion: 2,
-      executionContractVersion: 1,
       runId: id,
       revision: 6,
       budgetRevision: review.budget.revision,
@@ -247,9 +319,8 @@ export function prepareProviderReviewDispatch(input: ProviderReviewDispatchInput
         budgetDigest: review.budget.headDigest,
       },
     };
-    const dispatchEvent = createProviderExecutionEvent({
+    const dispatchEvent = createEvent({
       schemaVersion: 2,
-      executionContractVersion: 1,
       runId: id,
       revision: 7,
       budgetRevision: review.budget.revision,
@@ -259,7 +330,7 @@ export function prepareProviderReviewDispatch(input: ProviderReviewDispatchInput
     });
     const receipt = (
       command: typeof prepared | typeof dispatch,
-      row: ProviderExecutionEvent,
+      row: ProviderExecutionEvent | VersionedProviderExecutionEvent,
       kind: "provider-prepared" | "provider-dispatch",
     ) =>
       createProviderExecutionReceipt({
@@ -267,7 +338,7 @@ export function prepareProviderReviewDispatch(input: ProviderReviewDispatchInput
         scopeId: review.budget.scopeId,
         kind,
         clientRequestId: command.clientRequestId,
-        inputDigest: providerExecutionOperationDigest(id, command),
+        inputDigest: operationDigest(id, command),
         runId: id,
         runRevision: row.revision,
         budgetRevision: row.budgetRevision,
@@ -283,7 +354,7 @@ export function prepareProviderReviewDispatch(input: ProviderReviewDispatchInput
       ] as const,
     };
     const ledger = input.archive.archive.ledger;
-    const next = inspectProviderTransmissionApprovalArchive({
+    const next = inspect({
       ...input.archive,
       archive: {
         ...input.archive.archive,
@@ -312,7 +383,7 @@ export function prepareProviderReviewDispatch(input: ProviderReviewDispatchInput
       rawBody: artifact.body,
     };
     const plan = {
-      planVersion: 1 as const,
+      planVersion: nativeV2 ? (2 as const) : (1 as const),
       kind: "provider-review-dispatch-plan" as const,
       status: "prepared-not-committed" as const,
       transaction: "single-immediate-transaction-required" as const,
@@ -354,8 +425,14 @@ export function prepareProviderReviewDispatch(input: ProviderReviewDispatchInput
     return refused("planned-archive-invalid");
   }
 }
-export type ProviderReviewDispatchResult = ReturnType<typeof prepareProviderReviewDispatch>;
-export type ProviderReviewDispatchPlan = Extract<
-  ProviderReviewDispatchResult,
-  { status: "prepared" }
->["plan"];
+export type VersionedProviderReviewDispatchResult = ReturnType<typeof prepareReviewDispatch>;
+type SharedPlan = Extract<VersionedProviderReviewDispatchResult, { status: "prepared" }>["plan"];
+export type VersionedProviderReviewDispatchPlan = SharedPlan;
+export type ProviderReviewDispatchPlan = Omit<SharedPlan, "planVersion" | "rows"> & {
+  planVersion: 1;
+  rows: Omit<SharedPlan["rows"], "events"> & {
+    events: readonly [ProviderExecutionEvent, ProviderExecutionEvent];
+  };
+};
+export type ProviderReviewDispatchResult =
+  { status: "prepared"; plan: ProviderReviewDispatchPlan } | ReturnType<typeof refused>;

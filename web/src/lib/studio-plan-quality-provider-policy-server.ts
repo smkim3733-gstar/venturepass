@@ -35,6 +35,9 @@ import {
   prepareVersionedProviderGenerationDispatch,
   type ProviderGenerationDispatchInput,
 } from "./studio-plan-quality-provider-dispatch-plan";
+import type { ProviderGenerationValidationInput } from "./studio-plan-quality-provider-generation-validation";
+import type { ProviderReviewDispatchInput } from "./studio-plan-quality-provider-review-dispatch-plan";
+type ReviewDispatch = Omit<ProviderReviewDispatchInput, "configuration">;
 type GenerationDispatch = Omit<ProviderGenerationDispatchInput, "configuration">;
 type TransmissionApproval = Omit<ProviderTransmissionPlannerInput, "current"> & {
   current: TransmissionInspection;
@@ -62,7 +65,12 @@ export function createServerProviderPolicyContext(
     providerConfigurationProposalSchema.parse(fixedConfiguration),
   );
   function bind<
-    T extends Inspection | ReservationInspection | TransmissionInspection | GenerationDispatch,
+    T extends
+      | Inspection
+      | ReservationInspection
+      | TransmissionInspection
+      | GenerationDispatch
+      | ReviewDispatch,
   >(input: T): T & { configuration: typeof configuration } {
     // Do not treat payload fields as server configuration or version selection.
     if (
@@ -82,6 +90,37 @@ export function createServerProviderPolicyContext(
     return bind(input);
   }
   return Object.freeze({
+    /** Load before entering a synchronous DB transaction; returned planners never await.
+     * This keeps policy-only consumers free of the domain/response execution module graph. */
+    loadValidationPlanning: async () => {
+      const [
+        { prepareVersionedProviderGenerationValidation },
+        { prepareVersionedProviderReviewDispatch },
+      ] = await Promise.all([
+        import("./studio-plan-quality-provider-generation-validation"),
+        import("./studio-plan-quality-provider-review-dispatch-plan"),
+      ]);
+      return Object.freeze({
+        prepareGenerationValidation: (input: ProviderGenerationValidationInput) => {
+          if (
+            Object.keys(input).some(
+              (key) => !["identity", "inspectedAt", "archive", "additionalUsedBytes"].includes(key),
+            )
+          )
+            throw new Error("Unsupported generation validation evidence");
+          return prepareVersionedProviderGenerationValidation(version, structuredClone(input));
+        },
+        prepareReviewDispatch: (input: ReviewDispatch) => {
+          if (
+            Object.keys(input).some(
+              (key) => !["identity", "inspectedAt", "archive", "additionalUsedBytes"].includes(key),
+            )
+          )
+            throw new Error("Unsupported review dispatch evidence");
+          return prepareVersionedProviderReviewDispatch(version, bind(input));
+        },
+      });
+    },
     prepareGenerationDispatch: (input: GenerationDispatch) => {
       if (
         Object.keys(input).some(

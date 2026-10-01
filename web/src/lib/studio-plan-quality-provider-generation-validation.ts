@@ -1,9 +1,17 @@
 import "server-only";
+import type { PlanPromptVersion } from "./studio-plan-prompt-versions";
+import { createVersionedProviderPreparationBuilder } from "./studio-plan-quality-provider-core";
+
 import { z } from "zod";
-import { inspectProviderTransmissionApprovalArchive } from "../../scripts/local-data-quality-provider-transmission-binding.mjs";
+import {
+  inspectProviderTransmissionApprovalArchive,
+  inspectVersionedProviderTransmissionApprovalArchive,
+} from "../../scripts/local-data-quality-provider-transmission-binding.mjs";
 import {
   createProviderExecutionArtifact,
   createProviderExecutionEvent,
+  createVersionedProviderExecutionEvent,
+  versionedProviderExecutionOperationDigest,
   createProviderExecutionReceipt,
   deriveProviderExecutionReviewRequest,
   getProviderExecutionBudgetSnapshot,
@@ -29,9 +37,13 @@ import {
   validateObservedPlanDraft,
   StudioEngineError,
 } from "./studio-engine";
+import { getPlanExecutionContractForVersion } from "./studio-engine-request-preparation";
 import { candidateRegistryModelInput } from "./studio-plan-quality-candidate-registry";
 import { caseSchema } from "./studio-schema";
-import type { ProviderExecutionCommand } from "./studio-plan-quality-provider-execution-types";
+import type {
+  ProviderExecutionCommand,
+  ProviderExecutionEvent,
+} from "./studio-plan-quality-provider-execution-types";
 
 export const providerGenerationValidationIdentitySchema = z
   .object({
@@ -51,7 +63,9 @@ export type ProviderGenerationValidationInput = {
   /** Raw audited bytes outside native + reservation + transmission archives. */
   additionalUsedBytes: number;
 };
+
 type Refusal =
+  | "server-version-mismatch"
   | "invalid-input"
   | "archive-invalid"
   | "bindings-changed"
@@ -70,7 +84,40 @@ const refused = (reason: Refusal) => ({ status: "refused" as const, reason, plan
 
 /** Pure server preparation. Uses captured evidence and the current compatible domain validator;
  * it does NOT grant review sending, check fresh approval/configuration or commit any proposed row. */
-export function prepareProviderGenerationValidation(input: ProviderGenerationValidationInput) {
+export function prepareProviderGenerationValidation(
+  input: ProviderGenerationValidationInput,
+): ProviderGenerationValidationResult {
+  // Frozen v1 entry: neither widening the reader nor changing historical plan bytes.
+  return prepareGenerationValidation(input, null) as ProviderGenerationValidationResult;
+}
+
+/** Explicit server selection; planned rows convey no commit or transmission ownership. */
+export function prepareVersionedProviderGenerationValidation(
+  version: PlanPromptVersion,
+  input: ProviderGenerationValidationInput,
+): VersionedProviderGenerationValidationResult {
+  createVersionedProviderPreparationBuilder(version);
+  if (
+    !input ||
+    Object.keys(input).some(
+      (key) => !["identity", "inspectedAt", "archive", "additionalUsedBytes"].includes(key),
+    )
+  )
+    return refused("invalid-input");
+  return prepareGenerationValidation(input, version);
+}
+function prepareGenerationValidation(
+  input: ProviderGenerationValidationInput,
+  version: PlanPromptVersion | null,
+) {
+  const nativeV2 = version === "plan-observation-v2";
+  const inspect =
+    version === null
+      ? inspectProviderTransmissionApprovalArchive
+      : inspectVersionedProviderTransmissionApprovalArchive;
+  const operationDigest = nativeV2
+    ? versionedProviderExecutionOperationDigest
+    : providerExecutionOperationDigest;
   const parsed = providerGenerationValidationIdentitySchema.safeParse(input.identity);
   if (
     !parsed.success ||
@@ -81,9 +128,9 @@ export function prepareProviderGenerationValidation(input: ProviderGenerationVal
     return refused("invalid-input");
   const identity = parsed.data,
     id = identity.dispatch.runId;
-  let archive: ReturnType<typeof inspectProviderTransmissionApprovalArchive>;
+  let archive: ReturnType<typeof inspectVersionedProviderTransmissionApprovalArchive>;
   try {
-    archive = inspectProviderTransmissionApprovalArchive(input.archive);
+    archive = inspect(input.archive);
   } catch {
     return refused("archive-invalid");
   }
@@ -91,8 +138,15 @@ export function prepareProviderGenerationValidation(input: ProviderGenerationVal
   const snapshot = state.provider.snapshots.find((row) => row.run.id === id);
   const binding = archive.records.find((row) => row.runId === id);
   if (
+    snapshot &&
+    version !== null &&
+    snapshot.run.preparation.contract.baseContract.engineVersion !== version
+  )
+    return refused("server-version-mismatch");
+  if (
     !snapshot ||
-    snapshot.archiveFormatVersion !== 3 ||
+    (snapshot.archiveFormatVersion !== 3 && snapshot.archiveFormatVersion !== 5) ||
+    snapshot.archiveFormatVersion !== (nativeV2 ? 5 : 3) ||
     snapshot.run.environment !== "production" ||
     snapshot.run.runDigest !== identity.dispatch.runDigest ||
     !binding ||
@@ -174,7 +228,10 @@ export function prepareProviderGenerationValidation(input: ProviderGenerationVal
     return refused("budget-bound-breached");
   const run = snapshot.run,
     prep = run.preparation;
-  if (getPlanExecutionContract().contractDigest !== prep.contract.baseContract.contractDigest)
+  if (
+    (version === null ? getPlanExecutionContract() : getPlanExecutionContractForVersion(version))
+      .contractDigest !== prep.contract.baseContract.contractDigest
+  )
     return refused("validation-contract-changed");
   const registry = input.archive.archive.ledger.registries.find(
     (row) => row.version === prep.scope.version && row.versionDigest === prep.scope.versionDigest,
@@ -266,22 +323,24 @@ export function prepareProviderGenerationValidation(input: ProviderGenerationVal
       outputDigest: digest(output),
     },
   };
-  const event = createProviderExecutionEvent({
-    schemaVersion: 2,
-    executionContractVersion: 1,
+  const eventInput = {
+    schemaVersion: 2 as const,
     runId: id,
     revision: 5,
     budgetRevision: budget.revision,
     previousEventDigest: response.eventDigest,
     recordedAt: input.inspectedAt,
     payload: command.payload,
-  });
+  };
+  const event = nativeV2
+    ? createVersionedProviderExecutionEvent({ ...eventInput, executionContractVersion: 2 })
+    : createProviderExecutionEvent({ ...eventInput, executionContractVersion: 1 });
   const receipt = createProviderExecutionReceipt({
     schemaVersion: 2,
     scopeId: budget.scopeId,
     kind: "provider-validated",
     clientRequestId: identity.validationRequestId,
-    inputDigest: providerExecutionOperationDigest(id, command),
+    inputDigest: operationDigest(id, command),
     runId: id,
     runRevision: 5,
     budgetRevision: budget.revision,
@@ -314,7 +373,7 @@ export function prepareProviderGenerationValidation(input: ProviderGenerationVal
   }
   try {
     const ledger = input.archive.archive.ledger;
-    const after = inspectProviderTransmissionApprovalArchive({
+    const after = inspect({
       ...input.archive,
       archive: {
         ...input.archive.archive,
@@ -339,7 +398,7 @@ export function prepareProviderGenerationValidation(input: ProviderGenerationVal
     )
       return refused("capacity-exceeded");
     const plan = {
-      planVersion: 1 as const,
+      planVersion: nativeV2 ? (2 as const) : (1 as const),
       kind: "provider-generation-validation-plan" as const,
       status: "prepared-not-committed" as const,
       transaction: "single-immediate-transaction-required" as const,
@@ -370,13 +429,20 @@ export function prepareProviderGenerationValidation(input: ProviderGenerationVal
     return refused("planned-archive-invalid");
   }
 }
-export type ProviderGenerationValidationResult = ReturnType<
-  typeof prepareProviderGenerationValidation
+export type VersionedProviderGenerationValidationResult = ReturnType<
+  typeof prepareGenerationValidation
 >;
-export type ProviderGenerationValidationPlan = Extract<
-  ProviderGenerationValidationResult,
+type SharedPlan = Extract<
+  VersionedProviderGenerationValidationResult,
   { status: "prepared" }
 >["plan"];
+export type VersionedProviderGenerationValidationPlan = SharedPlan;
+export type ProviderGenerationValidationPlan = Omit<SharedPlan, "planVersion" | "rows"> & {
+  planVersion: 1;
+  rows: Omit<SharedPlan["rows"], "event"> & { event: ProviderExecutionEvent };
+};
+export type ProviderGenerationValidationResult =
+  { status: "prepared"; plan: ProviderGenerationValidationPlan } | ReturnType<typeof refused>;
 
 /** Historical validation evidence only. It grants no review preparation or sending authority. */
 export type ProviderGenerationValidationRecord = ProviderGenerationValidationIdentity & {
