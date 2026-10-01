@@ -287,3 +287,19 @@ export type VersionedProviderContract = Omit<ProviderContract, "baseContract"> &
 export type VersionedProviderPreparation = Omit<ProviderPreparation, "contract"> & {
   contract: VersionedProviderContract;
 };
+
+/** Additive native archive format3. Not accepted by the legacy operational writer or SDK gate. */
+export type VersionedProviderStart = Omit<ProviderStart, "preparation"> & {
+  startVersion: 2;
+  preparation: VersionedProviderPreparation;
+};
+export type VersionedProviderRun = Omit<ProviderRun, "archiveFormatVersion" | "preparation"> & {
+  archiveFormatVersion: 3;
+  preparation: VersionedProviderPreparation;
+};
+export type VersionedProviderReservationSnapshot = Omit<
+  ProviderReservationSnapshot,
+  "archiveFormatVersion" | "run"
+> & { archiveFormatVersion: 3; run: VersionedProviderRun };
+export type StoredProviderRun = ProviderRun | VersionedProviderRun;
+export type StoredProviderSnapshot = ProviderSnapshot | VersionedProviderReservationSnapshot;

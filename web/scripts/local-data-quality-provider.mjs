@@ -557,6 +557,19 @@ const versionedContract = contract.extend({
 export const versionedProviderPreparationSchema = providerPreparationSchema.extend({
   contract: versionedContract,
 });
+// Additive native reservation format. Old start/run schemas stay frozen at format2/v1.
+export const versionedProviderStartSchema = providerStartSchema.extend({
+  startVersion: z.literal(2),
+  preparation: versionedProviderPreparationSchema,
+});
+export const versionedProviderRunSchema = providerRunSchema.extend({
+  archiveFormatVersion: z.literal(3),
+  preparation: versionedProviderPreparationSchema,
+});
+export function versionedProviderStartDigestInput(value) {
+  const input = versionedProviderStartSchema.parse(value);
+  return { startVersion: 2, ...providerStartDigestInput(input) };
+}
 const versionedRequestEvidenceSchema = providerRequestEvidenceSchema.extend({
   contract: versionedContract,
 });
@@ -772,14 +785,28 @@ export const createProviderArtifact = ({ runId, body }) =>
     sha256: providerRawDigest(body),
     sizeBytes: bytes(body),
   });
-export function createProviderRun({ input, id, recordedAt, reservation }) {
+export function createProviderRun(input) {
+  return createRun(input, false);
+}
+export function createVersionedProviderRun(input) {
+  return createRun(
+    {
+      ...input,
+      input: versionedProviderStartSchema.parse(input.input),
+    },
+    true,
+  );
+}
+function createRun({ input, id, recordedAt, reservation }, versioned) {
   const p = input.preparation,
     value = {
       schemaVersion: 2,
-      archiveFormatVersion: 2,
+      archiveFormatVersion: versioned ? 3 : 2,
       id,
       clientRequestId: input.clientRequestId,
-      inputDigest: providerDigest(providerStartDigestInput(input)),
+      inputDigest: providerDigest(
+        versioned ? versionedProviderStartDigestInput(input) : providerStartDigestInput(input),
+      ),
       recordedAt,
       environment: p.environment,
       executionKind:
@@ -799,7 +826,10 @@ export function createProviderRun({ input, id, recordedAt, reservation }) {
       storageReservationBytes: 33554432,
       reservedSlots: { events: 32, budgetEvents: 16, receipts: 64 },
     };
-  return providerRunSchema.parse({ ...value, runDigest: providerDigest(value) });
+  return (versioned ? versionedProviderRunSchema : providerRunSchema).parse({
+    ...value,
+    runDigest: providerDigest(value),
+  });
 }
 export function validateProviderBudgetLedger(values, scopeId) {
   if (values.some((v) => ["recognize-usage", "release-phase"].includes(v.payload?.kind)))
@@ -878,14 +908,27 @@ export function validateProviderBudgetLedger(values, scopeId) {
     reservations,
   };
 }
-export function validateProviderRunLedger({
-  run: raw,
-  events: rawEvents,
-  artifacts: rawArtifacts,
-  budgetEvents,
-  receipts: rawReceipts,
-  registry,
-}) {
+export function validateProviderRunLedger(input) {
+  return validateRunLedger(input, false);
+}
+/** Passive archive reader, not a transport grant. Only reservation/cancellation is supported
+ * for format3; existing format2 execution history keeps its original validation path. */
+export function validateVersionedProviderRunLedger(input) {
+  return validateRunLedger(input, true);
+}
+function validateRunLedger(
+  {
+    run: raw,
+    events: rawEvents,
+    artifacts: rawArtifacts,
+    budgetEvents,
+    receipts: rawReceipts,
+    registry,
+  },
+  versioned,
+) {
+  const newFormat = versioned && raw?.archiveFormatVersion === 3;
+  if (newFormat && rawEvents.some((v) => v.executionContractVersion !== undefined)) fail();
   if (rawEvents.some((v) => v.executionContractVersion === 1)) {
     const startSnapshot = validateProviderRunLedger({
       run: raw,
@@ -905,11 +948,20 @@ export function validateProviderRunLedger({
       startSnapshot,
     });
   }
-  const run = providerRunSchema.parse(raw),
-    events = rawEvents.map((v) => providerRunEventSchema.parse(v)),
-    artifacts = rawArtifacts.map((v) => providerArtifactSchema.parse(v)),
-    receipts = rawReceipts.map((v) => providerReceiptSchema.parse(v));
-  const p = validateProviderPreparation(run.preparation, registry),
+  const run = (newFormat ? versionedProviderRunSchema : providerRunSchema).parse(raw),
+    events = rawEvents.map((v) =>
+      (newFormat ? frozen.providerRunEventSchema : providerRunEventSchema).parse(v),
+    ),
+    artifacts = rawArtifacts.map((v) =>
+      (newFormat ? frozen.providerArtifactSchema : providerArtifactSchema).parse(v),
+    ),
+    receipts = rawReceipts.map((v) =>
+      (newFormat ? frozen.providerReceiptSchema : providerReceiptSchema).parse(v),
+    );
+  const p = (newFormat ? validateVersionedProviderPreparation : validateProviderPreparation)(
+      run.preparation,
+      registry,
+    ),
     scopeId = providerBudgetScope(run.environment),
     budget = validateProviderBudgetLedger(budgetEvents, scopeId);
   if (
@@ -940,7 +992,10 @@ export function validateProviderRunLedger({
     preparation: p,
     approval: run.approval,
   };
-  if (run.inputDigest !== providerDigest(providerStartDigestInput(start))) fail();
+  const startDigestInput = newFormat
+    ? versionedProviderStartDigestInput({ ...start, startVersion: 2 })
+    : providerStartDigestInput(start);
+  if (run.inputDigest !== providerDigest(startDigestInput)) fail();
   const reserve = budgetEvents.find((v) => v.eventDigest === run.reservationDigest),
     prior = validateProviderBudgetLedger(
       budgetEvents.slice(0, run.expectedBudgetRevision),
@@ -1042,7 +1097,7 @@ export function validateProviderRunLedger({
   void budget;
   const snapshot = {
     schemaVersion: 2,
-    archiveFormatVersion: 2,
+    archiveFormatVersion: newFormat ? 3 : 2,
     run,
     revision: events.length,
     events,
@@ -1062,16 +1117,31 @@ export function validateProviderRunLedger({
   };
   return { ...snapshot, snapshotDigest: providerDigest(snapshot) };
 }
-export function inspectProviderLedger({
-  runs: rawRuns,
-  events,
-  artifacts,
-  budgetEvents,
-  receipts: rawReceipts,
-  registries,
-  otherNonces = [],
-}) {
-  const runs = rawRuns.map((v) => providerRunSchema.parse(v)),
+export function inspectProviderLedger(input) {
+  return inspectLedger(input, false);
+}
+/** Mixed stored format reader. No configuration, current prompt builder, clock, DB write or SDK. */
+export function inspectVersionedProviderLedger(input) {
+  return inspectLedger(input, true);
+}
+function inspectLedger(
+  {
+    runs: rawRuns,
+    events,
+    artifacts,
+    budgetEvents,
+    receipts: rawReceipts,
+    registries,
+    otherNonces = [],
+  },
+  versioned,
+) {
+  const runs = rawRuns.map((v) =>
+      (versioned && v?.archiveFormatVersion === 3
+        ? versionedProviderRunSchema
+        : providerRunSchema
+      ).parse(v),
+    ),
     receipts = rawReceipts.map((v) => providerReceiptSchema.parse(v));
   if (
     runs.length > 20 ||
@@ -1123,14 +1193,17 @@ export function inspectProviderLedger({
       const registry = registries.filter((v) => v.version === run.preparation.scope.version);
       if (registry.length !== 1) fail();
       snapshots.push(
-        validateProviderRunLedger({
-          run,
-          events: events.filter((v) => v.runId === run.id),
-          artifacts: artifacts.filter((v) => v.runId === run.id),
-          budgetEvents: scoped,
-          receipts: receipts.filter((v) => v.runId === run.id),
-          registry: registry[0],
-        }),
+        validateRunLedger(
+          {
+            run,
+            events: events.filter((v) => v.runId === run.id),
+            artifacts: artifacts.filter((v) => v.runId === run.id),
+            budgetEvents: scoped,
+            receipts: receipts.filter((v) => v.runId === run.id),
+            registry: registry[0],
+          },
+          versioned,
+        ),
       );
     }
     const policies = receipts.filter((v) => v.runId === null && v.scopeId === scopeId);

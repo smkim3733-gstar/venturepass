@@ -12,6 +12,10 @@ export {
 import type { CandidateRegistrySnapshot } from "../src/lib/studio-plan-quality-candidate-registry-types";
 import type {
   ProviderPreparation,
+  VersionedProviderStart,
+  VersionedProviderRun,
+  StoredProviderRun,
+  StoredProviderSnapshot,
   VersionedProviderPreparation,
   ProviderRequestBody,
   ProviderApproval,
@@ -109,3 +113,33 @@ export function validateVersionedProviderRequestEvidence(
   VersionedProviderPreparation,
   "scope" | "model" | "contract" | "generation" | "reviewTemplate"
 >;
+
+/** Explicit format3 helpers. Old schemas/functions above still reject the new native format. */
+export const versionedProviderStartSchema: z.ZodType<VersionedProviderStart>;
+export const versionedProviderRunSchema: z.ZodType<VersionedProviderRun>;
+export function versionedProviderStartDigestInput(input: VersionedProviderStart): unknown;
+export function createVersionedProviderRun(input: {
+  input: VersionedProviderStart;
+  id: string;
+  recordedAt: string;
+  reservation: ProviderBudgetEvent;
+}): VersionedProviderRun;
+export function validateVersionedProviderRunLedger(input: {
+  run: StoredProviderRun;
+  events: ProviderRunEvent[];
+  artifacts: ProviderArtifact[];
+  budgetEvents: ProviderBudgetEvent[];
+  receipts: ProviderReceipt[];
+  registry: CandidateRegistrySnapshot;
+}): StoredProviderSnapshot;
+export function inspectVersionedProviderLedger(input: {
+  runs: StoredProviderRun[];
+  events: ProviderRunEvent[];
+  artifacts: ProviderArtifact[];
+  budgetEvents: ProviderBudgetEvent[];
+  receipts: ProviderReceipt[];
+  registries: CandidateRegistrySnapshot[];
+  otherNonces?: string[];
+}): Omit<ReturnType<typeof inspectProviderLedger>, "snapshots"> & {
+  snapshots: StoredProviderSnapshot[];
+};

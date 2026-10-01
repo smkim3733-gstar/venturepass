@@ -9,7 +9,10 @@ import {
   providerTestExpires,
   providerTestFinancialInput,
 } from "./studio-plan-quality-provider-test-helpers";
-import { createProviderPreparation } from "./studio-plan-quality-provider-core";
+import {
+  createProviderPreparation,
+  createVersionedProviderPreparationBuilder,
+} from "./studio-plan-quality-provider-core";
 import * as core from "../../scripts/local-data-quality-provider.mjs";
 import {
   providerResponseMetadata,
@@ -19,7 +22,11 @@ import type {
   ProviderUsagePolicy,
   ProviderCapturedResponse,
 } from "../../scripts/local-data-quality-provider-usage.mjs";
-import type { ProviderStart, ProviderRunEvent } from "./studio-plan-quality-provider-types";
+import type {
+  ProviderStart,
+  VersionedProviderStart,
+  ProviderRunEvent,
+} from "./studio-plan-quality-provider-types";
 import type {
   ProviderExecutionPayload,
   ProviderExecutionArtifact,
@@ -611,6 +618,112 @@ describe("v2 explicit transmission ledger", () => {
     expect(JSON.stringify(result.snapshots[0])).toBe(before);
     expect(() =>
       createProviderPreparation({
+        registry: f.registry,
+        candidateId: p.scope.candidateId,
+        environment: "synthetic-test",
+        preparedAt: actualTestNow,
+        expiresAt: providerTestExpires,
+        financialInput: providerTestFinancialInput(),
+        budget: { ...p.budget, capUnits: "7" },
+        retention: p.retention,
+      }),
+    ).toThrow();
+  });
+  it("reads completed legacy execution with a format3/v2 reservation and keeps recognized cost and old bytes", () => {
+    const f = completed(),
+      before = JSON.stringify(snapshot(f)),
+      b = budget(f),
+      p = createVersionedProviderPreparationBuilder("plan-observation-v2").createPreparation({
+        registry: f.registry,
+        candidateId: f.preparation.scope.candidateId,
+        environment: "synthetic-test",
+        preparedAt: actualTestNow,
+        expiresAt: providerTestExpires,
+        financialInput: providerTestFinancialInput(),
+        budget: {
+          scopeId: b.scopeId,
+          revision: b.revision,
+          headDigest: b.headDigest!,
+          currency: b.currency!,
+          unitScale: b.unitScale!,
+          capUnits: b.capUnits,
+          heldUnits: b.heldUnits,
+          recognizedUnits: b.recognizedUnits,
+        },
+        retention: f.preparation.retention,
+      });
+    const input: VersionedProviderStart = {
+        startVersion: 2,
+        ...f.start,
+        clientRequestId: randomUUID(),
+        expectedBudgetRevision: b.revision,
+        expectedBudgetDigest: b.headDigest!,
+        expectedScopeRunCount: 1,
+        expectedGlobalRunCount: 1,
+        preparation: p,
+        approval: { ...f.start.approval, approvedPreparationDigest: p.preparationDigest },
+      },
+      id = randomUUID();
+    const e = createProviderBudgetEvent({
+      schemaVersion: 2,
+      scopeId: b.scopeId,
+      environment: "synthetic-test",
+      provenance: "synthetic-test",
+      revision: b.revision + 1,
+      previousDigest: b.headDigest,
+      eventId: input.clientRequestId,
+      recordedAt: actualTestNow,
+      currency: b.currency!,
+      unitScale: b.unitScale!,
+      payload: {
+        kind: "reserve-run",
+        runId: id,
+        preparationDigest: p.preparationDigest,
+        generationUnits: "2",
+        reviewUnits: "2",
+      },
+    });
+    const run = core.createVersionedProviderRun({
+        input,
+        id,
+        recordedAt: actualTestNow,
+        reservation: e,
+      }),
+      receipt = createProviderReceipt({
+        schemaVersion: 2,
+        scopeId: b.scopeId,
+        kind: "provider-start",
+        clientRequestId: input.clientRequestId,
+        inputDigest: run.inputDigest,
+        runId: id,
+        runRevision: 0,
+        budgetRevision: e.revision,
+        operationDigest: run.runDigest,
+        recordedAt: actualTestNow,
+      }),
+      artifact = createProviderArtifact({ runId: id, body: JSON.stringify(p.generation.body) });
+    const result = core.inspectVersionedProviderLedger({
+      ...f.all(),
+      runs: [f.data.run, run],
+      artifacts: [...f.data.artifacts, artifact],
+      budgetEvents: [...f.data.budgetEvents, e],
+      receipts: [...f.all().receipts, receipt],
+    });
+    expect(result.snapshots[1]).toMatchObject({
+      archiveFormatVersion: 3,
+      state: "reserved",
+      dispatchAllowed: false,
+      canResume: false,
+    });
+    expect(result.budgets[0]).toMatchObject({
+      capUnits: "100",
+      heldUnits: "4",
+      recognizedUnits: "4",
+    });
+    expect(result.budgets[0].recognizedUnits).toBe("4");
+    expect(JSON.stringify(result.snapshots[0])).toBe(before);
+    expect(() =>
+      createVersionedProviderPreparationBuilder("plan-observation-v2").createPreparation({
         registry: f.registry,
         candidateId: p.scope.candidateId,
         environment: "synthetic-test",
