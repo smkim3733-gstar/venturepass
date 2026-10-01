@@ -244,6 +244,30 @@ export type ProviderExecutionCommand<
       artifact?: ProviderExecutionArtifact;
     }
   : never;
+/** Separate from the intentionally approval-only v2 API. */
+export type VersionedProviderExecutionPayload =
+  | Exclude<ProviderExecutionPayload, { kind: "transmission-approved" }>
+  | VersionedProviderTransmissionApproval;
+export type VersionedProviderExecutionEvent = Omit<
+  ProviderExecutionEvent,
+  "executionContractVersion" | "payload"
+> & {
+  executionContractVersion: 2;
+  payload: VersionedProviderExecutionPayload;
+};
+export type VersionedProviderExecutionCommand =
+  | Exclude<ProviderExecutionCommand, { payload: { kind: "transmission-approved" } }>
+  | (Omit<ProviderExecutionCommand<"transmission-approved">, "payload"> & {
+      payload: VersionedProviderTransmissionApproval;
+    });
+export type VersionedProviderExecutionSnapshot = Omit<
+  ProviderExecutionSnapshot,
+  "archiveFormatVersion" | "run" | "events"
+> & {
+  archiveFormatVersion: 5;
+  run: import("./studio-plan-quality-provider-types").VersionedProviderRun;
+  events: VersionedProviderExecutionEvent[];
+};
 export type ProviderExecutionBudgetSnapshot = {
   scopeId: ProviderScope;
   environment: ProviderEnvironment;

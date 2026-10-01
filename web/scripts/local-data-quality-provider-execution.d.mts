@@ -1,6 +1,7 @@
 import type { z } from "zod";
 import type {
   ProviderRun,
+  StoredProviderRun,
   VersionedProviderRun,
   VersionedProviderReservationSnapshot,
   ProviderScope,
@@ -12,6 +13,10 @@ import type {
 } from "../src/lib/studio-plan-quality-provider-types";
 import type {
   ProviderExecutionContract,
+  VersionedProviderExecutionPayload,
+  VersionedProviderExecutionEvent,
+  VersionedProviderExecutionCommand,
+  VersionedProviderExecutionSnapshot,
   VersionedProviderTransmissionApproval,
   VersionedProviderApprovalEvent,
   VersionedProviderApprovalCommand,
@@ -67,6 +72,25 @@ export function validateVersionedProviderApprovalLedger(input: {
   registry: CandidateRegistrySnapshot;
   startSnapshot: VersionedProviderReservationSnapshot;
 }): VersionedProviderApprovalSnapshot;
+export const versionedProviderExecutionPayloadSchema: z.ZodType<VersionedProviderExecutionPayload>;
+export const versionedProviderExecutionEventSchema: z.ZodType<VersionedProviderExecutionEvent>;
+export const versionedProviderExecutionCommandSchema: z.ZodType<VersionedProviderExecutionCommand>;
+export function createVersionedProviderExecutionEvent(
+  input: Omit<VersionedProviderExecutionEvent, "eventDigest">,
+): VersionedProviderExecutionEvent;
+export function versionedProviderExecutionOperationDigest(
+  runId: string,
+  input: VersionedProviderExecutionCommand,
+): string;
+export function validateVersionedProviderExecutionLedger(input: {
+  run: VersionedProviderRun;
+  events: VersionedProviderExecutionEvent[];
+  artifacts: ProviderArtifact[];
+  budgetEvents: ProviderBudgetEvent[];
+  receipts: ProviderReceipt[];
+  registry: CandidateRegistrySnapshot;
+  startSnapshot: VersionedProviderReservationSnapshot;
+}): VersionedProviderExecutionSnapshot;
 export const providerExecutionPayloadSchema: z.ZodType<ProviderExecutionPayload>;
 export const providerExecutionEventSchema: z.ZodType<ProviderExecutionEvent>;
 export const providerExecutionBudgetEventSchema: z.ZodType<ProviderExecutionBudgetEvent>;
@@ -108,14 +132,14 @@ export function validateVersionedProviderExecutionManifest(
   manifest: VersionedProviderTransmissionManifest,
 ): VersionedProviderTransmissionManifest;
 export function deriveProviderExecutionReviewRequest(
-  run: ProviderRun,
+  run: StoredProviderRun,
   output: ProviderExecutionOutput,
 ): ProviderRun["preparation"]["generation"]["body"];
 export function validateProviderExecutionOutput(
   phase: ProviderPhase,
   value: unknown,
   raw: ProviderCapturedResponse,
-  run: ProviderRun,
+  run: StoredProviderRun,
   registry: CandidateRegistrySnapshot,
   generation?: ProviderExecutionOutput | null,
 ): ProviderExecutionOutput;
@@ -135,7 +159,7 @@ export function validateProviderExecutionFinalResult(
   contractDigest: string;
 };
 export function providerUsageRecognitionPayload(
-  run: ProviderRun,
+  run: StoredProviderRun,
   phase: ProviderPhase,
   dispatchEventDigest: string,
   artifactSha256: string,

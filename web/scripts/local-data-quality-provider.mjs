@@ -928,9 +928,9 @@ function validateRunLedger(
   versioned,
 ) {
   const newFormat = versioned && raw?.archiveFormatVersion === 3;
-  const hasVersionedApproval =
+  const hasVersionedExecution =
     newFormat && rawEvents.some((v) => v.executionContractVersion !== undefined);
-  if (hasVersionedApproval || rawEvents.some((v) => v.executionContractVersion === 1)) {
+  if (hasVersionedExecution || rawEvents.some((v) => v.executionContractVersion === 1)) {
     const startSnapshot = validateRunLedger(
       {
         run: raw,
@@ -942,8 +942,8 @@ function validateRunLedger(
       },
       newFormat,
     );
-    const validate = hasVersionedApproval
-      ? execution.validateVersionedProviderApprovalLedger
+    const validate = hasVersionedExecution
+      ? execution.validateVersionedProviderExecutionLedger
       : execution.validateProviderExecutionLedger;
     return validate({
       run: raw,

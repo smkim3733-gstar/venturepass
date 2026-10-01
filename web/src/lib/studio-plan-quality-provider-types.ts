@@ -304,8 +304,8 @@ export type VersionedProviderReservationSnapshot = Omit<
 export type StoredProviderRun = ProviderRun | VersionedProviderRun;
 export type StoredProviderRunEvent =
   | ProviderRunEvent
-  | import("./studio-plan-quality-provider-execution-types").VersionedProviderApprovalEvent;
+  | import("./studio-plan-quality-provider-execution-types").VersionedProviderExecutionEvent;
 export type StoredProviderSnapshot =
   | ProviderSnapshot
   | VersionedProviderReservationSnapshot
-  | import("./studio-plan-quality-provider-execution-types").VersionedProviderApprovalSnapshot;
+  | import("./studio-plan-quality-provider-execution-types").VersionedProviderExecutionSnapshot;

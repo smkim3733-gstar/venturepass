@@ -157,7 +157,7 @@ export const providerExecutionEventSchema = object({
   payload: providerExecutionPayloadSchema,
   eventDigest: hash,
 });
-// Native v2 approval only. Prepared/dispatch/response events remain unsupported in this format.
+// The approval-only API remains narrow. Full passive execution uses its own v2 schema.
 export const versionedProviderTransmissionApprovalSchema = approval.extend({
   manifest: versionedProviderTransmissionManifestSchema,
 });
@@ -166,6 +166,18 @@ export const versionedProviderApprovalEventSchema = providerExecutionEventSchema
   revision: z.literal(1),
   previousEventDigest: z.null(),
   payload: versionedProviderTransmissionApprovalSchema,
+});
+export const versionedProviderExecutionPayloadSchema = z.discriminatedUnion("kind", [
+  versionedProviderTransmissionApprovalSchema,
+  prepared,
+  dispatch,
+  response,
+  validated,
+  finish,
+]);
+export const versionedProviderExecutionEventSchema = providerExecutionEventSchema.extend({
+  executionContractVersion: z.literal(2),
+  payload: versionedProviderExecutionPayloadSchema,
 });
 const recognize = object({
   kind: z.literal("recognize-usage"),
@@ -241,6 +253,18 @@ export const versionedProviderApprovalCommandSchema = providerExecutionCommandSc
     expectedRevision: z.literal(0),
     payload: versionedProviderTransmissionApprovalSchema,
   });
+export const versionedProviderExecutionCommandSchema = providerExecutionCommandSchema.extend({
+  payload: z.discriminatedUnion("kind", [
+    versionedProviderTransmissionApprovalSchema,
+    prepared,
+    dispatch,
+    response.omit({ usageAssessment: true, usageBudgetEventDigest: true }),
+    validated,
+    finish.omit({ releasedBudgetEventDigests: true }),
+  ]),
+});
+export const createVersionedProviderExecutionEvent = (v) =>
+  versionedProviderExecutionEventSchema.parse({ ...v, eventDigest: digest(v) });
 export const createVersionedProviderApprovalEvent = (v) =>
   versionedProviderApprovalEventSchema.parse({ ...v, eventDigest: digest(v) });
 export const createProviderExecutionEvent = (v) =>
@@ -271,9 +295,16 @@ export function providerExecutionOperationDigest(runId, input) {
 export function versionedProviderApprovalOperationDigest(runId, input) {
   return executionOperationDigest(runId, input, true);
 }
-function executionOperationDigest(runId, input, versioned) {
+export function versionedProviderExecutionOperationDigest(runId, input) {
+  return executionOperationDigest(runId, input, true, true);
+}
+function executionOperationDigest(runId, input, versioned, fullExecution = false) {
   const v = (
-    versioned ? versionedProviderApprovalCommandSchema : providerExecutionCommandSchema
+    versioned
+      ? fullExecution
+        ? versionedProviderExecutionCommandSchema
+        : versionedProviderApprovalCommandSchema
+      : providerExecutionCommandSchema
   ).parse(input);
   const existingGeneration =
     v.payload.kind === "request-prepared" && v.payload.phase === "generation";
@@ -627,6 +658,10 @@ export function validateProviderExecutionLedger(input) {
 export function validateVersionedProviderApprovalLedger(input) {
   return validateExecutionLedger(input, true);
 }
+/** Passive full v2 archive audit; this grants no write, resume or transmission authority. */
+export function validateVersionedProviderExecutionLedger(input) {
+  return validateExecutionLedger(input, true, true);
+}
 function validateExecutionLedger(
   {
     run,
@@ -638,11 +673,14 @@ function validateExecutionLedger(
     startSnapshot,
   },
   versioned,
+  fullExecution = false,
 ) {
   if (versioned && (run.archiveFormatVersion !== 3 || startSnapshot.archiveFormatVersion !== 4))
     fail();
   const eventSchema = versioned
-    ? versionedProviderApprovalEventSchema
+    ? fullExecution
+      ? versionedProviderExecutionEventSchema
+      : versionedProviderApprovalEventSchema
     : providerExecutionEventSchema;
   const events = rawEvents.map((v) => eventSchema.parse(v)),
     artifacts = rawArtifacts.map((v) => providerExecutionArtifactSchema.parse(v)),
@@ -716,7 +754,7 @@ function validateExecutionLedger(
       r.budgetRevision !== event.budgetRevision ||
       r.recordedAt !== event.recordedAt ||
       r.operationDigest !== event.eventDigest ||
-      r.inputDigest !== executionOperationDigest(run.id, command, versioned)
+      r.inputDigest !== executionOperationDigest(run.id, command, versioned, fullExecution)
     )
       fail();
     return r;
