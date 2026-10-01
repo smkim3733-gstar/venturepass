@@ -1,0 +1,340 @@
+{
+  "schemaVersion": 1,
+  "provenance": "synthetic-hand-authored",
+  "evaluationStatus": "expected-judgments-not-model-results",
+  "customerData": false,
+  "providerCalls": 0,
+  "humanApprovalRecorded": false,
+  "purpose": "4C3 원문·초안·기대 판단 대비 사례. 기대 판단은 개발자가 작성한 평가 기준이며 실제 모델 성능 점수나 사람 승인 결과가 아니다.",
+  "cases": [
+    {
+      "id": "L1",
+      "pair": "limitation",
+      "title": "제한을 이미 밝힌 원고",
+      "sectionKey": "funding",
+      "sources": [
+        {
+          "id": "source-1",
+          "title": "합성 근거",
+          "text": "시제품 시험은 2026년 11월에 진행할 계획이다. 현재 시험 결과는 없다."
+        }
+      ],
+      "draft": "시험은 향후 계획이며 아직 수행하지 않았다. 성능은 시험 후 확인한다.",
+      "storedReview": [],
+      "expected": {
+        "judgment": "no-new-finding",
+        "reason": "원고가 미실시 사실과 확인 시점을 모두 밝혔다. 미실시라는 이유만으로 이미 적은 제한을 다시 오류로 만들지 않는다.",
+        "action": "새 오류 의견을 만들지 않는다. 실제 시험 결과 확보 과제는 유지한다.",
+        "displayGroups": [],
+        "languageTerms": []
+      }
+    },
+    {
+      "id": "L2",
+      "pair": "limitation",
+      "title": "제한과 상충하는 성능 확정",
+      "sectionKey": "funding",
+      "sources": [
+        {
+          "id": "source-1",
+          "title": "합성 근거",
+          "text": "시제품 시험은 2026년 11월에 진행할 계획이다. 현재 시험 결과는 없다."
+        }
+      ],
+      "draft": "시험은 향후 계획이며 아직 수행하지 않았다. 따라서 시험으로 성능 검증을 완료했다.",
+      "storedReview": [
+        {
+          "id": "review-1",
+          "severity": "warning",
+          "category": "semantic-evidence",
+          "sectionKey": "funding",
+          "sourceIds": ["source-1"],
+          "message": "시험 미실시라는 원문과 성능 검증 완료라는 결론이 충돌한다.",
+          "action": "검증 완료 결론을 제거하고 예정 시험 후 확인으로 수정한다."
+        }
+      ],
+      "expected": {
+        "judgment": "revision-needed",
+        "reason": "제한 문장이 있어도 뒤의 완료 주장을 정당화하지 않는다. 충돌하는 두 문장을 함께 특정한다.",
+        "action": "성능 검증 완료라는 결론을 수정한다.",
+        "displayGroups": [[0]],
+        "languageTerms": []
+      }
+    },
+    {
+      "id": "F1",
+      "pair": "funding",
+      "title": "메모를 조달 확정으로 확대",
+      "sectionKey": "funding",
+      "sources": [
+        {
+          "id": "source-1",
+          "title": "합성 근거",
+          "text": "2026-09-20 내부 메모: 개발비 자기자금 3억 원 배정 검토. 현재 잔액과 집행 의무는 미확인."
+        }
+      ],
+      "draft": "자기자금 3억 원을 확보했으므로 외부 조달 불확실성 없이 개발비 전액을 집행할 수 있다.",
+      "storedReview": [
+        {
+          "id": "review-1",
+          "severity": "warning",
+          "category": "semantic-evidence",
+          "sectionKey": "funding",
+          "sourceIds": ["source-1"],
+          "message": "배정 검토 메모만으로 현재 자금 확보와 개발비 전액 집행 가능을 확정했다.",
+          "action": "현재 잔액·용도 제한·다른 집행 의무와 전체 개발비를 확인하고 확정 표현을 수정한다."
+        }
+      ],
+      "expected": {
+        "judgment": "revision-needed",
+        "reason": "검토 메모는 잔액·집행 권한·다른 의무·총 필요액을 입증하지 않는다. 숫자가 있다는 것만으로 집행 가능을 확정할 수 없다.",
+        "action": "자료에 확인되는 배정 검토 사실만 적고 남은 확인 질문을 명시한다.",
+        "displayGroups": [[0]],
+        "languageTerms": []
+      }
+    },
+    {
+      "id": "F2",
+      "pair": "funding",
+      "title": "특정 지급 완료의 직접 근거",
+      "sectionKey": "funding",
+      "sources": [
+        {
+          "id": "source-1",
+          "title": "합성 근거",
+          "text": "합성 지급확인서: 2026-09-25 시제품 재료비 2천만 원을 지급 완료했다. 지급 식별번호 SYN-PAY-01. 향후 개발비 조달 여부는 기재하지 않았다."
+        }
+      ],
+      "draft": "2026-09-25 시제품 재료비 2천만 원의 지급이 완료됐으며 지급 식별번호는 SYN-PAY-01이다. 향후 개발비 조달은 별도로 확인한다.",
+      "storedReview": [],
+      "expected": {
+        "judgment": "no-new-finding",
+        "reason": "이미 완료된 특정 지급은 확인서가 직접 뒷받침한다. 모든 자금 사실을 미확인으로 낮추거나 향후 조달까지 확정하지 않는다.",
+        "action": "기준일·지급 목적·금액을 유지하고 향후 조달의 별도 확인을 유지한다.",
+        "displayGroups": [],
+        "languageTerms": []
+      }
+    },
+    {
+      "id": "I1",
+      "pair": "inspection",
+      "title": "실사 준비 제안",
+      "sectionKey": "funding",
+      "sources": [
+        {
+          "id": "source-1",
+          "title": "합성 근거",
+          "text": "합성 회사 메모: 조립 공정과 시험 기록을 설명할 자료를 준비할 계획이다. 기관의 질문·방문 빈도에 관한 자료는 없다."
+        }
+      ],
+      "draft": "현장 설명에 대비해 공정 흐름과 시험 기록을 정리하는 것을 제안한다. 준비 질문: 시험 기록을 누가 관리하는가? 실제 기관 질문은 확인되지 않았다.",
+      "storedReview": [],
+      "expected": {
+        "judgment": "no-new-finding",
+        "reason": "회사 자료에 근거한 준비 제안과 질문이며 실제 기관 요구나 빈도를 단정하지 않는다.",
+        "action": "일반 준비 제안이라는 범위와 실제 기관 질문 미확인을 유지한다.",
+        "displayGroups": [],
+        "languageTerms": []
+      }
+    },
+    {
+      "id": "I2",
+      "pair": "inspection",
+      "title": "근거 없는 기관 일반화",
+      "sectionKey": "funding",
+      "sources": [
+        {
+          "id": "source-1",
+          "title": "합성 근거",
+          "text": "합성 회사 메모: 조립 공정과 시험 기록을 설명할 자료를 준비할 계획이다. 기관의 질문·방문 빈도에 관한 자료는 없다."
+        }
+      ],
+      "draft": "심사기관은 현장을 매번 방문하며 이 시험 기록을 갖추면 심사에 유리하다. 준비 질문: 시험 기록을 누가 관리하는가?",
+      "storedReview": [
+        {
+          "id": "review-1",
+          "severity": "warning",
+          "category": "semantic-evidence",
+          "sectionKey": "funding",
+          "sourceIds": ["source-1"],
+          "message": "원문에 없는 매번 현장 방문과 심사 유리함을 기관 관행으로 단정했다.",
+          "action": "방문 빈도·유리함의 단정을 제거하고 회사의 설명 준비 제안으로 바꾼다."
+        }
+      ],
+      "expected": {
+        "judgment": "revision-needed",
+        "reason": "같은 준비 질문이 있어도 앞의 빈도·선호 주장은 근거가 없다. 단어 실사 자체가 아니라 근거 범위를 넘는 주장을 지적한다.",
+        "action": "기관 관행 단정만 수정하고 회사 상황에 맞는 준비 질문은 유지한다.",
+        "displayGroups": [[0]],
+        "languageTerms": []
+      }
+    },
+    {
+      "id": "R1",
+      "pair": "review-distinction",
+      "title": "같은 문제의 재서술",
+      "sectionKey": "funding",
+      "sources": [
+        {
+          "id": "source-1",
+          "title": "합성 근거",
+          "text": "2026-09-20 내부 메모: 개발비 자기자금 3억 원 배정 검토. 현재 잔액과 집행 의무는 미확인."
+        }
+      ],
+      "draft": "메모에 따라 개발비를 즉시 집행할 수 있다.",
+      "storedReview": [
+        {
+          "id": "review-1",
+          "severity": "warning",
+          "category": "semantic-evidence",
+          "sectionKey": "funding",
+          "sourceIds": ["source-1"],
+          "message": "배정 메모만으로 자금 집행 가능을 확정했다.",
+          "action": "배정 검토 사실로 한정하고 가용성을 확인한다."
+        },
+        {
+          "id": "review-2",
+          "severity": "warning",
+          "category": "semantic-evidence",
+          "sectionKey": "funding",
+          "sourceIds": ["source-1"],
+          "message": "배정 검토만으로 즉시 집행 가능하다고 확대했다.",
+          "action": "배정 검토라는 원문 범위를 유지하고 가용성을 확인한다."
+        }
+      ],
+      "expected": {
+        "judgment": "one-fresh-finding",
+        "reason": "두 의견은 같은 문장·근거·원인·필요 행동을 가리킨다. 새 AI 검토의 기대는 한 지적이다. 저장된 의견은 문자가 달라 화면에서 자동 합치거나 삭제하지 않는다.",
+        "action": "새 검토에서는 하나로 정리하되 현재 저장 배열과 개별 판단 번호는 둘 다 유지한다.",
+        "displayGroups": [[0], [1]],
+        "languageTerms": []
+      }
+    },
+    {
+      "id": "R2",
+      "pair": "review-distinction",
+      "title": "서로 다른 원인과 행동",
+      "sectionKey": "funding",
+      "sources": [
+        {
+          "id": "source-1",
+          "title": "합성 근거",
+          "text": "2026-09-20 내부 메모: 개발비 자기자금 3억 원 배정 검토. 현재 잔액과 집행 의무는 미확인. 또한 시험 일정과 성공 기준은 아직 정하지 않았다."
+        }
+      ],
+      "draft": "개발비를 즉시 집행할 수 있으며 시험은 곧 완료할 예정이다.",
+      "storedReview": [
+        {
+          "id": "review-1",
+          "severity": "warning",
+          "category": "semantic-evidence",
+          "sectionKey": "funding",
+          "sourceIds": ["source-1"],
+          "message": "배정 메모만으로 자금 집행 가능을 확정했다.",
+          "action": "배정 검토 사실로 한정하고 가용성을 확인한다."
+        },
+        {
+          "id": "review-2",
+          "severity": "warning",
+          "category": "semantic-evidence",
+          "sectionKey": "funding",
+          "sourceIds": ["source-1"],
+          "message": "시험의 일정과 성공 기준이 아직 정해지지 않았다.",
+          "action": "담당자에게 일정과 성공 기준을 확인한다."
+        }
+      ],
+      "expected": {
+        "judgment": "two-distinct-findings",
+        "reason": "집행 가능성의 근거 확대와 시험 계획의 확인 부족은 대상 주장과 수정·확인 행동이 다르다. 개수를 줄이려 서로 합치지 않는다.",
+        "action": "집행 가능성 표현 수정과 시험 일정 확인을 별도 의견으로 유지한다.",
+        "displayGroups": [[0], [1]],
+        "languageTerms": []
+      }
+    },
+    {
+      "id": "R0",
+      "pair": "exact-control",
+      "title": "정확히 같은 저장 의견의 표시 묶음",
+      "sectionKey": "funding",
+      "sources": [
+        {
+          "id": "source-1",
+          "title": "합성 근거",
+          "text": "2026-09-20 내부 메모: 개발비 자기자금 3억 원 배정 검토. 현재 잔액과 집행 의무는 미확인."
+        }
+      ],
+      "draft": "메모에 따라 개발비를 즉시 집행할 수 있다.",
+      "storedReview": [
+        {
+          "id": "review-1",
+          "severity": "warning",
+          "category": "semantic-evidence",
+          "sectionKey": "funding",
+          "sourceIds": ["source-1"],
+          "message": "배정 메모만으로 자금 집행 가능을 확정했다.",
+          "action": "배정 검토 사실로 한정하고 가용성을 확인한다."
+        },
+        {
+          "id": "review-2",
+          "severity": "warning",
+          "category": "semantic-evidence",
+          "sectionKey": "funding",
+          "sourceIds": ["source-1"],
+          "message": "배정 메모만으로 자금 집행 가능을 확정했다.",
+          "action": "배정 검토 사실로 한정하고 가용성을 확인한다."
+        }
+      ],
+      "expected": {
+        "judgment": "display-only-group",
+        "reason": "표시 내용이 정확히 같아 카드 하나로 묶을 수 있다. 원본 두 의견의 인덱스와 담당자 판단은 독립적으로 유지한다.",
+        "action": "원본 1·2번 표시와 각 번호별 판단 입력을 확인한다.",
+        "displayGroups": [[0, 1]],
+        "languageTerms": []
+      }
+    },
+    {
+      "id": "K1",
+      "pair": "language",
+      "title": "내부 영어 분류가 드러난 원고",
+      "sectionKey": "funding",
+      "sources": [
+        {
+          "id": "source-1",
+          "title": "합성 근거",
+          "text": "합성 원문 표기: documented / reported / planned / unverified. 문서 기재와 담당자 설명은 사실 확인 완료를 뜻하지 않는다."
+        }
+      ],
+      "draft": "documented는 문서 기재 상태이며 reported는 담당자 설명이다. planned는 향후 계획이고 unverified는 근거 미확인이다.",
+      "storedReview": [],
+      "expected": {
+        "judgment": "editorial-only",
+        "reason": "분류의 의미는 구분했지만 독자용 본문에 내부 영어 표현이 남았다. 표현 점검은 이 위치만 안내하며 원문 인용을 치환하지 않는다.",
+        "action": "본문의 영어 분류를 한국어로 편집하고 원문 인용은 보존한다.",
+        "displayGroups": [],
+        "languageTerms": ["documented", "reported", "planned", "unverified"]
+      }
+    },
+    {
+      "id": "K2",
+      "pair": "language",
+      "title": "한국어로 편집한 원고",
+      "sectionKey": "funding",
+      "sources": [
+        {
+          "id": "source-1",
+          "title": "합성 근거",
+          "text": "합성 원문 표기: documented / reported / planned / unverified. 문서 기재와 담당자 설명은 사실 확인 완료를 뜻하지 않는다."
+        }
+      ],
+      "draft": "문서에 기재됨과 담당자 설명을 구분한다. 향후 계획과 근거 미확인도 구분하며, 문서 기재를 사실 확인 완료로 바꾸지 않는다.",
+      "storedReview": [],
+      "expected": {
+        "judgment": "no-language-advice",
+        "reason": "본문 영어 표현은 없어도 인용 원문에는 같은 영어가 남는다. 표현 점검 대상이 없다는 결과는 의미·사실 검증 통과를 뜻하지 않는다.",
+        "action": "인용은 보존하고 문장 의미·사실관계는 별도로 확인한다.",
+        "displayGroups": [],
+        "languageTerms": []
+      }
+    }
+  ]
+}
