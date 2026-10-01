@@ -10,6 +10,7 @@ import { providerGenerationDispatchIdentitySchema } from "./studio-plan-quality-
 import type {
   ProviderExecutionCommand,
   ProviderExecutionSnapshot,
+  VersionedProviderExecutionSnapshot,
 } from "./studio-plan-quality-provider-execution-types";
 
 const inputSchema = z
@@ -53,6 +54,16 @@ export type ProviderGenerationResponseResult = {
 export function generationResponseCommand(
   input: ProviderGenerationResponseInput,
   snapshot: ProviderExecutionSnapshot,
+  expectedRevision: number,
+): ProviderExecutionCommand<"response-received"> {
+  return versionedGenerationResponseCommand(input, snapshot, expectedRevision);
+}
+
+/** Shared response bytes; the store chooses the operation/event version from the audited
+ * stored snapshot, never from current configuration or a response caller's claim. */
+export function versionedGenerationResponseCommand(
+  input: ProviderGenerationResponseInput,
+  snapshot: ProviderExecutionSnapshot | VersionedProviderExecutionSnapshot,
   expectedRevision: number,
 ): ProviderExecutionCommand<"response-received"> {
   const dispatched = snapshot.events[2];

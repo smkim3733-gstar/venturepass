@@ -53,7 +53,8 @@ import type { CandidateRegistrySnapshot } from "./studio-plan-quality-candidate-
 import { inspectQualityDatabaseUsage } from "../../scripts/local-data-quality.mjs";
 import { readProviderReservationDatabaseRows } from "../../scripts/local-data-quality-provider-reservation-database.mjs";
 import { readProviderTransmissionApprovalDatabaseRows } from "../../scripts/local-data-quality-provider-transmission-database.mjs";
-import { inspectProviderTransmissionApprovalArchive } from "../../scripts/local-data-quality-provider-transmission-binding.mjs";
+import { inspectVersionedProviderTransmissionApprovalArchive } from "../../scripts/local-data-quality-provider-transmission-binding.mjs";
+import type { createServerProviderPolicyContext } from "./studio-plan-quality-provider-policy-server";
 import { providerDigest as digest } from "../../scripts/local-data-quality-provider.mjs";
 import {
   assessProviderUsage,
@@ -62,6 +63,8 @@ import {
 import {
   createProviderExecutionBudgetEvent,
   createProviderExecutionEvent,
+  createVersionedProviderExecutionEvent,
+  versionedProviderExecutionOperationDigest,
   createProviderExecutionReceipt,
   providerExecutionOperationDigest,
   providerUsageRecognitionPayload,
@@ -69,7 +72,7 @@ import {
 } from "../../scripts/local-data-quality-provider-execution.mjs";
 import {
   captureGenerationResponseInput,
-  generationResponseCommand,
+  versionedGenerationResponseCommand,
   type ProviderGenerationResponseInput,
   type ProviderGenerationResponseRecord,
   type ProviderGenerationResponseResult,
@@ -82,6 +85,7 @@ import {
   providerGenerationDispatchIdentitySchema,
   type ProviderGenerationDispatchIdentity,
   type ProviderGenerationDispatchPlan,
+  type VersionedProviderGenerationDispatchPlan,
 } from "./studio-plan-quality-provider-dispatch-plan";
 import type { ProviderObservationPrepared } from "./studio-provider-observation";
 import {
@@ -123,6 +127,8 @@ export type ProviderDispatchContext = {
   artifact: ProviderApprovedRunnerStore["providerArtifact"];
 };
 type Context = ProviderDispatchContext & {
+  // Explicit server selection is currently connected only to the mock callback path.
+  selection?: ReturnType<typeof createServerProviderPolicyContext>;
   synthetic: boolean;
   sdkTestNetwork?: ProviderSdkTestNetwork;
   productionRuntime?: ProviderProductionRuntime;
@@ -530,7 +536,7 @@ export class ProviderGenerationDispatchStore {
         },
         ...readProviderTransmissionApprovalDatabaseRows(this.#context.db),
       };
-      const audit = inspectProviderTransmissionApprovalArchive(input);
+      const audit = inspectVersionedProviderTransmissionApprovalArchive(input);
       const additionalUsedBytes =
         usage.usedBytes -
         audit.reservationArchive.ledger.usedBytes -
@@ -566,7 +572,7 @@ export class ProviderGenerationDispatchStore {
       !dispatch ||
       !binding ||
       !snapshot ||
-      snapshot.archiveFormatVersion !== 3 ||
+      (snapshot.archiveFormatVersion !== 3 && snapshot.archiveFormatVersion !== 5) ||
       binding.recordDigest !== identity.approvalBindingDigest ||
       snapshot.run.runDigest !== identity.runDigest ||
       prepared.kind !== "provider-prepared" ||
@@ -615,7 +621,7 @@ export class ProviderGenerationDispatchStore {
     const snapshot = state.provider.snapshots.find((row) => row.run.id === input.dispatch.runId);
     if (
       !snapshot ||
-      snapshot.archiveFormatVersion !== 3 ||
+      (snapshot.archiveFormatVersion !== 3 && snapshot.archiveFormatVersion !== 5) ||
       snapshot.run.environment !== "production"
     )
       return fail("RESPONSE_DISPATCH_REQUIRED");
@@ -648,8 +654,13 @@ export class ProviderGenerationDispatchStore {
       receipt.operationDigest !== response.eventDigest
     )
       return fail("RESPONSE_CONFLICT");
-    const command = generationResponseCommand(input, snapshot, response.revision - 1);
-    if (receipt.inputDigest !== providerExecutionOperationDigest(snapshot.run.id, command))
+    const command = versionedGenerationResponseCommand(input, snapshot, response.revision - 1);
+    if (
+      receipt.inputDigest !==
+      (snapshot.archiveFormatVersion === 5
+        ? versionedProviderExecutionOperationDigest
+        : providerExecutionOperationDigest)(snapshot.run.id, command)
+    )
       return fail("RESPONSE_CONFLICT");
     return freezeProviderValue({
       state: "committed",
@@ -1993,7 +2004,7 @@ export class ProviderGenerationDispatchStore {
         return fail("RESPONSE_PREFIX_CHANGED");
       const approval = snapshot.events[0];
       if (approval.payload.kind !== "transmission-approved") return fail("STORAGE_CORRUPT");
-      const command = generationResponseCommand(input, snapshot, snapshot.revision);
+      const command = versionedGenerationResponseCommand(input, snapshot, snapshot.revision);
       const assessment = assessProviderUsage({
         response: input.response,
         policy: approval.payload.manifest.executionContract.usagePolicy,
@@ -2027,9 +2038,8 @@ export class ProviderGenerationDispatchStore {
             payload: recognition,
           })
         : null;
-      const event = createProviderExecutionEvent({
-        schemaVersion: 2,
-        executionContractVersion: 1,
+      const eventInput = {
+        schemaVersion: 2 as const,
         runId: snapshot.run.id,
         revision: snapshot.revision + 1,
         budgetRevision: usageEvent?.revision ?? budget.revision,
@@ -2040,13 +2050,19 @@ export class ProviderGenerationDispatchStore {
           usageAssessment: assessment,
           usageBudgetEventDigest: usageEvent?.eventDigest ?? null,
         },
-      });
+      };
+      const event =
+        snapshot.archiveFormatVersion === 5
+          ? createVersionedProviderExecutionEvent({ ...eventInput, executionContractVersion: 2 })
+          : createProviderExecutionEvent({ ...eventInput, executionContractVersion: 1 });
       const receipt = createProviderExecutionReceipt({
         schemaVersion: 2,
         scopeId: budget.scopeId,
         kind: "provider-response",
         clientRequestId: input.responseRequestId,
-        inputDigest: providerExecutionOperationDigest(snapshot.run.id, command),
+        inputDigest: (snapshot.archiveFormatVersion === 5
+          ? versionedProviderExecutionOperationDigest
+          : providerExecutionOperationDigest)(snapshot.run.id, command),
         runId: snapshot.run.id,
         runRevision: event.revision,
         budgetRevision: event.budgetRevision,
@@ -2089,25 +2105,38 @@ export class ProviderGenerationDispatchStore {
       return { record, newlyCommitted: true, replayed: false };
     }, true);
   }
-  #commit(identity: ProviderGenerationDispatchIdentity, checkNew?: () => void) {
+  #commit(
+    identity: ProviderGenerationDispatchIdentity,
+    checkNew?: () => void,
+    mockVersioned = false,
+  ) {
     return this.#context.transaction(() => {
       const before = this.inspect(),
         previous = this.historical(before, identity);
       if (previous) return { record: previous, plan: null };
       checkNew?.();
-      const prepared = prepareProviderGenerationDispatch({
+      const current = {
         identity,
         archive: before.input,
-        configuration: getProviderConfigurationProposal(),
         inspectedAt: new Date().toISOString(),
         additionalUsedBytes: before.additionalUsedBytes,
-      });
+      };
+      const prepared = this.#context.selection
+        ? this.#context.selection.prepareGenerationDispatch(current)
+        : prepareProviderGenerationDispatch({
+            ...current,
+            configuration: getProviderConfigurationProposal(),
+          });
       if (prepared.status !== "prepared")
         return fail(
           prepared.reason.replaceAll("-", "_").toUpperCase(),
           prepared.reason === "capacity-exceeded" ? 413 : 409,
         );
       const plan = prepared.plan;
+      // Versioned SDK ownership/continuation is not yet connected. Only the explicit
+      // synthetic callback path can commit a new v2 dispatch in this unit.
+      if (plan.planVersion === 2 && (!mockVersioned || !this.#context.synthetic))
+        return fail("NATIVE_VERSION_UNSUPPORTED");
       this.#context.capacity(0); // All four rows consume already reserved native storage/slots.
       const insert = (table: string, keys: Record<string, SQLInputValue>, value: unknown) => {
         const columns = [...Object.keys(keys), "body", "body_hash"];
@@ -2134,7 +2163,7 @@ export class ProviderGenerationDispatchStore {
   }
   #sendWhileOwnedCurrent(
     identity: ProviderGenerationDispatchIdentity,
-    plan: ProviderGenerationDispatchPlan,
+    plan: ProviderGenerationDispatchPlan | VersionedProviderGenerationDispatchPlan,
     start: () => void,
   ) {
     this.#context.transaction(() => {
@@ -2147,7 +2176,7 @@ export class ProviderGenerationDispatchStore {
         !history ||
         history.dispatchEventDigest !== plan.rows.events[1].eventDigest ||
         !snapshot ||
-        snapshot.archiveFormatVersion !== 3 ||
+        snapshot.archiveFormatVersion !== (plan.planVersion === 2 ? 5 : 3) ||
         snapshot.revision !== 3 ||
         snapshot.state !== "dispatching" ||
         snapshot.events.length !== 3 ||
@@ -2158,12 +2187,17 @@ export class ProviderGenerationDispatchStore {
         now = Date.parse(inspectedAt);
       if (now < Date.parse(plan.inspectedAt) || now >= Date.parse(plan.expiresAt))
         return fail("SCOPE_EXPIRED");
-      const result = createProviderTransmissionReview({
+      const current = {
         selection: { runId: identity.runId, runDigest: identity.runDigest },
         inspectedAt,
-        configuration: getProviderConfigurationProposal(),
         archive: before.input.archive,
-      });
+      };
+      const result = this.#context.selection
+        ? this.#context.selection.transmissionReview(current)
+        : createProviderTransmissionReview({
+            ...current,
+            configuration: getProviderConfigurationProposal(),
+          });
       if (result.status !== "review") return fail("SCOPE_CHANGED");
       const review = result.review,
         binding = before.audit.records.find(
@@ -2207,7 +2241,7 @@ export class ProviderGenerationDispatchStore {
     const send = transport.send,
       identity = providerGenerationDispatchIdentitySchema.parse(raw);
     // A thrown COMMIT (even if SQLite committed) cannot escape with a plan or reach send.
-    const committed = this.#commit(identity);
+    const committed = this.#commit(identity, undefined, true);
     const result = (
       delivery: ProviderGenerationSimulationResult["delivery"],
     ): ProviderGenerationSimulationResult => ({

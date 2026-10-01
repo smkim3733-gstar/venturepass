@@ -190,7 +190,7 @@ export class PlanQualityStore {
       providerSdkTestNetwork?: ProviderSdkTestNetwork;
       /** Explicit server runtime; only the dedicated approval-scoped runner may write/send. */
       providerProductionRuntime?: ProviderProductionRuntime;
-      /** Server construction only. Pins policy/reservation/approval selection; v2 dispatch remains blocked. */
+      /** Server construction only. Pins policy/reservation/approval and mock generation selection; live v2 stays blocked. */
       providerPolicySelection?: { version: PlanPromptVersion; configuration: unknown };
     } = {},
   ) {
@@ -203,6 +203,9 @@ export class PlanQualityStore {
             options.providerPolicySelection.configuration,
           );
     const suppliedRuntime = options.providerProductionRuntime;
+    // Explicit live version selection is not wired yet. Never discard it and run v1 silently.
+    if (suppliedRuntime !== undefined && options.providerPolicySelection !== undefined)
+      throw new Error("PROVIDER_PRODUCTION_VERSION_SELECTION_UNSUPPORTED");
     if (
       suppliedRuntime !== undefined &&
       (options.actualEnvironment !== undefined ||
@@ -344,6 +347,7 @@ export class PlanQualityStore {
       ? createProviderProductionDispatchStore(dispatchContext, productionRuntime)
       : new ProviderGenerationDispatchStore({
           ...dispatchContext,
+          selection: policySelection,
           synthetic: options.providerEnvironment === "synthetic-test",
           sdkTestNetwork,
         });
