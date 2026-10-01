@@ -1,5 +1,5 @@
 import {
-  decodeProviderTransmissionApprovalBindingRows,
+  decodeVersionedProviderTransmissionApprovalBindingRows,
   providerTransmissionApprovalArchiveLimits as limits,
 } from "./local-data-quality-provider-transmission-binding.mjs";
 import { providerDigest as digest } from "./local-data-quality-provider.mjs";
@@ -32,7 +32,7 @@ export function readProviderTransmissionApprovalDatabaseRows(db) {
     .prepare("SELECT id,body,body_hash FROM quality_provider_transmission_coverage ORDER BY id")
     .all();
   try {
-    const bindings = decodeProviderTransmissionApprovalBindingRows(bindingRows),
+    const bindings = decodeVersionedProviderTransmissionApprovalBindingRows(bindingRows),
       row = coverageRows[0];
     if (
       row.id !== 1 ||

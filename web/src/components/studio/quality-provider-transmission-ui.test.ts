@@ -14,7 +14,10 @@ import {
 import type { CandidateRegistrySnapshot } from "@/lib/studio-plan-quality-candidate-registry-types";
 import type { ProviderSnapshot } from "@/lib/studio-plan-quality-provider-types";
 import type { ProviderTransmissionInspectionResponse } from "@/lib/studio-plan-quality-provider-transmission-http-types";
-import { providerTransmissionReviewDigestInput } from "@/lib/studio-plan-quality-provider-transmission-review-types";
+import {
+  providerTransmissionReviewDigestInput,
+  providerTransmissionReviewSchema,
+} from "@/lib/studio-plan-quality-provider-transmission-review-types";
 import { providerDigest as digest } from "../../../scripts/local-data-quality-provider.mjs";
 import {
   qualityProviderTransmissionInspection as inspect,
@@ -84,11 +87,21 @@ beforeAll(() => {
   const selection = { runId: snapshot.run.id, runDigest: snapshot.run.runDigest };
   const result = store.providerTransmissionReview(selection);
   if (result.status !== "review") throw new Error(result.reason);
-  matched = { responseVersion: 1, selection, ...result };
+  matched = {
+    responseVersion: 1,
+    selection,
+    ...result,
+    review: providerTransmissionReviewSchema.parse(result.review),
+  };
   adoptReservationTestPolicy(store);
   const next = store.providerTransmissionReview(selection);
   if (next.status !== "review") throw new Error(next.reason);
-  blocked = { responseVersion: 1, selection, ...next };
+  blocked = {
+    responseVersion: 1,
+    selection,
+    ...next,
+    review: providerTransmissionReviewSchema.parse(next.review),
+  };
 }, 15000);
 afterEach(() => {
   expect(forbidden).not.toHaveBeenCalled();

@@ -9,7 +9,10 @@ import { getProviderConfigurationProposal } from "./studio-plan-quality-provider
 import { createProviderTransmissionReview } from "./studio-plan-quality-provider-transmission-review";
 import { providerTransmissionReviewInputSchema } from "./studio-plan-quality-provider-transmission-review-types";
 
+import type { createServerProviderPolicyContext } from "./studio-plan-quality-provider-policy-server";
+
 type Context = {
+  selection?: ReturnType<typeof createServerProviderPolicyContext>;
   db: DatabaseSync;
   transaction: <T>(work: () => T) => T;
   registry: (version: number) => CandidateRegistrySnapshot;
@@ -56,13 +59,17 @@ export class ProviderTransmissionReviewStore {
           404,
           "QUALITY_PROVIDER_RUN_NOT_FOUND",
         );
-      const configuration = getProviderConfigurationProposal();
-      const result = createProviderTransmissionReview({
+      const input = {
         selection: selection.data,
         inspectedAt: new Date().toISOString(),
-        configuration,
         archive,
-      });
+      };
+      const result = this.context.selection
+        ? this.context.selection.transmissionReview(input)
+        : createProviderTransmissionReview({
+            ...input,
+            configuration: getProviderConfigurationProposal(),
+          });
       if (result.status === "unavailable" && result.reason === "archive-invalid") return corrupt();
       return result;
     });

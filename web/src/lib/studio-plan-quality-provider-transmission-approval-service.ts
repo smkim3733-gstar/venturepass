@@ -8,14 +8,21 @@ import {
   providerTransmissionApprovalResponseSchema,
   type ProviderTransmissionApprovalResponse,
 } from "./studio-plan-quality-provider-transmission-approval-http-types";
-import { providerTransmissionApprovalBindingSchema } from "./studio-plan-quality-provider-transmission-approval-types";
+import {
+  providerTransmissionApprovalBindingSchema,
+  versionedProviderTransmissionApprovalBindingSchema,
+  type StoredProviderTransmissionApprovalBinding,
+} from "./studio-plan-quality-provider-transmission-approval-types";
 import { providerTransmissionReviewDigestInput } from "./studio-plan-quality-provider-transmission-review-types";
 import { providerDigest as digest } from "../../scripts/local-data-quality-provider.mjs";
 import {
   createProviderExecutionEvent,
   providerExecutionOperationDigest,
+  createVersionedProviderApprovalEvent,
+  versionedProviderApprovalOperationDigest,
+  versionedProviderApprovalCommandSchema,
+  providerExecutionCommandSchema,
 } from "../../scripts/local-data-quality-provider-execution.mjs";
-import type { ProviderExecutionCommand } from "./studio-plan-quality-provider-execution-types";
 
 // Only audited pre-write refusals. Storage/audit/COMMIT/response failures remain unknown.
 const commandRefusals = new Set(
@@ -33,7 +40,10 @@ const commandRefusals = new Set(
 const historicalSchema = z
   .object({
     state: z.literal("committed"),
-    record: providerTransmissionApprovalBindingSchema,
+    record: z.discriminatedUnion("recordVersion", [
+      providerTransmissionApprovalBindingSchema,
+      versionedProviderTransmissionApprovalBindingSchema,
+    ]),
     dispatchAllowed: z.literal(false),
     budgetWriteAllowed: z.literal(false),
   })
@@ -50,7 +60,7 @@ function reply(value: ProviderTransmissionApprovalResponse, status = 200) {
   return jsonResponse(providerTransmissionApprovalResponseSchema.parse(value), status);
 }
 function committed(
-  record: z.infer<typeof providerTransmissionApprovalBindingSchema>,
+  record: StoredProviderTransmissionApprovalBinding,
   delivery: "new" | "replay" | "lookup",
   clientRequestId: string,
   expectedCommandDigest?: string,
@@ -96,7 +106,7 @@ function committed(
     recordedAt >= Date.parse(review.expiresAt)
   )
     throw new Error("Approval response identity mismatch");
-  const execution: ProviderExecutionCommand<"transmission-approved"> = {
+  const executionBody = {
     clientRequestId,
     expectedRevision: 0,
     payload: {
@@ -114,19 +124,43 @@ function committed(
       budgetDigest: command.expectedBudgetHead.headDigest,
     },
   };
-  const event = createProviderExecutionEvent({
-    schemaVersion: 2,
-    executionContractVersion: 1,
+  const eventBody = {
+    schemaVersion: 2 as const,
     runId: record.runId,
-    revision: 1,
+    revision: 1 as const,
     budgetRevision: command.expectedBudgetHead.revision,
     previousEventDigest: null,
     recordedAt: record.recordedAt,
-    payload: execution.payload,
-  });
+  };
+  const native =
+    record.recordVersion === 2
+      ? (() => {
+          const execution = versionedProviderApprovalCommandSchema.parse(executionBody);
+          return {
+            event: createVersionedProviderApprovalEvent({
+              ...eventBody,
+              executionContractVersion: 2,
+              payload: execution.payload,
+            }),
+            inputDigest: versionedProviderApprovalOperationDigest(record.runId, execution),
+          };
+        })()
+      : (() => {
+          const execution = providerExecutionCommandSchema.parse(executionBody);
+          if (execution.payload.kind !== "transmission-approved")
+            throw new Error("Native approval kind mismatch");
+          return {
+            event: createProviderExecutionEvent({
+              ...eventBody,
+              executionContractVersion: 1,
+              payload: execution.payload,
+            }),
+            inputDigest: providerExecutionOperationDigest(record.runId, execution),
+          };
+        })();
   if (
-    record.executionInputDigest !== providerExecutionOperationDigest(record.runId, execution) ||
-    record.approvalEventDigest !== event.eventDigest
+    record.executionInputDigest !== native.inputDigest ||
+    record.approvalEventDigest !== native.event.eventDigest
   )
     throw new Error("Native approval identity mismatch");
   return reply({

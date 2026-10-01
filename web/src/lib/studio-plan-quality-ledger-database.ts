@@ -6,7 +6,7 @@ import { inspectQualitySchema } from "../../scripts/local-data-quality-schema.mj
 import { decodeVersionedProviderPolicyRows } from "../../scripts/local-data-quality-provider-policy.mjs";
 import { inspectVersionedProviderReservationArchive as inspectProviderReservationArchive } from "../../scripts/local-data-quality-provider-reservation-binding.mjs";
 import { readProviderReservationDatabaseRows } from "../../scripts/local-data-quality-provider-reservation-database.mjs";
-import { inspectProviderTransmissionApprovalArchive } from "../../scripts/local-data-quality-provider-transmission-binding.mjs";
+import { inspectVersionedProviderTransmissionApprovalArchive } from "../../scripts/local-data-quality-provider-transmission-binding.mjs";
 import { readProviderTransmissionApprovalDatabaseRows } from "../../scripts/local-data-quality-provider-transmission-database.mjs";
 import type { CandidateRegistrySnapshot } from "./studio-plan-quality-candidate-registry-types";
 import { StudioError } from "./studio-http";
@@ -27,7 +27,7 @@ export function inspectLedgerDatabase(
     const ledger = readLedgerDatabaseInput(db, registry);
     const schema = inspectQualitySchema(db);
     if (schema.transmissions)
-      return inspectProviderTransmissionApprovalArchive({
+      return inspectVersionedProviderTransmissionApprovalArchive({
         archive: { ledger, ...readProviderReservationDatabaseRows(db) },
         ...readProviderTransmissionApprovalDatabaseRows(db),
       }).reservationArchive.ledger;

@@ -24,7 +24,7 @@ import {
 import { readProviderReservationDatabaseRows } from "./local-data-quality-provider-reservation-database.mjs";
 import {
   createProviderTransmissionApprovalMigrationCoverage,
-  inspectProviderTransmissionApprovalArchive,
+  inspectVersionedProviderTransmissionApprovalArchive,
 } from "./local-data-quality-provider-transmission-binding.mjs";
 import { readProviderTransmissionApprovalDatabaseRows } from "./local-data-quality-provider-transmission-database.mjs";
 import {
@@ -953,7 +953,7 @@ function inspectActualRows(
         records: reservationRows.records,
       };
       ledger = transmissionRows
-        ? inspectProviderTransmissionApprovalArchive({ archive, ...transmissionRows })
+        ? inspectVersionedProviderTransmissionApprovalArchive({ archive, ...transmissionRows })
             .reservationArchive.ledger
         : inspectProviderReservationArchive(archive).ledger;
       total += reservationRows.usedBytes;

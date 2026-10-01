@@ -6,15 +6,18 @@ import type { CandidateRegistrySnapshot } from "./studio-plan-quality-candidate-
 import { inspectQualityDatabaseUsage } from "../../scripts/local-data-quality.mjs";
 import { readProviderReservationDatabaseRows } from "../../scripts/local-data-quality-provider-reservation-database.mjs";
 import { readProviderTransmissionApprovalDatabaseRows } from "../../scripts/local-data-quality-provider-transmission-database.mjs";
-import { inspectProviderTransmissionApprovalArchive } from "../../scripts/local-data-quality-provider-transmission-binding.mjs";
+import { inspectVersionedProviderTransmissionApprovalArchive } from "../../scripts/local-data-quality-provider-transmission-binding.mjs";
 import { providerDigest as digest } from "../../scripts/local-data-quality-provider.mjs";
 import { readLedgerDatabaseInput } from "./studio-plan-quality-ledger-database";
 import { getProviderConfigurationProposal } from "./studio-plan-quality-provider-configuration";
 import { providerTransmissionCommandSchema } from "./studio-plan-quality-provider-transmission-command";
 import { prepareProviderTransmissionApproval } from "./studio-plan-quality-provider-transmission-plan";
-import type { ProviderTransmissionApprovalBinding } from "./studio-plan-quality-provider-transmission-approval-types";
+import type { StoredProviderTransmissionApprovalBinding } from "./studio-plan-quality-provider-transmission-approval-types";
+
+import type { createServerProviderPolicyContext } from "./studio-plan-quality-provider-policy-server";
 
 type Context = {
+  selection?: ReturnType<typeof createServerProviderPolicyContext>;
   db: DatabaseSync;
   transaction: <T>(work: () => T, write?: boolean) => T;
   registry: (version: number) => CandidateRegistrySnapshot;
@@ -22,7 +25,7 @@ type Context = {
 };
 type HistoricalApproval = {
   state: "committed";
-  record: ProviderTransmissionApprovalBinding;
+  record: StoredProviderTransmissionApprovalBinding;
   dispatchAllowed: false;
   budgetWriteAllowed: false;
 };
@@ -30,7 +33,7 @@ export type ProviderTransmissionApprovalCommit = HistoricalApproval & {
   newlyCommitted: boolean;
   replayed: boolean;
 };
-const historical = (record: ProviderTransmissionApprovalBinding): HistoricalApproval => ({
+const historical = (record: StoredProviderTransmissionApprovalBinding): HistoricalApproval => ({
   state: "committed",
   record,
   dispatchAllowed: false,
@@ -55,7 +58,7 @@ export class ProviderTransmissionApprovalStore {
       const { coverage, records } = readProviderReservationDatabaseRows(this.context.db);
       // Only the portable v8 archive participates in the approved review's digest.
       const archive = { ledger, coverage, records };
-      const approval = inspectProviderTransmissionApprovalArchive({
+      const approval = inspectVersionedProviderTransmissionApprovalArchive({
         archive,
         ...readProviderTransmissionApprovalDatabaseRows(this.context.db),
       });
@@ -109,17 +112,22 @@ export class ProviderTransmissionApprovalStore {
         .get(command.clientRequestId);
       // Also rejects legacy approval receipts without an original command binding.
       if (occupied) return conflict();
-      const plan = prepareProviderTransmissionApproval({
+      const input = {
         command,
         review: approvedReview,
         current: {
           selection: { runId: command.runId, runDigest: command.runDigest },
           archive: before.archive,
-          configuration: getProviderConfigurationProposal(),
           inspectedAt: new Date().toISOString(),
         },
         additionalUsedBytes: before.additionalUsedBytes,
-      });
+      };
+      const plan = this.context.selection
+        ? this.context.selection.prepareTransmissionApproval(input)
+        : prepareProviderTransmissionApproval({
+            ...input,
+            current: { ...input.current, configuration: getProviderConfigurationProposal() },
+          });
       if (plan.status !== "prepared")
         return fail(
           `QUALITY_PROVIDER_TRANSMISSION_${plan.reason.replaceAll("-", "_").toUpperCase()}`,

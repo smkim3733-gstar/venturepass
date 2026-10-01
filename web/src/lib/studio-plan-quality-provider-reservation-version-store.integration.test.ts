@@ -300,7 +300,16 @@ it("stores v2 in the separate native format and keeps old execution gates closed
   );
   expect(
     store.providerTransmissionReview({ runId: snapshot.run.id, runDigest: snapshot.run.runDigest }),
-  ).toMatchObject({ status: "unavailable" });
+  ).toMatchObject({
+    status: "review",
+    review: { schemaVersion: 2, assessment: { state: "conditions-met", blockers: [] } },
+  });
+  const inspection = store.providerTransmissionReview({
+    runId: snapshot.run.id,
+    runDigest: snapshot.run.runDigest,
+  });
+  if (inspection.status !== "review") throw Error(inspection.reason);
+  expect(Object.values(inspection.review.actions).every((allowed) => allowed === false)).toBe(true);
 });
 it("recovers original reservation nonce before changed selection, expiry and configuration", () => {
   adopt(true);
