@@ -311,7 +311,7 @@ describe("native format3 reservations and passive mixed archive", () => {
         core.providerDigest(core.versionedProviderStartDigestInput(start)),
       );
       expect(snapshot).toMatchObject({
-        archiveFormatVersion: 3,
+        archiveFormatVersion: 4,
         revision: 0,
         state: "reserved",
         dispatchAllowed: false,
@@ -361,7 +361,7 @@ describe("native format3 reservations and passive mixed archive", () => {
     f.add("plan-observation-v1");
     const v2 = f.add().run;
     const result = core.inspectVersionedProviderLedger(f.archive);
-    expect(result.snapshots.map((v) => v.archiveFormatVersion)).toEqual([2, 3, 3]);
+    expect(result.snapshots.map((v) => v.archiveFormatVersion)).toEqual([2, 4, 4]);
     expect(result.budgets[0]).toMatchObject({
       revision: 4,
       capUnits: "100",

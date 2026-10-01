@@ -1,6 +1,9 @@
 import type { CandidateRegistrySnapshot } from "../src/lib/studio-plan-quality-candidate-registry-types";
 import type { ProviderPolicyAdoptionRecord } from "../src/lib/studio-plan-quality-provider-policy-adoption-types";
-import type { inspectProviderLedger } from "./local-data-quality-provider.mjs";
+import type {
+  inspectProviderLedger,
+  inspectVersionedProviderLedger,
+} from "./local-data-quality-provider.mjs";
 export const providerPolicyArchiveLimits: { records: number; recordBytes: number };
 export function decodeProviderPolicyRows(rows: unknown[]): {
   records: ProviderPolicyAdoptionRecord[];
@@ -37,7 +40,10 @@ export function validateVersionedProviderPolicyAdoptionRecord(
   budgetEvents: unknown[],
 ): StoredPolicyRecord;
 export function inspectVersionedProviderPolicyLedger(
-  input: Parameters<typeof inspectProviderPolicyLedger>[0],
-): Omit<ReturnType<typeof inspectProviderPolicyLedger>, "records"> & {
+  input: Omit<Parameters<typeof inspectProviderPolicyLedger>[0], "provider"> & {
+    provider: Omit<Parameters<typeof inspectVersionedProviderLedger>[0], "registries">;
+  },
+): Omit<ReturnType<typeof inspectProviderPolicyLedger>, "records" | "provider"> & {
   records: StoredPolicyRecord[];
+  provider: ReturnType<typeof inspectVersionedProviderLedger>;
 };

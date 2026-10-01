@@ -31,3 +31,18 @@ export function inspectProviderReservationArchive(input: {
   usedBytes: number;
   ledger: ReturnType<typeof inspectQualityLedgers>;
 };
+
+import type { StoredProviderReservationBinding } from "../src/lib/studio-plan-quality-provider-reservation-archive-types";
+export function decodeVersionedProviderReservationBindingRows(rows: unknown[]): {
+  records: StoredProviderReservationBinding[];
+  usedBytes: number;
+};
+export function validateVersionedProviderReservationBinding(
+  raw: unknown,
+  ledger: Ledger,
+): StoredProviderReservationBinding;
+export function inspectVersionedProviderReservationArchive(
+  input: Parameters<typeof inspectProviderReservationArchive>[0],
+): Omit<ReturnType<typeof inspectProviderReservationArchive>, "records"> & {
+  records: StoredProviderReservationBinding[];
+};

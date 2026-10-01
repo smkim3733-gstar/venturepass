@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { inspectProviderReservationArchive } from "../../scripts/local-data-quality-provider-reservation-binding.mjs";
+import { inspectVersionedProviderReservationArchive as inspectProviderReservationArchive } from "../../scripts/local-data-quality-provider-reservation-binding.mjs";
 import { validateProviderTransmissionApprovalBinding } from "../../scripts/local-data-quality-provider-transmission-binding.mjs";
 import { providerDigest as digest } from "../../scripts/local-data-quality-provider.mjs";
 import {

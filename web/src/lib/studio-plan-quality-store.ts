@@ -1338,6 +1338,10 @@ export class PlanQualityStore {
   providerRecordFinish(id: string, value: ProviderExecutionCommand<"execution-stopped">) {
     return this.provider.recordFinish(id, value);
   }
+  /** Read-only stored-version view, with no execution compatibility grant. */
+  providerArchiveGet(id: string, revision?: number) {
+    return this.provider.getArchive(id, revision);
+  }
   providerGet(id: string, revision?: number) {
     return this.provider.get(id, revision);
   }

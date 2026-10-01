@@ -11,6 +11,7 @@ import {
   validateProviderRequestEvidence,
   validateVersionedProviderRequestEvidence,
   inspectProviderLedger,
+  inspectVersionedProviderLedger,
 } from "./local-data-quality-provider.mjs";
 import { validateProviderUsagePolicy } from "./local-data-quality-provider-usage.mjs";
 
@@ -369,7 +370,7 @@ function inspectLedger(
     if (new Set(other).size !== other.length) invalid();
     const records = raw.map((item) => inspectProof(item, versioned)),
       nonces = records.map((r) => r.clientRequestId);
-    const ledger = inspectProviderLedger({
+    const ledger = (versioned ? inspectVersionedProviderLedger : inspectProviderLedger)({
       ...provider,
       registries,
       otherNonces: [...other, ...nonces],

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { inspectProviderReservationArchive } from "../../scripts/local-data-quality-provider-reservation-binding.mjs";
+import { inspectVersionedProviderReservationArchive as inspectProviderReservationArchive } from "../../scripts/local-data-quality-provider-reservation-binding.mjs";
 import {
   createProviderTransmissionManifest,
   getProviderExecutionBudgetSnapshot,
@@ -91,6 +91,7 @@ export function createProviderTransmissionReview(
   const snapshot = state.provider.snapshots.find((row) => row.run.id === selection.data.runId);
   if (!snapshot || snapshot.run.runDigest !== selection.data.runDigest)
     return unavailable("selection-invalid");
+  if (snapshot.run.archiveFormatVersion !== 2) return unavailable("preparation-changed");
   const run = snapshot.run,
     prep = run.preparation;
   if (run.environment !== "production") return unavailable("production-reservation-required");

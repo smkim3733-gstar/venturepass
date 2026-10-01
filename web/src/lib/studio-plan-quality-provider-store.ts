@@ -20,7 +20,7 @@ import {
   createProviderArtifact,
   createProviderReceipt,
   validateProviderBudgetLedger,
-  validateProviderRunLedger,
+  validateVersionedProviderRunLedger,
 } from "../../scripts/local-data-quality-provider.mjs";
 import type {
   ProviderEnvironment,
@@ -364,6 +364,15 @@ export class ProviderLedgerStore {
     }, true);
   }
   private snapshot(state: State, id: string, revision?: number) {
+    const value = this.archiveSnapshot(state, id, revision);
+    if (value.archiveFormatVersion === 4)
+      return fail(
+        "PROVIDER_NATIVE_VERSION_UNSUPPORTED",
+        "이 보관 버전의 전송·실행은 아직 지원하지 않습니다.",
+      );
+    return value;
+  }
+  private archiveSnapshot(state: State, id: string, revision?: number) {
     const run = state.runs.find((row) => row.id === id);
     if (!run) fail("QUALITY_PROVIDER_NOT_FOUND", "예약 기록을 찾을 수 없습니다.", 404);
     const events = state.events.filter((row) => row.runId === id);
@@ -395,7 +404,7 @@ export class ProviderLedgerStore {
       if (payload.kind === "execution-stopped" && payload.finalArtifactSha256)
         keys.add("final-result");
     }
-    return validateProviderRunLedger({
+    return validateVersionedProviderRunLedger({
       run,
       events: prefix,
       artifacts: state.artifacts.filter((row) => row.runId === id && keys.has(row.key)),
@@ -746,6 +755,12 @@ export class ProviderLedgerStore {
   recordFinish(id: string, input: ProviderExecutionCommand<"execution-stopped">) {
     return this.record(id, input, "execution-stopped", "provider-finish");
   }
+  getArchive(id: string, revision?: number) {
+    uuid.parse(id);
+    return this.context.transaction(() =>
+      this.archiveSnapshot(this.inspect().provider, id, revision),
+    );
+  }
   get(id: string, revision?: number) {
     uuid.parse(id);
     return this.context.transaction(() => this.snapshot(this.inspect().provider, id, revision));
@@ -769,7 +784,7 @@ export class ProviderLedgerStore {
     uuid.parse(id);
     return this.context.transaction(() => {
       const state = this.inspect().provider;
-      this.snapshot(state, id);
+      this.archiveSnapshot(state, id);
       const artifact = state.artifacts.find((row) => row.runId === id && row.key === key);
       if (!artifact)
         fail("QUALITY_PROVIDER_ARTIFACT_NOT_FOUND", "보관한 원문을 찾을 수 없습니다.", 404);
@@ -780,7 +795,7 @@ export class ProviderLedgerStore {
     uuid.parse(id);
     return this.context.transaction(() => {
       const state = this.inspect().provider,
-        snapshot = this.snapshot(state, id, revision),
+        snapshot = this.archiveSnapshot(state, id, revision),
         scope = providerBudgetScope(snapshot.run.environment);
       const receipts = state.receipts
         .filter(
@@ -809,7 +824,7 @@ export class ProviderLedgerStore {
           payload: Buffer.from(artifact.body).toString("base64"),
         }));
       const format = snapshot.archiveFormatVersion;
-      const kind = format === 2 ? "provider-reservation-archive" : "provider-execution-archive";
+      const kind = format === 3 ? "provider-execution-archive" : "provider-reservation-archive";
       const body = `{"schemaVersion":2,"archiveFormatVersion":${format},"kind":"${kind}","run":${raw("quality_actual_runs", "WHERE id=?", [id])[0]},"events":[${raw("quality_actual_events", "WHERE run_id=? AND revision<=? ORDER BY revision", [id, revision]).join(",")}],"budgetEvents":[${raw("quality_actual_budget_events", "WHERE scope_id=? AND revision<=? ORDER BY revision", [scope, head]).join(",")}],"receipts":[${receipts.map((row) => raw("quality_actual_requests", "WHERE nonce=?", [row.clientRequestId])[0]).join(",")}],"artifacts":${JSON.stringify(artifacts)}}\n`;
       return { snapshot, body };
     });

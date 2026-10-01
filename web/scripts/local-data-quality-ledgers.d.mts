@@ -7,14 +7,14 @@ import type {
   ActualLedgerReceipt,
 } from "../src/lib/studio-plan-quality-actual-ledger-types";
 import type {
-  ProviderRun,
+  StoredProviderRun,
   ProviderRunEvent,
   ProviderBudgetEvent,
   ProviderArtifact,
   ProviderReceipt,
 } from "../src/lib/studio-plan-quality-provider-types";
 import type { inspectActualLedger } from "./local-data-quality-actual.mjs";
-import type { inspectProviderLedger } from "./local-data-quality-provider.mjs";
+import type { inspectVersionedProviderLedger } from "./local-data-quality-provider.mjs";
 import type { inspectVersionedProviderPolicyLedger } from "./local-data-quality-provider-policy.mjs";
 export function inspectQualityLedgers(input: {
   runs: unknown[];
@@ -33,8 +33,8 @@ export function inspectQualityLedgers(input: {
     artifacts: ActualLedgerArtifact[];
     receipts: ActualLedgerReceipt[];
   };
-  provider: ReturnType<typeof inspectProviderLedger> & {
-    runs: ProviderRun[];
+  provider: ReturnType<typeof inspectVersionedProviderLedger> & {
+    runs: StoredProviderRun[];
     events: ProviderRunEvent[];
     budgetEvents: ProviderBudgetEvent[];
     artifacts: ProviderArtifact[];

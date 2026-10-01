@@ -17,6 +17,15 @@ export const providerReservationArchiveLimits = {
   totalBytes: 256 * 1024 * 1024,
 };
 const recordSchema = z.fromJSONSchema(providerReservationBindingJsonSchema);
+const versionedRecordSchema = z.fromJSONSchema({
+  ...providerReservationBindingJsonSchema,
+  properties: {
+    ...providerReservationBindingJsonSchema.properties,
+    recordVersion: { type: "number", const: 2 },
+  },
+});
+const parseRecord = (raw, versioned) =>
+  (versioned && raw?.recordVersion === 2 ? versionedRecordSchema : recordSchema).parse(raw);
 const coverageSchema = z.fromJSONSchema(providerReservationCoverageJsonSchema);
 const liveScope = "candidate-quality-provider-v2-live";
 const same = (a, b) => digest(a) === digest(b);
@@ -34,6 +43,12 @@ const runIdentity = (run) => ({
 
 /** Shape and indexed raw-row checks only; callers must follow with the complete archive audit. */
 export function decodeProviderReservationBindingRows(rows) {
+  return decodeRows(rows, false);
+}
+export function decodeVersionedProviderReservationBindingRows(rows) {
+  return decodeRows(rows, true);
+}
+function decodeRows(rows, versioned) {
   try {
     if (!Array.isArray(rows) || rows.length > providerReservationArchiveLimits.records) invalid();
     let lastOrder = 0,
@@ -47,7 +62,7 @@ export function decodeProviderReservationBindingRows(rows) {
       )
         invalid();
       lastOrder = row.storage_order;
-      const value = recordSchema.parse(JSON.parse(row.body));
+      const value = parseRecord(JSON.parse(row.body), versioned);
       if (
         row.run_id !== value.runId ||
         row.nonce !== value.clientRequestId ||
@@ -63,14 +78,21 @@ export function decodeProviderReservationBindingRows(rows) {
   }
 }
 
-function inspectRecord(raw, ledger, state) {
+function inspectRecord(raw, ledger, state, versioned = false) {
   if (bytes(raw) > providerReservationArchiveLimits.recordBytes) invalid();
-  const record = recordSchema.parse(raw),
+  const record = parseRecord(raw, versioned),
     c = record.command,
     r = record.approvedReview,
     review = r.policyReview;
   const run = state.provider.runs.find((row) => row.id === record.runId);
   if (!run || !isProduction(run)) invalid();
+  if (
+    record.recordVersion === 1
+      ? run.archiveFormatVersion !== 2
+      : run.archiveFormatVersion !== 3 ||
+        run.preparation.contract.baseContract.engineVersion !== "plan-observation-v2"
+  )
+    invalid();
   const prep = run.preparation,
     f = prep.financialBasis;
   const inspected = Date.parse(review.inspectedAt),
@@ -234,8 +256,14 @@ function inspectRecord(raw, ledger, state) {
 
 /** Complete native-ledger audit plus one binding. Does not establish coverage of the other runs. */
 export function validateProviderReservationBinding(raw, ledger) {
+  return validateBinding(raw, ledger, false);
+}
+export function validateVersionedProviderReservationBinding(raw, ledger) {
+  return validateBinding(raw, ledger, true);
+}
+function validateBinding(raw, ledger, versioned) {
   try {
-    return inspectRecord(raw, ledger, inspectQualityLedgers(ledger));
+    return inspectRecord(raw, ledger, inspectQualityLedgers(ledger), versioned);
   } catch {
     return invalid();
   }
@@ -245,6 +273,9 @@ export function validateProviderReservationBinding(raw, ledger) {
 export function createProviderReservationMigrationCoverage(ledger) {
   try {
     inspectQualityLedgers(ledger);
+    // Format3 did not exist at the immutable migration boundary.
+    if (ledger.runs.some((run) => run.schemaVersion === 2 && run.archiveFormatVersion !== 2))
+      invalid();
     const body = {
       coverageVersion: 1,
       kind: "provider-reservation-binding-coverage",
@@ -262,11 +293,13 @@ export function createProviderReservationMigrationCoverage(ledger) {
 
 /** All bindings and the immutable migration boundary, in native insertion order. Pure inspection;
  * parent storage/backup readers must also audit schema, raw bytes and registration/evaluation rows. */
-export function inspectProviderReservationArchive({
-  ledger,
-  coverage: rawCoverage,
-  records: rawRecords,
-}) {
+export function inspectProviderReservationArchive(input) {
+  return inspectArchive(input, false);
+}
+export function inspectVersionedProviderReservationArchive(input) {
+  return inspectArchive(input, true);
+}
+function inspectArchive({ ledger, coverage: rawCoverage, records: rawRecords }, versioned) {
   try {
     const state = inspectQualityLedgers(ledger);
     if (
@@ -280,6 +313,7 @@ export function inspectProviderReservationArchive({
     const prefix = ledger.runs.slice(0, count);
     if (
       count > ledger.runs.length ||
+      prefix.some((run) => run.schemaVersion === 2 && run.archiveFormatVersion !== 2) ||
       coverage.coverageDigest !== digest(omit(coverage, "coverageDigest")) ||
       coverage.cutoverRunPrefixDigest !== digest(prefix.map(runIdentity)) ||
       !same(
@@ -291,7 +325,7 @@ export function inspectProviderReservationArchive({
     const expected = ledger.runs.slice(count).filter(isProduction);
     if (expected.length !== rawRecords.length) invalid();
     const records = rawRecords.map((raw, index) => {
-      const record = inspectRecord(raw, ledger, state);
+      const record = inspectRecord(raw, ledger, state, versioned);
       if (record.runId !== expected[index].id) invalid();
       return record;
     });

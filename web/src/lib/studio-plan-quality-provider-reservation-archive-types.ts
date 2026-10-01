@@ -24,6 +24,16 @@ export const providerReservationBindingSchema = z
   .strict();
 export type ProviderReservationBinding = z.infer<typeof providerReservationBindingSchema>;
 
+/** New native format3 binding. Stored encoding is distinct from policy and instruction versions. */
+export const versionedProviderReservationBindingSchema = providerReservationBindingSchema.extend({
+  recordVersion: z.literal(2),
+});
+export type VersionedProviderReservationBinding = z.infer<
+  typeof versionedProviderReservationBindingSchema
+>;
+export type StoredProviderReservationBinding =
+  ProviderReservationBinding | VersionedProviderReservationBinding;
+
 /** Immutable migration boundary, not an allowlist that grows with new production reservations. */
 export const providerReservationCoverageSchema = z
   .object({

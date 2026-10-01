@@ -300,6 +300,6 @@ export type VersionedProviderRun = Omit<ProviderRun, "archiveFormatVersion" | "p
 export type VersionedProviderReservationSnapshot = Omit<
   ProviderReservationSnapshot,
   "archiveFormatVersion" | "run"
-> & { archiveFormatVersion: 3; run: VersionedProviderRun };
+> & { archiveFormatVersion: 4; run: VersionedProviderRun };
 export type StoredProviderRun = ProviderRun | VersionedProviderRun;
 export type StoredProviderSnapshot = ProviderSnapshot | VersionedProviderReservationSnapshot;

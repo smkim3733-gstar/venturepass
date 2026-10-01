@@ -1097,7 +1097,7 @@ function validateRunLedger(
   void budget;
   const snapshot = {
     schemaVersion: 2,
-    archiveFormatVersion: newFormat ? 3 : 2,
+    archiveFormatVersion: newFormat ? 4 : 2,
     run,
     revision: events.length,
     events,

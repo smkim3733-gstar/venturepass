@@ -19,7 +19,7 @@ import { inspectQualityLedgers } from "./local-data-quality-ledgers.mjs";
 import { decodeVersionedProviderPolicyRows } from "./local-data-quality-provider-policy.mjs";
 import {
   createProviderReservationMigrationCoverage,
-  inspectProviderReservationArchive,
+  inspectVersionedProviderReservationArchive as inspectProviderReservationArchive,
 } from "./local-data-quality-provider-reservation-binding.mjs";
 import { readProviderReservationDatabaseRows } from "./local-data-quality-provider-reservation-database.mjs";
 import {

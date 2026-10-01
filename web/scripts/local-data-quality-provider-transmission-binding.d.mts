@@ -2,8 +2,8 @@ import type {
   ProviderTransmissionApprovalBinding,
   ProviderTransmissionApprovalCoverage,
 } from "../src/lib/studio-plan-quality-provider-transmission-approval-types";
-import type { inspectProviderReservationArchive } from "./local-data-quality-provider-reservation-binding.mjs";
-type Archive = Parameters<typeof inspectProviderReservationArchive>[0];
+import type { inspectVersionedProviderReservationArchive } from "./local-data-quality-provider-reservation-binding.mjs";
+type Archive = Parameters<typeof inspectVersionedProviderReservationArchive>[0];
 export const providerTransmissionApprovalArchiveLimits: {
   records: number;
   recordBytes: number;
@@ -29,5 +29,5 @@ export function inspectProviderTransmissionApprovalArchive(input: {
   records: ProviderTransmissionApprovalBinding[];
   coverage: ProviderTransmissionApprovalCoverage;
   usedBytes: number;
-  reservationArchive: ReturnType<typeof inspectProviderReservationArchive>;
+  reservationArchive: ReturnType<typeof inspectVersionedProviderReservationArchive>;
 };

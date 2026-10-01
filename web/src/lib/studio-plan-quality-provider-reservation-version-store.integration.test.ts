@@ -25,6 +25,13 @@ import {
 } from "./studio-plan-quality-provider-reservation-plan";
 import { fixture as nativeFixture } from "./studio-plan-quality-provider-reservation-test-helpers";
 import { providerDigest as digest } from "../../scripts/local-data-quality-provider.mjs";
+import { providerConfigurationDigestInput } from "./studio-plan-quality-provider-review-types";
+import { readProviderReservationDatabaseRows } from "../../scripts/local-data-quality-provider-reservation-database.mjs";
+import {
+  createProviderReservationMigrationCoverage,
+  inspectVersionedProviderReservationArchive,
+} from "../../scripts/local-data-quality-provider-reservation-binding.mjs";
+import { createProviderTransmissionApprovalMigrationCoverage } from "../../scripts/local-data-quality-provider-transmission-binding.mjs";
 import { readLedgerDatabaseInput } from "./studio-plan-quality-ledger-database";
 import {
   backupQualityData,
@@ -263,21 +270,37 @@ it.each([
     expect(rows()).toEqual(before);
   },
 );
-it("matches v2 review but blocks frozen native storage instead of downgrading to v1", () => {
+it("stores v2 in the separate native format and keeps old execution gates closed", () => {
   reopen(v2);
   adopt();
   const f = reservationStoreFixture(store),
     before = rows();
-  expect(f.review.assessment.state).toBe("conditions-met");
-  expect(() => store.providerReserve(f.command, f.review)).toThrow(
-    expect.objectContaining({
-      code: "QUALITY_PROVIDER_RESERVATION_NATIVE_VERSION_UNSUPPORTED",
-    }),
-  );
-  expect(rows()).toEqual(before);
-  expect(store.providerReservationLookup(f.command.clientRequestId)).toEqual({
-    state: "not-observed",
+  const result = store.providerReserve(f.command, f.review),
+    snapshot = store.providerArchiveGet(result.record.runId);
+  expect(result).toMatchObject({
+    newlyCommitted: true,
+    record: { recordVersion: 2, dispatchAllowed: false },
   });
+  expect(snapshot).toMatchObject({
+    archiveFormatVersion: 4,
+    revision: 0,
+    dispatchAllowed: false,
+    canResume: false,
+    actualAiCalls: 0,
+    run: {
+      archiveFormatVersion: 3,
+      preparation: { contract: { baseContract: { engineVersion: v2 } } },
+    },
+  });
+  expect(rows().budget[0]).toEqual(before.budget[0]);
+  expect(rows().policies).toEqual(before.policies);
+  expect(inspectQualityDatabase(db)).toMatchObject({ actualRuns: 1, providerPolicies: 1 });
+  expect(() => store.providerGet(result.record.runId)).toThrow(
+    expect.objectContaining({ code: "PROVIDER_NATIVE_VERSION_UNSUPPORTED" }),
+  );
+  expect(
+    store.providerTransmissionReview({ runId: snapshot.run.id, runDigest: snapshot.run.runDigest }),
+  ).toMatchObject({ status: "unavailable" });
 });
 it("recovers original reservation nonce before changed selection, expiry and configuration", () => {
   adopt(true);
@@ -510,3 +533,266 @@ it("backs up selected record2/v1 reservation and restores its exact bytes withou
     reopened.close();
   }
 }, 30000);
+
+it("recovers v2 nonce after reopen, changed server selection and expiry without another reservation", () => {
+  reopen(v2);
+  adopt();
+  const f = reservationStoreFixture(store);
+  const original = store.providerReserve(f.command, f.review);
+  const before = rows(),
+    snapshot = JSON.stringify(store.providerArchiveGet(original.record.runId));
+  reopen(v1);
+  vi.setSystemTime("2030-01-01T00:00:00.000Z");
+  vi.mocked(configuration.getProviderConfigurationProposal).mockImplementation(() => {
+    throw Error("No fresh evidence");
+  });
+  expect(store.providerReserve(f.command, undefined)).toEqual({
+    ...original,
+    replayed: true,
+    newlyCommitted: false,
+  });
+  expect(store.providerReservationLookup(f.command.clientRequestId)).toEqual({
+    state: "committed",
+    record: original.record,
+  });
+  expect(JSON.stringify(store.providerArchiveGet(original.record.runId))).toBe(snapshot);
+  expect(rows()).toEqual(before);
+  expect(() =>
+    store.providerReserve(
+      { ...f.command, approval: { ...f.command.approval, approvedAt: "2030-01-01T00:00:00.000Z" } },
+      undefined,
+    ),
+  ).toThrow(expect.objectContaining({ code: "QUALITY_PROVIDER_RESERVATION_NONCE_CONFLICT" }));
+});
+it.each([
+  "quality_actual_runs",
+  "quality_actual_artifacts",
+  "quality_actual_budget_events",
+  "quality_actual_requests",
+  "quality_provider_reservation_bindings",
+])("rolls back v2 all five rows after %s and reuses the original command", (table) => {
+  reopen(v2);
+  adopt();
+  const f = reservationStoreFixture(store),
+    before = rows();
+  const prepare = DatabaseSync.prototype.prepare,
+    failure = vi.fn();
+  const spy = vi.spyOn(DatabaseSync.prototype, "prepare").mockImplementation(function (
+    this: DatabaseSync,
+    sql: string,
+  ) {
+    const statement = prepare.call(this, sql);
+    if (sql.startsWith("INSERT INTO " + table + "(")) {
+      const run = statement.run.bind(statement);
+      vi.spyOn(statement, "run").mockImplementation((...args) => {
+        run(...args);
+        failure();
+        throw Error("Synthetic after insert");
+      });
+    }
+    return statement;
+  });
+  expect(() => store.providerReserve(f.command, f.review)).toThrow("Synthetic after insert");
+  expect(failure).toHaveBeenCalledOnce();
+  expect(rows()).toEqual(before);
+  expect(store.providerReservationLookup(f.command.clientRequestId)).toEqual({
+    state: "not-observed",
+  });
+  spy.mockRestore();
+  expect(store.providerReserve(f.command, f.review)).toMatchObject({
+    newlyCommitted: true,
+    record: { recordVersion: 2 },
+  });
+});
+it("holds the SQLite writer lock and resolves duplicate and stale v2 commands across connections", () => {
+  reopen(v2);
+  adopt();
+  const f = reservationStoreFixture(store);
+  const other = new PlanQualityStore(directory, {
+    providerPolicySelection: { version: v2, configuration: readFixedProviderConfiguration()! },
+  });
+  const prepare = DatabaseSync.prototype.prepare;
+  let checked = false;
+  const spy = vi.spyOn(DatabaseSync.prototype, "prepare").mockImplementation(function (
+    this: DatabaseSync,
+    sql: string,
+  ) {
+    if (sql.startsWith("INSERT INTO quality_actual_runs(")) {
+      expect(this.isTransaction).toBe(true);
+      db.exec("PRAGMA busy_timeout=1");
+      expect(() => db.exec("BEGIN IMMEDIATE")).toThrow(/locked/);
+      checked = true;
+    }
+    return prepare.call(this, sql);
+  });
+  try {
+    const original = store.providerReserve(f.command, f.review);
+    expect(checked).toBe(true);
+    spy.mockRestore();
+    const before = rows();
+    expect(other.providerReserve(f.command, undefined)).toEqual({
+      ...original,
+      newlyCommitted: false,
+      replayed: true,
+    });
+    expect(() =>
+      other.providerReserve({ ...f.command, clientRequestId: randomUUID() }, f.review),
+    ).toThrow(expect.objectContaining({ code: "QUALITY_PROVIDER_RESERVATION_REVIEW_NOT_CURRENT" }));
+    expect(rows()).toEqual(before);
+  } finally {
+    spy.mockRestore();
+    other.close();
+  }
+});
+it.each(["binding-format", "request", "budget"] as const)(
+  "rejects persisted v2 corruption before nonce recovery: %s",
+  (kind) => {
+    reopen(v2);
+    adopt();
+    const f = reservationStoreFixture(store),
+      original = store.providerReserve(f.command, f.review);
+    const table =
+      kind === "binding-format"
+        ? "quality_provider_reservation_bindings"
+        : kind === "request"
+          ? "quality_actual_runs"
+          : "quality_actual_budget_events";
+    const trigger = table + "_no_update";
+    const sql = String(db.prepare("SELECT sql FROM sqlite_schema WHERE name=?").get(trigger)!.sql);
+    const row = db
+      .prepare("SELECT rowid AS row_id,body FROM " + table + " ORDER BY rowid DESC LIMIT 1")
+      .get()!;
+    const value = JSON.parse(String(row.body));
+    if (kind === "binding-format") {
+      value.recordVersion = 1;
+      const { recordDigest: _old, ...body } = value;
+      void _old;
+      value.recordDigest = digest(body);
+    }
+    if (kind === "request") {
+      value.preparation.generation.body.store = true;
+      const { runDigest: _old, ...body } = value;
+      void _old;
+      value.runDigest = digest(body);
+    }
+    if (kind === "budget") value.payload.generationUnits = "0";
+    db.exec("DROP TRIGGER " + trigger);
+    db.prepare("UPDATE " + table + " SET body=?,body_hash=? WHERE rowid=?").run(
+      JSON.stringify(value),
+      digest(value),
+      row.row_id,
+    );
+    db.exec(sql);
+    const before = rows();
+    expect(() => store.providerReservationLookup(f.command.clientRequestId)).toThrow(
+      expect.objectContaining({ code: "QUALITY_ACTUAL_STORAGE_CORRUPT" }),
+    );
+    expect(() => store.providerReserve(f.command, undefined)).toThrow();
+    expect(() => store.providerArchiveGet(original.record.runId)).toThrow();
+    expect(() => inspectQualityDatabase(db)).toThrow();
+    expect(rows()).toEqual(before);
+  },
+);
+it("backs up mixed v1/v2 reservations with one budget and restores original export and nonce bytes", async () => {
+  // Two synthetic reservations need a larger initial test cap; never reset an existing budget.
+  const config = structuredClone(readFixedProviderConfiguration()!);
+  config.proposedBudget.capUnits = "100000000";
+  config.proposedBudget.basis =
+    "격리 혼합 백업 시험 전용 초기 누적 USD 100. 실제 운영 승인 또는 기존 예산 변경이 아니다.";
+  config.configurationDigest = digest(providerConfigurationDigestInput(config));
+  vi.mocked(configuration.getProviderConfigurationProposal).mockReturnValue(config);
+  adopt(true);
+  const oldInput = reservationStoreFixture(store),
+    old = store.providerReserve(oldInput.command, oldInput.review);
+  const oldExport = store.providerDownload(old.record.runId, 0).body,
+    oldRows = rows();
+  reopen(v2, config);
+  adopt(false, 1);
+  const f = reservationStoreFixture(store, 1);
+  expect(f.review.assessment).toEqual({ state: "conditions-met", blockers: [] });
+  const current = store.providerReserve(f.command, f.review);
+  const before = rows(),
+    audit = inspectQualityDatabase(db);
+  const exported = store.providerDownload(current.record.runId, 0),
+    payload = JSON.parse(exported.body);
+  expect(payload).toMatchObject({
+    archiveFormatVersion: 4,
+    kind: "provider-reservation-archive",
+    run: { archiveFormatVersion: 3 },
+  });
+  expect(payload.run).toEqual(store.providerArchiveGet(current.record.runId).run);
+  expect(store.providerDownload(old.record.runId, 0).body).toBe(oldExport);
+  expect(before.budget[0]).toEqual(oldRows.budget[0]);
+  expect(before.runs.find((row) => row.id === old.record.runId)).toEqual(oldRows.runs[0]);
+  expect(getReview().runs.unsettledCandidateRunIds).toEqual([old.record.runId]);
+  const backup = join(root, "mixed-backup"),
+    restored = join(root, "mixed-restored");
+  mkdirSync(restored);
+  writeFileSync(join(restored, "studio.sqlite"), sentinel);
+  await backupQualityData(directory, backup);
+  expect(verifyQualityBackup(backup).manifest).toMatchObject({
+    version: 9,
+    actualRuns: 2,
+    providerPolicies: 2,
+  });
+  restoreQualityData(backup, restored);
+  vi.setSystemTime("2030-01-01T00:00:00.000Z");
+  vi.mocked(configuration.getProviderConfigurationProposal).mockImplementation(() => {
+    throw Error("No fresh evidence");
+  });
+  const reopened = new PlanQualityStore(restored),
+    connection = new DatabaseSync(join(restored, "quality-evaluation", "quality.sqlite"));
+  try {
+    expect(inspectQualityDatabase(connection)).toEqual(audit);
+    for (const [table, key, order] of [
+      ["quality_actual_runs", "runs", "id"],
+      ["quality_actual_budget_events", "budget", "scope_id,revision"],
+      ["quality_actual_requests", "receipts", "nonce"],
+      ["quality_provider_reservation_bindings", "bindings", "run_id"],
+    ] as const)
+      expect(connection.prepare("SELECT * FROM " + table + " ORDER BY " + order).all()).toEqual(
+        before[key],
+      );
+    expect(reopened.providerDownload(old.record.runId, 0).body).toBe(oldExport);
+    expect(reopened.providerDownload(current.record.runId, 0).body).toBe(exported.body);
+    expect(reopened.providerReserve(f.command, undefined)).toEqual({
+      ...current,
+      newlyCommitted: false,
+      replayed: true,
+    });
+    expect(readFileSync(join(restored, "studio.sqlite"), "utf8")).toBe(sentinel);
+  } finally {
+    connection.close();
+    reopened.close();
+  }
+}, 30000);
+
+it("refuses grandfathering format3 runs into either immutable migration boundary", () => {
+  reopen(v2);
+  adopt();
+  const f = reservationStoreFixture(store);
+  const saved = store.providerReserve(f.command, f.review);
+  const ledger = input().ledger,
+    originalRows = rows();
+  const decoded = readProviderReservationDatabaseRows(db);
+  const archive = { ledger, coverage: decoded.coverage, records: decoded.records };
+  expect(() => inspectVersionedProviderReservationArchive(archive)).not.toThrow();
+  expect(() => createProviderReservationMigrationCoverage(ledger)).toThrow();
+  expect(() => createProviderTransmissionApprovalMigrationCoverage(archive)).toThrow();
+  const run = store.providerArchiveGet(saved.record.runId).run;
+  const forged = {
+    ...decoded.coverage,
+    cutoverGlobalRunCount: 1,
+    cutoverRunPrefixDigest: digest([
+      { id: run.id, schemaVersion: run.schemaVersion, runDigest: run.runDigest },
+    ]),
+    legacyProductionRuns: [{ runId: run.id, runDigest: run.runDigest }],
+  };
+  const { coverageDigest: _old, ...body } = forged;
+  void _old;
+  forged.coverageDigest = digest(body);
+  expect(() =>
+    inspectVersionedProviderReservationArchive({ ledger, coverage: forged, records: [] }),
+  ).toThrow();
+  expect(rows()).toEqual(originalRows);
+});

@@ -1,5 +1,5 @@
 import {
-  decodeProviderReservationBindingRows,
+  decodeVersionedProviderReservationBindingRows,
   providerReservationArchiveLimits as limits,
 } from "./local-data-quality-provider-reservation-binding.mjs";
 import { providerDigest as digest } from "./local-data-quality-provider.mjs";
@@ -32,7 +32,7 @@ export function readProviderReservationDatabaseRows(db) {
     .prepare("SELECT id,body,body_hash FROM quality_provider_reservation_coverage ORDER BY id")
     .all();
   try {
-    const bindings = decodeProviderReservationBindingRows(bindingRows),
+    const bindings = decodeVersionedProviderReservationBindingRows(bindingRows),
       row = coverageRows[0];
     if (
       row.id !== 1 ||

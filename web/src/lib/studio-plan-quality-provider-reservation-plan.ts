@@ -4,6 +4,9 @@ import { inspectQualityLedgers } from "../../scripts/local-data-quality-ledgers.
 import {
   providerDigest as digest,
   providerStartSchema,
+  versionedProviderStartSchema,
+  versionedProviderStartDigestInput,
+  createVersionedProviderRun,
   providerStartDigestInput,
   createProviderBudgetEvent,
   createProviderRun,
@@ -21,8 +24,12 @@ import {
 } from "./studio-plan-quality-provider-review-types";
 import { providerReservationCommandSchema } from "./studio-plan-quality-provider-reservation-command";
 import { providerReservationReviewSchema } from "./studio-plan-quality-provider-reservation-review-types";
-import type { ProviderReservationBinding } from "./studio-plan-quality-provider-reservation-archive-types";
-import { validateProviderReservationBinding } from "../../scripts/local-data-quality-provider-reservation-binding.mjs";
+import type {
+  ProviderReservationBinding,
+  StoredProviderReservationBinding,
+  VersionedProviderReservationBinding,
+} from "./studio-plan-quality-provider-reservation-archive-types";
+import { validateVersionedProviderReservationBinding } from "../../scripts/local-data-quality-provider-reservation-binding.mjs";
 import {
   isProviderReservationReviewCurrent,
   isVersionedProviderReservationReviewCurrent,
@@ -30,6 +37,8 @@ import {
 } from "./studio-plan-quality-provider-reservation-review";
 import type {
   ProviderStart,
+  VersionedProviderStart,
+  VersionedProviderRun,
   ProviderRun,
   ProviderBudgetEvent,
   ProviderReceipt,
@@ -70,6 +79,18 @@ export type ProviderReservationWritePlan = {
   };
   dispatchAllowed: false;
 };
+export type VersionedProviderReservationWritePlan = Omit<
+  ProviderReservationWritePlan,
+  "planVersion" | "start" | "rows"
+> & {
+  planVersion: 2;
+  start: VersionedProviderStart;
+  rows: Omit<ProviderReservationWritePlan["rows"], "run" | "binding"> & {
+    run: VersionedProviderRun;
+    binding: VersionedProviderReservationBinding;
+  };
+};
+type StoredWritePlan = ProviderReservationWritePlan | VersionedProviderReservationWritePlan;
 type Refusal =
   | "invalid-input"
   | "scope-changed"
@@ -82,12 +103,16 @@ type Refusal =
   | "approval-time-invalid"
   | "preparation-invalid"
   | "capacity-exceeded"
-  | "planned-ledger-invalid"
-  | "native-version-unsupported";
+  | "planned-ledger-invalid";
 export type ProviderReservationPlanResult =
   | { status: "prepared"; plan: ProviderReservationWritePlan }
   | { status: "refused"; reason: Refusal; plan: null };
-const refuse = (reason: Refusal): ProviderReservationPlanResult => ({
+export type StoredProviderReservationPlanResult =
+  | { status: "prepared"; plan: StoredWritePlan }
+  | Extract<ProviderReservationPlanResult, { status: "refused" }>;
+const refuse = (
+  reason: Refusal,
+): Extract<ProviderReservationPlanResult, { status: "refused" }> => ({
   status: "refused",
   reason,
   plan: null,
@@ -105,26 +130,26 @@ export type ProviderReservationPlannerInput = {
 };
 
 /** No IO or grants. This is not a persistence API: its writer must atomically audit/store the
- * binding AND the frozen native rows, with migration/backup coverage and exact-command replay. */
+ * binding AND the selected native rows, with migration/backup coverage and exact-command replay. */
 export function prepareProviderReservation(
   input: ProviderReservationPlannerInput,
 ): ProviderReservationPlanResult {
-  return prepareReservation(input, null);
+  return prepareReservation(input, null) as ProviderReservationPlanResult;
 }
 
-/** Recheck the selected approval under the writer lock. A v2 selection must not downgrade
- * into frozen v1 native rows while the separate v2 archive/runtime is being connected. */
+/** Recheck server-selected approval under the writer lock; v1 keeps its original bytes,
+ * while v2 produces a separate native format and binding. Neither grants dispatch. */
 export function prepareVersionedProviderReservation(
   version: PlanPromptVersion,
   input: ProviderReservationPlannerInput,
-): ProviderReservationPlanResult {
+): StoredProviderReservationPlanResult {
   createVersionedProviderPreparationBuilder(version);
   return prepareReservation(input, version);
 }
 function prepareReservation(
   input: ProviderReservationPlannerInput,
   version: PlanPromptVersion | null,
-): ProviderReservationPlanResult {
+): StoredProviderReservationPlanResult {
   const commandInput = providerReservationCommandSchema.safeParse(input.command);
   const reviewInput = providerReservationReviewSchema.safeParse(input.review);
   const selection = providerReviewInputSchema.safeParse(input.current.selection);
@@ -199,17 +224,17 @@ function prepareReservation(
   )
     return refuse("approval-time-invalid");
 
-  // Refuse before creating a v1 preparation, native rows, budget reservation or transport.
-  if (version === "plan-observation-v2") return refuse("native-version-unsupported");
+  const nativeV2 = version === "plan-observation-v2";
+  const builder = nativeV2 ? createVersionedProviderPreparationBuilder(version) : null;
 
   const configuration = providerConfigurationProposalSchema.safeParse(input.current.configuration);
   const registry = input.current.ledger.registries.find((row) => row.version === command.version);
   if (!configuration.success || !registry) return refuse("preparation-invalid");
-  let start: ProviderStart;
+  let start: ProviderStart | VersionedProviderStart;
   try {
     const config = configuration.data,
       budget = p.budget;
-    const preparation = createProviderPreparation({
+    const preparation = (builder?.createPreparation ?? createProviderPreparation)({
       registry,
       candidateId: command.candidateId,
       environment: "production",
@@ -236,7 +261,13 @@ function prepareReservation(
       },
       retention: config.retention,
     });
-    validateNewProviderPreparation(preparation, registry, input.current.inspectedAt);
+    if (builder) builder.validateNewPreparation(preparation, registry, input.current.inspectedAt);
+    else
+      validateNewProviderPreparation(
+        preparation as ProviderStart["preparation"],
+        registry,
+        input.current.inspectedAt,
+      );
     const { scope, model, contract, generation, reviewTemplate } = preparation;
     if (
       digest({ scope, model, contract, generation, reviewTemplate }) !==
@@ -245,7 +276,8 @@ function prepareReservation(
       digest(preparation.retention) !== p.bindings.retentionDigest
     )
       return refuse("preparation-invalid");
-    start = providerStartSchema.parse({
+    start = (nativeV2 ? versionedProviderStartSchema : providerStartSchema).parse({
+      ...(nativeV2 ? { startVersion: 2 } : {}),
       clientRequestId: command.clientRequestId,
       expectedBudgetRevision: command.expectedBudgetHead.revision,
       expectedBudgetDigest: command.expectedBudgetHead.headDigest,
@@ -275,7 +307,11 @@ function prepareReservation(
     return refuse("capacity-exceeded");
   try {
     const recordedAt = new Date(input.current.inspectedAt).toISOString();
-    const startInputDigest = digest(providerStartDigestInput(start));
+    const startInputDigest = digest(
+      "startVersion" in start
+        ? versionedProviderStartDigestInput(start)
+        : providerStartDigestInput(start),
+    );
     const budgetEvent = createProviderBudgetEvent({
       schemaVersion: 2,
       scopeId: "candidate-quality-provider-v2-live",
@@ -295,12 +331,20 @@ function prepareReservation(
         reviewUnits: p.reservation.reviewUnits,
       },
     });
-    const run = createProviderRun({
-      input: start,
-      id: input.runId,
-      recordedAt,
-      reservation: budgetEvent,
-    });
+    const run =
+      "startVersion" in start
+        ? createVersionedProviderRun({
+            input: start,
+            id: input.runId,
+            recordedAt,
+            reservation: budgetEvent,
+          })
+        : createProviderRun({
+            input: start,
+            id: input.runId,
+            recordedAt,
+            reservation: budgetEvent,
+          });
     const artifact = createProviderArtifact({
       runId: input.runId,
       body: JSON.stringify(start.preparation.generation.body),
@@ -317,8 +361,8 @@ function prepareReservation(
       operationDigest: run.runDigest,
       recordedAt,
     });
-    const body: Omit<ProviderReservationBinding, "recordDigest"> = {
-      recordVersion: 1,
+    const body: Omit<StoredProviderReservationBinding, "recordDigest"> = {
+      recordVersion: nativeV2 ? 2 : 1,
       kind: "provider-reservation-policy-binding",
       clientRequestId: command.clientRequestId,
       command,
@@ -357,7 +401,7 @@ function prepareReservation(
       receipts: [...input.current.ledger.receipts, receipt],
     };
     const next = inspectQualityLedgers(nextLedger);
-    validateProviderReservationBinding(binding, nextLedger);
+    validateVersionedProviderReservationBinding(binding, nextLedger);
     const totalExposureBytes =
       next.usedBytes + next.reservedBytes + bytes(binding) + input.additionalUsedBytes;
     if (totalExposureBytes > providerReservationPlanLimits.databaseBytes)
@@ -365,7 +409,7 @@ function prepareReservation(
     return {
       status: "prepared",
       plan: {
-        planVersion: 1,
+        planVersion: nativeV2 ? 2 : 1,
         status: "prepared-not-committed",
         transaction: "single-immediate-transaction-required",
         persistence: "audited-v8-transaction-required",
@@ -379,7 +423,7 @@ function prepareReservation(
           reservedReceiptSlots: next.reservedReceiptSlots,
         },
         dispatchAllowed: false,
-      },
+      } as StoredWritePlan,
     };
   } catch {
     return refuse("planned-ledger-invalid");

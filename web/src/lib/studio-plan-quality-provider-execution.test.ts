@@ -710,7 +710,7 @@ describe("v2 explicit transmission ledger", () => {
       receipts: [...f.all().receipts, receipt],
     });
     expect(result.snapshots[1]).toMatchObject({
-      archiveFormatVersion: 3,
+      archiveFormatVersion: 4,
       state: "reserved",
       dispatchAllowed: false,
       canResume: false,

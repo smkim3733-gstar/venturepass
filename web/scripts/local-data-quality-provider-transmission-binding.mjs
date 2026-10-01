@@ -3,7 +3,7 @@ import {
   providerTransmissionApprovalBindingJsonSchema,
   providerTransmissionApprovalCoverageJsonSchema,
 } from "./local-data-quality-provider-transmission-binding-schema.mjs";
-import { inspectProviderReservationArchive } from "./local-data-quality-provider-reservation-binding.mjs";
+import { inspectVersionedProviderReservationArchive as inspectProviderReservationArchive } from "./local-data-quality-provider-reservation-binding.mjs";
 import {
   providerDigest as digest,
   validateProviderRunLedger,
@@ -87,7 +87,7 @@ function inspectRecord(raw, archive, inspected) {
   const state = inspected.ledger;
   const run = state.provider.runs.find((v) => v.id === record.runId);
   const binding = inspected.records.find((v) => v.runId === record.runId);
-  if (!run || !production(run) || !binding) invalid();
+  if (!run || run.archiveFormatVersion !== 2 || !production(run) || !binding) invalid();
   const prep = run.preparation;
   const event = state.provider.events.find((v) => v.runId === run.id && v.revision === 1);
   const receipt = state.provider.receipts.find((v) => v.clientRequestId === record.clientRequestId);
@@ -334,6 +334,10 @@ function eventBoundary(runs, state, counts) {
 export function createProviderTransmissionApprovalMigrationCoverage(archive) {
   try {
     const inspected = inspectProviderReservationArchive(archive);
+    if (
+      archive.ledger.runs.some((run) => run.schemaVersion === 2 && run.archiveFormatVersion !== 2)
+    )
+      invalid();
     const boundary = eventBoundary(archive.ledger.runs, inspected.ledger);
     const body = {
       coverageVersion: 1,
@@ -374,6 +378,7 @@ export function inspectProviderTransmissionApprovalArchive({
       boundary = eventBoundary(prefix, state, coverage.cutoverProviderEvents);
     if (
       count > archive.ledger.runs.length ||
+      prefix.some((run) => run.schemaVersion === 2 && run.archiveFormatVersion !== 2) ||
       coverage.coverageDigest !== digest(omit(coverage, "coverageDigest")) ||
       coverage.cutoverRunPrefixDigest !== digest(prefix.map(identity)) ||
       !same(coverage.cutoverProviderEvents, boundary.prefixes) ||

@@ -6,13 +6,13 @@ import { StudioError } from "./studio-http";
 import type { CandidateRegistrySnapshot } from "./studio-plan-quality-candidate-registry-types";
 import { inspectQualityDatabaseUsage } from "../../scripts/local-data-quality.mjs";
 import { readProviderReservationDatabaseRows } from "../../scripts/local-data-quality-provider-reservation-database.mjs";
-import { inspectProviderReservationArchive } from "../../scripts/local-data-quality-provider-reservation-binding.mjs";
+import { inspectVersionedProviderReservationArchive as inspectProviderReservationArchive } from "../../scripts/local-data-quality-provider-reservation-binding.mjs";
 import { providerDigest as digest } from "../../scripts/local-data-quality-provider.mjs";
 import { readLedgerDatabaseInput } from "./studio-plan-quality-ledger-database";
 import { getProviderConfigurationProposal } from "./studio-plan-quality-provider-configuration";
 import { providerReservationCommandSchema } from "./studio-plan-quality-provider-reservation-command";
 import { prepareProviderReservation } from "./studio-plan-quality-provider-reservation-plan";
-import type { ProviderReservationBinding } from "./studio-plan-quality-provider-reservation-archive-types";
+import type { StoredProviderReservationBinding } from "./studio-plan-quality-provider-reservation-archive-types";
 
 import type { createServerProviderPolicyContext } from "./studio-plan-quality-provider-policy-server";
 
@@ -25,7 +25,7 @@ type Context = {
 };
 export type ProviderReservationCommit = {
   state: "committed";
-  record: ProviderReservationBinding;
+  record: StoredProviderReservationBinding;
   newlyCommitted: boolean;
   replayed: boolean;
 };
