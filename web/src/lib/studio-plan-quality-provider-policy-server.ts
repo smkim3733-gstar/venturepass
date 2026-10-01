@@ -22,6 +22,13 @@ import {
   type ProviderReservationPlannerInput,
 } from "./studio-plan-quality-provider-reservation-plan";
 
+import {
+  createVersionedProviderTransmissionReview,
+  isVersionedProviderTransmissionReviewCurrent,
+  type ProviderTransmissionReviewInput,
+} from "./studio-plan-quality-provider-transmission-review";
+type TransmissionInspection = Omit<ProviderTransmissionReviewInput, "configuration">;
+
 type Inspection = Omit<ProviderPolicyReviewInput, "configuration">;
 type ReservationInspection = Omit<ProviderReservationReviewInput, "configuration">;
 type Reservation = Omit<ProviderReservationPlannerInput, "current"> & {
@@ -42,7 +49,7 @@ export function createServerProviderPolicyContext(
   const configuration = structuredClone(
     providerConfigurationProposalSchema.parse(fixedConfiguration),
   );
-  function bind<T extends Inspection | ReservationInspection>(
+  function bind<T extends Inspection | ReservationInspection | TransmissionInspection>(
     input: T,
   ): T & { configuration: typeof configuration } {
     // Do not treat payload fields as server configuration or version selection.
@@ -55,7 +62,22 @@ export function createServerProviderPolicyContext(
       throw new Error("Server policy selection cannot be supplied by the caller");
     return { ...structuredClone(input), configuration: structuredClone(configuration) };
   }
+  function bindTransmission(input: TransmissionInspection) {
+    // Only fully audited server archive evidence is accepted here. Token estimates or a
+    // client-supplied contract cannot promote a financial hold into transmission authority.
+    if (Object.keys(input).some((key) => !["selection", "inspectedAt", "archive"].includes(key)))
+      throw new Error("Unsupported transmission inspection evidence");
+    return bind(input);
+  }
   return Object.freeze({
+    transmissionReview: (input: TransmissionInspection) =>
+      createVersionedProviderTransmissionReview(version, bindTransmission(input)),
+    isTransmissionReviewCurrent: (review: unknown, input: TransmissionInspection) =>
+      isVersionedProviderTransmissionReviewCurrent(
+        version,
+        structuredClone(review),
+        bindTransmission(input),
+      ),
     reservationReview: (input: ReservationInspection) =>
       createVersionedProviderReservationReview(version, bind(input)),
     isReservationReviewCurrent: (review: unknown, input: ReservationInspection) =>

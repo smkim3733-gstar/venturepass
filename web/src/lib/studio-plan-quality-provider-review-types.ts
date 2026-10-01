@@ -450,7 +450,7 @@ function checkProposalBlockers(
 }
 // Keep this shared contract browser-safe and preserve the policy archive's
 // original template key order. Full stored hash/phase proofs are checked by the archive reader.
-const versionedPolicyRequestSchema = providerRequestReviewSchema.extend({
+export const versionedPolicyRequestSchema = providerRequestReviewSchema.extend({
   contract: providerRequestReviewSchema.shape.contract.extend({
     baseContract: z
       .object({

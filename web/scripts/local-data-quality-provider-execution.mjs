@@ -56,6 +56,17 @@ export const providerTransmissionManifestSchema = object({
   executionContract: providerExecutionContractSchema,
   manifestDigest: hash,
 });
+// Passive v2 manifest only. The frozen approval/event schemas below remain v1.
+export const versionedProviderExecutionContractSchema = providerExecutionContractSchema.extend({
+  version: z.literal(2),
+  engineVersion: z.literal("plan-observation-v2"),
+  nativeRunFormat: z.literal(3),
+});
+export const versionedProviderTransmissionManifestSchema =
+  providerTransmissionManifestSchema.extend({
+    schemaVersion: z.literal(2),
+    executionContract: versionedProviderExecutionContractSchema,
+  });
 const approval = object({
   kind: z.literal("transmission-approved"),
   manifest: providerTransmissionManifestSchema,
@@ -250,9 +261,16 @@ export function providerExecutionOperationDigest(runId, input) {
   });
 }
 export function createProviderTransmissionManifest(run, usagePolicy) {
+  return createTransmissionManifest(run, usagePolicy, false);
+}
+export function createVersionedProviderTransmissionManifest(run, usagePolicy) {
+  return createTransmissionManifest(run, usagePolicy, true);
+}
+function createTransmissionManifest(run, usagePolicy, versioned) {
   const policy = providerUsagePolicySchema.parse(usagePolicy),
     contract = {
-      version: 1,
+      version: versioned ? 2 : 1,
+      ...(versioned ? { engineVersion: "plan-observation-v2", nativeRunFormat: 3 } : {}),
       mode: run.environment === "synthetic-test" ? "synthetic-test" : "provider",
       requestContractDigest: run.preparation.contract.contractDigest,
       usagePolicy: policy,
@@ -264,16 +282,34 @@ export function createProviderTransmissionManifest(run, usagePolicy) {
       maxRetries: 0,
     };
   const v = {
-    schemaVersion: 1,
+    schemaVersion: versioned ? 2 : 1,
     runDigest: run.runDigest,
     preparationDigest: run.preparation.preparationDigest,
     executionContract: { ...contract, contractDigest: digest(contract) },
   };
-  const manifest = providerTransmissionManifestSchema.parse({ ...v, manifestDigest: digest(v) });
-  return validateProviderExecutionManifest(run, manifest);
+  const schema = versioned
+    ? versionedProviderTransmissionManifestSchema
+    : providerTransmissionManifestSchema;
+  const manifest = schema.parse({ ...v, manifestDigest: digest(v) });
+  return validateExecutionManifest(run, manifest, versioned);
 }
 export function validateProviderExecutionManifest(run, value) {
-  const v = providerTransmissionManifestSchema.parse(value),
+  return validateExecutionManifest(run, value, false);
+}
+export function validateVersionedProviderExecutionManifest(run, value) {
+  return validateExecutionManifest(run, value, true);
+}
+function validateExecutionManifest(run, value, versioned) {
+  if (
+    run.archiveFormatVersion !== (versioned ? 3 : 2) ||
+    run.preparation.contract.baseContract.engineVersion !==
+      (versioned ? "plan-observation-v2" : "plan-observation-v1")
+  )
+    fail();
+  const schema = versioned
+    ? versionedProviderTransmissionManifestSchema
+    : providerTransmissionManifestSchema;
+  const v = schema.parse(value),
     c = v.executionContract,
     p = run.preparation,
     u = c.usagePolicy;

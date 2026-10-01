@@ -52,6 +52,19 @@ export type ProviderTransmissionManifest = {
   executionContract: ProviderExecutionContract;
   manifestDigest: string;
 };
+/** Explicit v2 manifest; not accepted by the frozen v1 approval/event schemas. */
+export type VersionedProviderExecutionContract = Omit<ProviderExecutionContract, "version"> & {
+  version: 2;
+  engineVersion: "plan-observation-v2";
+  nativeRunFormat: 3;
+};
+export type VersionedProviderTransmissionManifest = Omit<
+  ProviderTransmissionManifest,
+  "schemaVersion" | "executionContract"
+> & {
+  schemaVersion: 2;
+  executionContract: VersionedProviderExecutionContract;
+};
 export type ProviderTransmissionApproval = {
   kind: "transmission-approved";
   manifest: ProviderTransmissionManifest;

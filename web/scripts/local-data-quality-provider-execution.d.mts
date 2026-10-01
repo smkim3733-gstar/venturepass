@@ -1,6 +1,7 @@
 import type { z } from "zod";
 import type {
   ProviderRun,
+  VersionedProviderRun,
   ProviderScope,
   ProviderBudgetEvent,
   ProviderRunEvent,
@@ -10,6 +11,8 @@ import type {
 } from "../src/lib/studio-plan-quality-provider-types";
 import type {
   ProviderExecutionContract,
+  VersionedProviderExecutionContract,
+  VersionedProviderTransmissionManifest,
   ProviderTransmissionManifest,
   ProviderExecutionEvent,
   ProviderExecutionBudgetEvent,
@@ -38,6 +41,8 @@ export const providerExecutionLimits: Readonly<{
 }>;
 export const providerExecutionContractSchema: z.ZodType<ProviderExecutionContract>;
 export const providerTransmissionManifestSchema: z.ZodType<ProviderTransmissionManifest>;
+export const versionedProviderExecutionContractSchema: z.ZodType<VersionedProviderExecutionContract>;
+export const versionedProviderTransmissionManifestSchema: z.ZodType<VersionedProviderTransmissionManifest>;
 export const providerExecutionPayloadSchema: z.ZodType<ProviderExecutionPayload>;
 export const providerExecutionEventSchema: z.ZodType<ProviderExecutionEvent>;
 export const providerExecutionBudgetEventSchema: z.ZodType<ProviderExecutionBudgetEvent>;
@@ -70,6 +75,14 @@ export function validateProviderExecutionManifest(
   run: ProviderRun,
   manifest: ProviderTransmissionManifest,
 ): ProviderTransmissionManifest;
+export function createVersionedProviderTransmissionManifest(
+  run: VersionedProviderRun,
+  usagePolicy: ProviderUsagePolicy,
+): VersionedProviderTransmissionManifest;
+export function validateVersionedProviderExecutionManifest(
+  run: VersionedProviderRun,
+  manifest: VersionedProviderTransmissionManifest,
+): VersionedProviderTransmissionManifest;
 export function deriveProviderExecutionReviewRequest(
   run: ProviderRun,
   output: ProviderExecutionOutput,

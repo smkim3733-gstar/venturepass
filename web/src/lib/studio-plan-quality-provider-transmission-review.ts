@@ -2,15 +2,21 @@ import { z } from "zod";
 import { inspectVersionedProviderReservationArchive as inspectProviderReservationArchive } from "../../scripts/local-data-quality-provider-reservation-binding.mjs";
 import {
   createProviderTransmissionManifest,
+  createVersionedProviderTransmissionManifest,
   getProviderExecutionBudgetSnapshot,
 } from "../../scripts/local-data-quality-provider-execution.mjs";
 import {
   providerBudgetScope,
   providerDigest as digest,
 } from "../../scripts/local-data-quality-provider.mjs";
-import { validateNewProviderPreparation } from "./studio-plan-quality-provider-core";
+import {
+  validateNewProviderPreparation,
+  createVersionedProviderPreparationBuilder,
+} from "./studio-plan-quality-provider-core";
+import type { PlanPromptVersion } from "./studio-plan-prompt-versions";
 import {
   createProviderConfigurationProposalView,
+  createVersionedProviderConfigurationProposalView,
   getProviderConfigurationExpiry,
 } from "./studio-plan-quality-provider-configuration";
 import {
@@ -20,6 +26,8 @@ import {
   providerTransmissionReviewLifetimeMs,
   providerTransmissionReviewNotice,
   providerTransmissionReviewSchema,
+  versionedProviderTransmissionReviewSchema,
+  type StoredProviderTransmissionReview,
   type ProviderTransmissionReview,
 } from "./studio-plan-quality-provider-transmission-review-types";
 
@@ -49,6 +57,9 @@ export type ProviderTransmissionReviewResult =
         | "configuration-changed";
       review: null;
     };
+export type VersionedProviderTransmissionReviewResult =
+  | { status: "review"; review: StoredProviderTransmissionReview }
+  | Extract<ProviderTransmissionReviewResult, { status: "unavailable" }>;
 type Reason = Extract<ProviderTransmissionReviewResult, { status: "unavailable" }>["reason"];
 const unavailable = (reason: Reason): ProviderTransmissionReviewResult => ({
   status: "unavailable",
@@ -62,6 +73,20 @@ const same = (a: unknown, b: unknown) => digest(a) === digest(b);
 export function createProviderTransmissionReview(
   input: ProviderTransmissionReviewInput,
 ): ProviderTransmissionReviewResult {
+  return createTransmissionReview(input, null) as ProviderTransmissionReviewResult;
+}
+export function createVersionedProviderTransmissionReview(
+  version: PlanPromptVersion,
+  input: ProviderTransmissionReviewInput,
+): VersionedProviderTransmissionReviewResult {
+  createVersionedProviderPreparationBuilder(version);
+  return createTransmissionReview(input, version);
+}
+function createTransmissionReview(
+  input: ProviderTransmissionReviewInput,
+  version: PlanPromptVersion | null,
+): VersionedProviderTransmissionReviewResult {
+  const nativeV2 = version === "plan-observation-v2";
   const selection = providerTransmissionReviewInputSchema.safeParse(input.selection);
   if (!selection.success) return unavailable("selection-invalid");
   if (!z.string().datetime().safeParse(input.inspectedAt).success)
@@ -91,7 +116,12 @@ export function createProviderTransmissionReview(
   const snapshot = state.provider.snapshots.find((row) => row.run.id === selection.data.runId);
   if (!snapshot || snapshot.run.runDigest !== selection.data.runDigest)
     return unavailable("selection-invalid");
-  if (snapshot.run.archiveFormatVersion !== 2) return unavailable("preparation-changed");
+  if (
+    snapshot.run.archiveFormatVersion !== (nativeV2 ? 3 : 2) ||
+    snapshot.run.preparation.contract.baseContract.engineVersion !==
+      (version ?? "plan-observation-v1")
+  )
+    return unavailable("preparation-changed");
   const run = snapshot.run,
     prep = run.preparation;
   if (run.environment !== "production") return unavailable("production-reservation-required");
@@ -104,7 +134,15 @@ export function createProviderTransmissionReview(
   );
   if (!registry) return unavailable("archive-invalid");
   try {
-    validateNewProviderPreparation(prep, registry, inspectedAt);
+    if (version)
+      createVersionedProviderPreparationBuilder(version).validateNewPreparation(
+        prep,
+        registry,
+        inspectedAt,
+      );
+    else if (run.archiveFormatVersion === 2)
+      validateNewProviderPreparation(run.preparation, registry, inspectedAt);
+    else return unavailable("preparation-changed");
   } catch {
     return unavailable("preparation-changed");
   }
@@ -114,9 +152,13 @@ export function createProviderTransmissionReview(
     configuration: input.configuration,
     inspectedAt,
   };
+  const proposal = (value: typeof proposalInput) =>
+    version
+      ? createVersionedProviderConfigurationProposalView(version, value)
+      : createProviderConfigurationProposalView(value);
   let current, reserved;
   try {
-    current = createProviderConfigurationProposalView(proposalInput);
+    current = proposal(proposalInput);
     if (!current)
       return unavailable(
         getProviderConfigurationExpiry(proposalInput)
@@ -130,7 +172,7 @@ export function createProviderTransmissionReview(
       binding.approvedReview.policyReview.bindings.configurationDigest
     )
       return unavailable("configuration-changed");
-    reserved = createProviderConfigurationProposalView({
+    reserved = proposal({
       ...proposalInput,
       inspectedAt: prep.preparedAt,
     });
@@ -168,7 +210,10 @@ export function createProviderTransmissionReview(
     : null;
   const reservedReference = binding.command.expectedPolicyReference;
   try {
-    const manifest = createProviderTransmissionManifest(run, reserved.proposal.usagePolicy);
+    const manifest =
+      run.archiveFormatVersion === 3
+        ? createVersionedProviderTransmissionManifest(run, reserved.proposal.usagePolicy)
+        : createProviderTransmissionManifest(run, reserved.proposal.usagePolicy);
     const scope = providerBudgetScope("production");
     const budget = getProviderExecutionBudgetSnapshot(
       state.provider.budgetEvents.filter((row) => row.scopeId === scope),
@@ -182,7 +227,7 @@ export function createProviderTransmissionReview(
     const facts = {
       policyUnchanged: same(currentReference, reservedReference),
       runUntouched:
-        snapshot.archiveFormatVersion === 2 &&
+        snapshot.archiveFormatVersion === (nativeV2 ? 4 : 2) &&
         snapshot.revision === 0 &&
         snapshot.state === "reserved",
       reservationIntact:
@@ -194,7 +239,7 @@ export function createProviderTransmissionReview(
       budgetWithinBound: !budget.boundBreached && budget.deficitUnits === "0",
     };
     const value = {
-      schemaVersion: 1 as const,
+      schemaVersion: nativeV2 ? 2 : 1,
       kind: "provider-transmission-review" as const,
       environment: "production" as const,
       inputProvenance: "registered-synthetic-candidate" as const,
@@ -260,6 +305,15 @@ export function createProviderTransmissionReview(
       manifest,
       facts,
       assessment: assessProviderTransmissionReview(facts),
+      ...(nativeV2
+        ? {
+            tokenAssessment: {
+              basis: "financial-reservation-only" as const,
+              actualTokenCountMeasured: false as const,
+              contextFitVerified: false as const,
+            },
+          }
+        : {}),
       accountAccess: "not-checked" as const,
       actions: {
         approvalWriteAllowed: false as const,
@@ -269,7 +323,10 @@ export function createProviderTransmissionReview(
       nextStep: "separate-transmission-approval-required" as const,
       notice: providerTransmissionReviewNotice,
     };
-    const parsed = providerTransmissionReviewSchema.safeParse({
+    const schema = nativeV2
+      ? versionedProviderTransmissionReviewSchema
+      : providerTransmissionReviewSchema;
+    const parsed = schema.safeParse({
       ...value,
       reviewDigest: digest(value),
     });
@@ -287,7 +344,26 @@ export function isProviderTransmissionReviewCurrent(
   value: unknown,
   current: ProviderTransmissionReviewInput,
 ): boolean {
-  const parsed = providerTransmissionReviewSchema.safeParse(value);
+  return isTransmissionReviewCurrent(value, current, null);
+}
+export function isVersionedProviderTransmissionReviewCurrent(
+  version: PlanPromptVersion,
+  value: unknown,
+  current: ProviderTransmissionReviewInput,
+): boolean {
+  createVersionedProviderPreparationBuilder(version);
+  return isTransmissionReviewCurrent(value, current, version);
+}
+function isTransmissionReviewCurrent(
+  value: unknown,
+  current: ProviderTransmissionReviewInput,
+  version: PlanPromptVersion | null,
+): boolean {
+  const schema =
+    version === "plan-observation-v2"
+      ? versionedProviderTransmissionReviewSchema
+      : providerTransmissionReviewSchema;
+  const parsed = schema.safeParse(value);
   if (!parsed.success || !z.string().datetime().safeParse(current.inspectedAt).success)
     return false;
   const review = parsed.data,
@@ -298,6 +374,9 @@ export function isProviderTransmissionReviewCurrent(
     review.reviewDigest !== digest(providerTransmissionReviewDigestInput(review))
   )
     return false;
-  const rebuilt = createProviderTransmissionReview({ ...current, inspectedAt: review.inspectedAt });
+  const rebuilt = createTransmissionReview(
+    { ...current, inspectedAt: review.inspectedAt },
+    version,
+  );
   return rebuilt.status === "review" && rebuilt.review.reviewDigest === review.reviewDigest;
 }

@@ -4,6 +4,7 @@ import {
   providerProposalRetentionSchema,
   providerProposalUsagePolicySchema,
   providerRequestReviewSchema,
+  versionedPolicyRequestSchema,
   providerReviewScopeSchema,
 } from "./studio-plan-quality-provider-review-types";
 import { providerPolicyReviewSchema } from "./studio-plan-quality-provider-policy-review-types";
@@ -59,6 +60,15 @@ export const providerTransmissionReviewManifestSchema = z
     manifestDigest: hash,
   })
   .strict();
+export const versionedProviderTransmissionReviewManifestSchema =
+  providerTransmissionReviewManifestSchema.extend({
+    schemaVersion: z.literal(2),
+    executionContract: providerTransmissionReviewManifestSchema.shape.executionContract.extend({
+      version: z.literal(2),
+      engineVersion: z.literal("plan-observation-v2"),
+      nativeRunFormat: z.literal(3),
+    }),
+  });
 const blocker = z.enum([
   "policy-superseded",
   "run-not-reserved",
@@ -84,7 +94,7 @@ export function assessProviderTransmissionReview(facts: z.infer<typeof factsSche
   if (!facts.budgetWithinBound) blockers.push("budget-bound-breached");
   return { state: blockers.length ? ("blocked" as const) : ("conditions-met" as const), blockers };
 }
-export const providerTransmissionReviewSchema = z
+const transmissionReviewShape = z
   .object({
     schemaVersion: z.literal(1),
     kind: z.literal("provider-transmission-review"),
@@ -168,103 +178,140 @@ export const providerTransmissionReviewSchema = z
     notice: z.literal(providerTransmissionReviewNotice),
     reviewDigest: hash,
   })
-  .strict()
-  .superRefine((v, context) => {
-    const fail = () =>
-      context.addIssue({ code: "custom", message: "전송 검토 근거가 일치하지 않습니다." });
-    const now = Date.parse(v.inspectedAt),
-      end = Date.parse(v.expiresAt),
-      p = v.policy;
+  .strict();
+const versionedTransmissionReviewShape = transmissionReviewShape.extend({
+  schemaVersion: z.literal(2),
+  run: transmissionReviewShape.shape.run.extend({ archiveFormatVersion: z.literal(4) }),
+  request: versionedPolicyRequestSchema.extend({
+    contract: versionedPolicyRequestSchema.shape.contract.extend({
+      baseContract: versionedPolicyRequestSchema.shape.contract.shape.baseContract.extend({
+        engineVersion: z.literal("plan-observation-v2"),
+      }),
+    }),
+  }),
+  manifest: versionedProviderTransmissionReviewManifestSchema,
+  tokenAssessment: z
+    .object({
+      basis: z.literal("financial-reservation-only"),
+      actualTokenCountMeasured: z.literal(false),
+      contextFitVerified: z.literal(false),
+    })
+    .strict(),
+});
+function validateTransmissionReview(
+  v: z.infer<typeof transmissionReviewShape> | z.infer<typeof versionedTransmissionReviewShape>,
+  context: z.RefinementCtx,
+  versioned: boolean,
+) {
+  const fail = () =>
+    context.addIssue({ code: "custom", message: "전송 검토 근거가 일치하지 않습니다." });
+  const now = Date.parse(v.inspectedAt),
+    end = Date.parse(v.expiresAt),
+    p = v.policy;
+  if (
+    end <= now ||
+    end - now > providerTransmissionReviewLifetimeMs ||
+    Date.parse(v.run.preparedAt) > Date.parse(v.run.recordedAt) ||
+    Date.parse(v.run.recordedAt) > now ||
+    end > Date.parse(v.run.preparationExpiresAt) ||
+    end > Date.parse(v.retention.validUntil) ||
+    end > Date.parse(v.manifest.executionContract.usagePolicy.authority.validUntil)
+  )
+    fail();
+  for (const r of [p.reservedReference, p.currentReference]) {
     if (
-      end <= now ||
-      end - now > providerTransmissionReviewLifetimeMs ||
-      Date.parse(v.run.preparedAt) > Date.parse(v.run.recordedAt) ||
-      Date.parse(v.run.recordedAt) > now ||
-      end > Date.parse(v.run.preparationExpiresAt) ||
-      end > Date.parse(v.retention.validUntil) ||
-      end > Date.parse(v.manifest.executionContract.usagePolicy.authority.validUntil)
+      r &&
+      (r.revision > p.head.revision ||
+        Date.parse(r.recordedAt) > now ||
+        (r.revision === p.head.revision && r.recordDigest !== p.head.headDigest))
     )
       fail();
-    for (const r of [p.reservedReference, p.currentReference]) {
-      if (
-        r &&
-        (r.revision > p.head.revision ||
-          Date.parse(r.recordedAt) > now ||
-          (r.revision === p.head.revision && r.recordDigest !== p.head.headDigest))
-      )
-        fail();
-    }
-    const expectedPolicy =
-      p.currentReference !== null &&
-      p.currentReference.revision === p.reservedReference.revision &&
-      p.currentReference.recordDigest === p.reservedReference.recordDigest;
-    const expectedRun =
-      v.run.archiveFormatVersion === 2 && v.run.revision === 0 && v.run.state === "reserved";
-    if (v.facts.policyUnchanged !== expectedPolicy || v.facts.runUntouched !== expectedRun) fail();
-    if (JSON.stringify(v.assessment) !== JSON.stringify(assessProviderTransmissionReview(v.facts)))
-      fail();
-    const request = v.request,
-      c = v.manifest.executionContract,
-      b = v.budget,
-      r = v.reservation;
-    if (
-      request.scope.version !== v.scope.version ||
-      request.scope.versionDigest !== v.scope.versionDigest ||
-      request.scope.candidateId !== v.scope.candidateId ||
-      request.scope.sourceDigest !== v.scope.sourceDigest ||
-      request.scope.candidateDigest !== v.scope.candidateDigest ||
-      request.scope.modelInputDigest !== v.scope.modelInputDigest ||
-      v.manifest.runDigest !== v.run.runDigest ||
-      v.manifest.preparationDigest !== v.run.preparationDigest ||
-      c.requestContractDigest !== request.contract.contractDigest ||
-      c.usagePolicy.configuredModel !== request.model ||
-      v.financialBasis.model !== request.model ||
-      v.financialBasis.calculatedAt !== v.run.preparedAt
-    )
-      fail();
-    const money = [
-      b.capUnits,
-      b.heldUnits,
-      b.recognizedUnits,
-      b.availableUnits,
-      b.deficitUnits,
-      ...Object.entries(r)
-        .filter(([k]) => k.endsWith("Units"))
-        .map(([, amount]) => amount),
-    ];
-    if (money.some((amount) => !units.safeParse(amount).success)) return;
-    const exposure = BigInt(b.heldUnits) + BigInt(b.recognizedUnits),
-      cap = BigInt(b.capUnits);
-    const costs = v.financialBasis.costs;
-    if (
-      b.revision < 1 ||
-      !b.headDigest ||
-      !b.currency ||
-      b.unitScale === null ||
-      BigInt(b.availableUnits) !== (cap > exposure ? cap - exposure : BigInt(0)) ||
-      BigInt(b.deficitUnits) !== (exposure > cap ? exposure - cap : BigInt(0)) ||
-      BigInt(r.totalUnits) !== BigInt(r.generationUnits) + BigInt(r.reviewUnits) ||
-      BigInt(r.heldUnits) !== BigInt(r.generationHeldUnits) + BigInt(r.reviewHeldUnits) ||
-      BigInt(r.heldUnits) > BigInt(b.heldUnits) ||
-      r.generationUnits !== costs.generation.totalUnits ||
-      r.reviewUnits !== costs.review.totalUnits ||
-      r.totalUnits !== costs.totalUnits ||
-      v.facts.reservationIntact !==
-        (!r.generationSettled &&
-          !r.reviewSettled &&
-          r.generationHeldUnits === r.generationUnits &&
-          r.reviewHeldUnits === r.reviewUnits) ||
-      v.facts.budgetCompatible !==
-        (b.currency === costs.currency && b.unitScale === costs.unitScale) ||
-      v.facts.budgetWithinBound !== (!b.boundBreached && b.deficitUnits === "0")
-    )
-      fail();
-  });
+  }
+  const expectedPolicy =
+    p.currentReference !== null &&
+    p.currentReference.revision === p.reservedReference.revision &&
+    p.currentReference.recordDigest === p.reservedReference.recordDigest;
+  const expectedRun =
+    v.run.archiveFormatVersion === (versioned ? 4 : 2) &&
+    v.run.revision === 0 &&
+    v.run.state === "reserved";
+  if (v.facts.policyUnchanged !== expectedPolicy || v.facts.runUntouched !== expectedRun) fail();
+  if (JSON.stringify(v.assessment) !== JSON.stringify(assessProviderTransmissionReview(v.facts)))
+    fail();
+  const request = v.request,
+    c = v.manifest.executionContract,
+    b = v.budget,
+    r = v.reservation;
+  if (
+    request.scope.version !== v.scope.version ||
+    request.scope.versionDigest !== v.scope.versionDigest ||
+    request.scope.candidateId !== v.scope.candidateId ||
+    request.scope.sourceDigest !== v.scope.sourceDigest ||
+    request.scope.candidateDigest !== v.scope.candidateDigest ||
+    request.scope.modelInputDigest !== v.scope.modelInputDigest ||
+    v.manifest.runDigest !== v.run.runDigest ||
+    v.manifest.preparationDigest !== v.run.preparationDigest ||
+    c.requestContractDigest !== request.contract.contractDigest ||
+    c.usagePolicy.configuredModel !== request.model ||
+    v.financialBasis.model !== request.model ||
+    v.financialBasis.calculatedAt !== v.run.preparedAt
+  )
+    fail();
+  const money = [
+    b.capUnits,
+    b.heldUnits,
+    b.recognizedUnits,
+    b.availableUnits,
+    b.deficitUnits,
+    ...Object.entries(r)
+      .filter(([k]) => k.endsWith("Units"))
+      .map(([, amount]) => amount),
+  ];
+  if (money.some((amount) => !units.safeParse(amount).success)) return;
+  const exposure = BigInt(b.heldUnits) + BigInt(b.recognizedUnits),
+    cap = BigInt(b.capUnits);
+  const costs = v.financialBasis.costs;
+  if (
+    b.revision < 1 ||
+    !b.headDigest ||
+    !b.currency ||
+    b.unitScale === null ||
+    BigInt(b.availableUnits) !== (cap > exposure ? cap - exposure : BigInt(0)) ||
+    BigInt(b.deficitUnits) !== (exposure > cap ? exposure - cap : BigInt(0)) ||
+    BigInt(r.totalUnits) !== BigInt(r.generationUnits) + BigInt(r.reviewUnits) ||
+    BigInt(r.heldUnits) !== BigInt(r.generationHeldUnits) + BigInt(r.reviewHeldUnits) ||
+    BigInt(r.heldUnits) > BigInt(b.heldUnits) ||
+    r.generationUnits !== costs.generation.totalUnits ||
+    r.reviewUnits !== costs.review.totalUnits ||
+    r.totalUnits !== costs.totalUnits ||
+    v.facts.reservationIntact !==
+      (!r.generationSettled &&
+        !r.reviewSettled &&
+        r.generationHeldUnits === r.generationUnits &&
+        r.reviewHeldUnits === r.reviewUnits) ||
+    v.facts.budgetCompatible !==
+      (b.currency === costs.currency && b.unitScale === costs.unitScale) ||
+    v.facts.budgetWithinBound !== (!b.boundBreached && b.deficitUnits === "0")
+  )
+    fail();
+}
+export const providerTransmissionReviewSchema = transmissionReviewShape.superRefine((v, context) =>
+  validateTransmissionReview(v, context, false),
+);
+export const versionedProviderTransmissionReviewSchema =
+  versionedTransmissionReviewShape.superRefine((v, context) =>
+    validateTransmissionReview(v, context, true),
+  );
+export type VersionedProviderTransmissionReview = z.infer<
+  typeof versionedProviderTransmissionReviewSchema
+>;
+export type StoredProviderTransmissionReview =
+  ProviderTransmissionReview | VersionedProviderTransmissionReview;
 export type ProviderTransmissionReview = z.infer<typeof providerTransmissionReviewSchema>;
 export function providerTransmissionReviewDigestInput(
-  value: Omit<ProviderTransmissionReview, "reviewDigest"> | ProviderTransmissionReview,
+  value: Omit<StoredProviderTransmissionReview, "reviewDigest"> | StoredProviderTransmissionReview,
 ) {
-  const { reviewDigest: ignored, ...body } = value as ProviderTransmissionReview;
+  const { reviewDigest: ignored, ...body } = value as StoredProviderTransmissionReview;
   void ignored;
   return body;
 }
