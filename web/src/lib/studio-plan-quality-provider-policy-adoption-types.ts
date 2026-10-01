@@ -1,5 +1,8 @@
 import { z } from "zod";
-import { providerReviewProposalViewSchema } from "./studio-plan-quality-provider-review-types";
+import {
+  providerReviewProposalViewSchema,
+  versionedProviderReviewProposalViewSchema,
+} from "./studio-plan-quality-provider-review-types";
 import {
   providerPolicyBudgetHeadSchema,
   providerPolicyReviewSchema,
@@ -72,3 +75,20 @@ export function providerPolicyAdoptionRecordDigestInput(
   void _ignored;
   return body;
 }
+
+export const versionedProviderPolicyAdoptionRecordSchema =
+  providerPolicyAdoptionRecordSchema.extend({
+    recordVersion: z.literal(2),
+    reviewedProposal: versionedProviderReviewProposalViewSchema,
+  });
+export type VersionedProviderPolicyAdoptionRecord = z.infer<
+  typeof versionedProviderPolicyAdoptionRecordSchema
+>;
+export const versionedProviderPolicyAdoptionWritePlanSchema =
+  providerPolicyAdoptionWritePlanSchema.extend({
+    planVersion: z.literal(2),
+    record: versionedProviderPolicyAdoptionRecordSchema,
+  });
+export type VersionedProviderPolicyAdoptionWritePlan = z.infer<
+  typeof versionedProviderPolicyAdoptionWritePlanSchema
+>;

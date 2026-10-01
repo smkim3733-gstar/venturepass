@@ -1,8 +1,11 @@
+import { createVersionedProviderPreparationBuilder } from "./studio-plan-quality-provider-core";
 import { z } from "zod";
+import type { PlanPromptVersion } from "./studio-plan-prompt-versions";
 import type { CandidateRegistrySnapshot } from "./studio-plan-quality-candidate-registry-types";
 import { planQualityEvaluationDigest as digest } from "./studio-plan-quality-evaluation";
 import {
   createProviderConfigurationProposalView,
+  createVersionedProviderConfigurationProposalView,
   getProviderConfigurationExpiry,
 } from "./studio-plan-quality-provider-configuration";
 import {
@@ -52,11 +55,27 @@ const unavailable = (
 export function createProviderPolicyReview(
   input: ProviderPolicyReviewInput,
 ): ProviderPolicyReviewResult {
+  return createPolicyReview(input, null);
+}
+export function createVersionedProviderPolicyReview(
+  version: PlanPromptVersion,
+  input: ProviderPolicyReviewInput,
+): ProviderPolicyReviewResult {
+  createVersionedProviderPreparationBuilder(version);
+  return createPolicyReview(input, version);
+}
+function createPolicyReview(
+  input: ProviderPolicyReviewInput,
+  version: PlanPromptVersion | null,
+): ProviderPolicyReviewResult {
   if (!z.string().datetime().safeParse(input.inspectedAt).success)
     return unavailable("inspection-invalid");
   const inspectedAt = new Date(input.inspectedAt).toISOString();
   const proposalInput = { ...input, inspectedAt };
-  const proposal = createProviderConfigurationProposalView(proposalInput);
+  const proposal =
+    version === null
+      ? createProviderConfigurationProposalView(proposalInput)
+      : createVersionedProviderConfigurationProposalView(version, proposalInput);
   if (!proposal)
     return unavailable(
       getProviderConfigurationExpiry(proposalInput)
@@ -146,6 +165,21 @@ export function isProviderPolicyReviewCurrent(
   value: unknown,
   current: ProviderPolicyReviewInput,
 ): boolean {
+  return isReviewCurrent(value, current, null);
+}
+export function isVersionedProviderPolicyReviewCurrent(
+  version: PlanPromptVersion,
+  value: unknown,
+  current: ProviderPolicyReviewInput,
+): boolean {
+  createVersionedProviderPreparationBuilder(version);
+  return isReviewCurrent(value, current, version);
+}
+function isReviewCurrent(
+  value: unknown,
+  current: ProviderPolicyReviewInput,
+  version: PlanPromptVersion | null,
+) {
   const parsed = providerPolicyReviewSchema.safeParse(value);
   if (!parsed.success || !z.string().datetime().safeParse(current.inspectedAt).success)
     return false;
@@ -157,6 +191,6 @@ export function isProviderPolicyReviewCurrent(
     review.reviewDigest !== digest(providerPolicyReviewDigestInput(review))
   )
     return false;
-  const rebuilt = createProviderPolicyReview({ ...current, inspectedAt: review.inspectedAt });
+  const rebuilt = createPolicyReview({ ...current, inspectedAt: review.inspectedAt }, version);
   return rebuilt.status === "review" && rebuilt.review.reviewDigest === review.reviewDigest;
 }

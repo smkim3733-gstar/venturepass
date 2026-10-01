@@ -434,16 +434,45 @@ export const providerReviewProposalViewSchema = z
       .length(4),
   })
   .strict()
-  .superRefine((value, context) => {
-    if (
-      value.blockers.some(
-        (item, i) =>
-          item.code !== providerProposalBlockerCodes[i] ||
-          item.message !== providerProposalBlockerMessages[item.code],
-      )
+  .superRefine(checkProposalBlockers);
+function checkProposalBlockers(
+  value: { blockers: { code: keyof typeof providerProposalBlockerMessages; message: string }[] },
+  context: z.RefinementCtx,
+) {
+  if (
+    value.blockers.some(
+      (item, i) =>
+        item.code !== providerProposalBlockerCodes[i] ||
+        item.message !== providerProposalBlockerMessages[item.code],
     )
-      context.addIssue({ code: "custom", message: "제안 상태의 안내가 일치하지 않습니다." });
-  });
+  )
+    context.addIssue({ code: "custom", message: "제안 상태의 안내가 일치하지 않습니다." });
+}
+// Keep this shared contract browser-safe and preserve the policy archive's
+// original template key order. Full stored hash/phase proofs are checked by the archive reader.
+const versionedPolicyRequestSchema = providerRequestReviewSchema.extend({
+  contract: providerRequestReviewSchema.shape.contract.extend({
+    baseContract: z
+      .object({
+        ...engineExecutionContractSchema.shape,
+        engineVersion: z.enum(["plan-observation-v1", "plan-observation-v2"]),
+      })
+      .strict(),
+  }),
+});
+export const versionedProviderReviewProposalViewSchema = z
+  .object({
+    ...providerReviewProposalViewSchema.shape,
+    viewVersion: z.literal(4),
+    proposal: providerReviewProposalViewSchema.shape.proposal.extend({
+      requestReview: versionedPolicyRequestSchema,
+    }),
+  })
+  .strict()
+  .superRefine(checkProposalBlockers);
+export type VersionedProviderReviewProposalView = z.infer<
+  typeof versionedProviderReviewProposalViewSchema
+>;
 export type ProviderReviewProposalView = z.infer<typeof providerReviewProposalViewSchema>;
 export const providerReviewViewSchema = z.union([
   providerReviewMissingViewSchema,

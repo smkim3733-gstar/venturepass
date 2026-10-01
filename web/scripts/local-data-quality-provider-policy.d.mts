@@ -24,3 +24,20 @@ export function inspectProviderPolicyLedger(input: {
   usedBytes: number;
   provider: ReturnType<typeof inspectProviderLedger>;
 };
+
+import type { VersionedProviderPolicyAdoptionRecord } from "../src/lib/studio-plan-quality-provider-policy-adoption-types";
+type StoredPolicyRecord = ProviderPolicyAdoptionRecord | VersionedProviderPolicyAdoptionRecord;
+export function decodeVersionedProviderPolicyRows(rows: unknown[]): {
+  records: StoredPolicyRecord[];
+  usedBytes: number;
+};
+export function validateVersionedProviderPolicyAdoptionRecord(
+  raw: unknown,
+  registry: CandidateRegistrySnapshot,
+  budgetEvents: unknown[],
+): StoredPolicyRecord;
+export function inspectVersionedProviderPolicyLedger(
+  input: Parameters<typeof inspectProviderPolicyLedger>[0],
+): Omit<ReturnType<typeof inspectProviderPolicyLedger>, "records"> & {
+  records: StoredPolicyRecord[];
+};

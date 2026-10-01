@@ -1,7 +1,8 @@
 import { readFixedProviderConfiguration } from "./studio-plan-quality-provider-configuration-current";
 import { createHash } from "node:crypto";
 import type { CandidateRegistrySnapshot } from "./studio-plan-quality-candidate-registry-types";
-import { createProviderRequestReview } from "./studio-plan-quality-provider-core";
+import { createVersionedProviderPreparationBuilder } from "./studio-plan-quality-provider-core";
+import type { PlanPromptVersion } from "./studio-plan-prompt-versions";
 import { createProviderContextReservation } from "./studio-plan-quality-provider-reservation";
 import { planQualityEvaluationDigest as digest } from "./studio-plan-quality-evaluation";
 import { validateProviderUsagePolicy } from "../../scripts/local-data-quality-provider-usage.mjs";
@@ -10,6 +11,8 @@ import {
   providerConfigurationDigestInput,
   providerProposalSourceDigestInput,
   providerReviewProposalViewSchema,
+  versionedProviderReviewProposalViewSchema,
+  type VersionedProviderReviewProposalView,
   providerReviewNotice,
   providerProposalBlockerCodes,
   providerProposalBlockerMessages,
@@ -63,12 +66,25 @@ function sourceBinding(
  * server proposal. Synthetic provenance can never produce this production view.
  * Invalid/expired evidence cannot create a proposal; expiry diagnostics are separate.
  */
-export function createProviderConfigurationProposalView(input: {
+export type ProviderConfigurationInspection = {
   registry: CandidateRegistrySnapshot;
   candidateId: string;
   inspectedAt: string;
   configuration: unknown;
-}): ProviderReviewProposalView | null {
+};
+export function createProviderConfigurationProposalView(
+  input: ProviderConfigurationInspection,
+): ProviderReviewProposalView | null {
+  return createProposal(input, null) as ProviderReviewProposalView | null;
+}
+export function createVersionedProviderConfigurationProposalView(
+  version: PlanPromptVersion,
+  input: ProviderConfigurationInspection,
+): VersionedProviderReviewProposalView | null {
+  createVersionedProviderPreparationBuilder(version);
+  return createProposal(input, version) as VersionedProviderReviewProposalView | null;
+}
+function createProposal(input: ProviderConfigurationInspection, version: PlanPromptVersion | null) {
   const parsed = providerConfigurationProposalSchema.safeParse(input.configuration);
   const now = Date.parse(input.inspectedAt);
   if (!parsed.success || !Number.isFinite(now)) return null;
@@ -113,7 +129,9 @@ export function createProviderConfigurationProposalView(input: {
       { ...config.usagePolicyTemplate, financialBasisDigest: digest(financialBasis) },
       financialBasis,
     );
-    const requestReview = createProviderRequestReview({
+    const requestReview = createVersionedProviderPreparationBuilder(
+      version ?? "plan-observation-v1",
+    ).createRequestReview({
       registry: input.registry,
       candidateId: input.candidateId,
       model: config.model,
@@ -124,7 +142,7 @@ export function createProviderConfigurationProposalView(input: {
     );
     if (!manifest) return null;
     const view = {
-      viewVersion: 2 as const,
+      viewVersion: version === null ? (2 as const) : (4 as const),
       providerContractVersion: 2 as const,
       state: "proposal-only" as const,
       environment: "production" as const,
@@ -163,7 +181,11 @@ export function createProviderConfigurationProposalView(input: {
       notice: providerReviewNotice,
     };
     // Parse before returning; neither a loosely shaped future branch nor a grant is accepted.
-    return providerReviewProposalViewSchema.parse({ ...view, viewDigest: digest(view) });
+    return (
+      version === null
+        ? providerReviewProposalViewSchema
+        : versionedProviderReviewProposalViewSchema
+    ).parse({ ...view, viewDigest: digest(view) });
   } catch {
     return null;
   }

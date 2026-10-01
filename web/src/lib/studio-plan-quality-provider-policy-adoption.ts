@@ -1,8 +1,14 @@
+import { createVersionedProviderPreparationBuilder } from "./studio-plan-quality-provider-core";
 import { z } from "zod";
+import type { PlanPromptVersion } from "./studio-plan-prompt-versions";
 import { planQualityEvaluationDigest as digest } from "./studio-plan-quality-evaluation";
-import { createProviderConfigurationProposalView } from "./studio-plan-quality-provider-configuration";
+import {
+  createProviderConfigurationProposalView,
+  createVersionedProviderConfigurationProposalView,
+} from "./studio-plan-quality-provider-configuration";
 import {
   isProviderPolicyReviewCurrent,
+  isVersionedProviderPolicyReviewCurrent,
   type ProviderPolicyReviewInput,
 } from "./studio-plan-quality-provider-policy-review";
 import {
@@ -12,7 +18,10 @@ import {
   type ProviderPolicyReview,
 } from "./studio-plan-quality-provider-policy-review-types";
 import { providerReviewDigestInput } from "./studio-plan-quality-provider-review-types";
-import { validateProviderPolicyAdoptionRecord } from "../../scripts/local-data-quality-provider-policy.mjs";
+import {
+  validateProviderPolicyAdoptionRecord,
+  validateVersionedProviderPolicyAdoptionRecord,
+} from "../../scripts/local-data-quality-provider-policy.mjs";
 import {
   createProviderBudgetEvent,
   createProviderReceipt,
@@ -25,6 +34,9 @@ import {
   providerPolicyAdoptionRecordSchema,
   providerPolicyAdoptionRecordDigestInput,
   providerPolicyAdoptionWritePlanSchema,
+  versionedProviderPolicyAdoptionWritePlanSchema,
+  type VersionedProviderPolicyAdoptionRecord,
+  type VersionedProviderPolicyAdoptionWritePlan,
   type ProviderPolicyAdoptionCommand,
   type ProviderPolicyAdoptionRecord,
   type ProviderPolicyAdoptionWritePlan,
@@ -118,6 +130,22 @@ function initializationFor(
 export function prepareProviderPolicyAdoption(
   input: ProviderPolicyAdoptionPlannerInput,
 ): ProviderPolicyAdoptionPlanResult {
+  return prepareAdoption(input, null) as ProviderPolicyAdoptionPlanResult;
+}
+export type VersionedProviderPolicyAdoptionPlanResult =
+  | { status: "prepared"; plan: VersionedProviderPolicyAdoptionWritePlan }
+  | Extract<ProviderPolicyAdoptionPlanResult, { status: "refused" }>;
+export function prepareVersionedProviderPolicyAdoption(
+  version: PlanPromptVersion,
+  input: ProviderPolicyAdoptionPlannerInput,
+): VersionedProviderPolicyAdoptionPlanResult {
+  createVersionedProviderPreparationBuilder(version);
+  return prepareAdoption(input, version) as VersionedProviderPolicyAdoptionPlanResult;
+}
+function prepareAdoption(
+  input: ProviderPolicyAdoptionPlannerInput,
+  version: PlanPromptVersion | null,
+) {
   const parsed = providerPolicyAdoptionCommandSchema.safeParse(input.command);
   const reviewInput = providerPolicyReviewSchema.safeParse(input.review);
   const head = providerPolicyAdoptionHeadSchema.safeParse(input.currentPolicyHead);
@@ -155,7 +183,9 @@ export function prepareProviderPolicyAdoption(
     return refuse("nonce-conflict");
   if (
     command.approvedReviewDigest !== review.reviewDigest ||
-    !isProviderPolicyReviewCurrent(review, input.current)
+    !(version === null
+      ? isProviderPolicyReviewCurrent(review, input.current)
+      : isVersionedProviderPolicyReviewCurrent(version, review, input.current))
   )
     return refuse("review-not-current");
   const approvedAt = Date.parse(command.approval.approvedAt),
@@ -169,10 +199,11 @@ export function prepareProviderPolicyAdoption(
   if ((review.budget.revision === 0) !== (command.budgetAction === "initialize-proposed-budget"))
     return refuse("budget-action-mismatch");
   if (review.assessment.state === "budget-incompatible") return refuse("budget-incompatible");
-  const proposal = createProviderConfigurationProposalView({
-    ...input.current,
-    inspectedAt: review.inspectedAt,
-  });
+  const proposalInput = { ...input.current, inspectedAt: review.inspectedAt };
+  const proposal =
+    version === null
+      ? createProviderConfigurationProposalView(proposalInput)
+      : createVersionedProviderConfigurationProposalView(version, proposalInput);
   if (!proposal) return refuse("review-not-current");
   const before = { revision: review.budget.revision, headDigest: review.budget.headDigest };
   let initialization: ProviderPolicyAdoptionWritePlan["initialization"] = null;
@@ -181,8 +212,11 @@ export function prepareProviderPolicyAdoption(
     initialization = initializationFor(command, review, input.current.inspectedAt);
     after = { revision: 1, headDigest: initialization.event.eventDigest };
   }
-  const body: Omit<ProviderPolicyAdoptionRecord, "recordDigest"> = {
-    recordVersion: 1,
+  const body: Omit<
+    ProviderPolicyAdoptionRecord | VersionedProviderPolicyAdoptionRecord,
+    "recordDigest"
+  > = {
+    recordVersion: version === null ? 1 : 2,
     kind: "provider-policy-adoption",
     scopeId: "candidate-quality-provider-policy-live",
     revision: head.data.revision + 1,
@@ -206,7 +240,9 @@ export function prepareProviderPolicyAdoption(
   if (Buffer.byteLength(JSON.stringify(record)) > providerPolicyAdoptionLimits.recordBytes)
     return refuse("record-too-large");
   try {
-    validateProviderPolicyAdoptionRecord(record, input.current.registry, [
+    (version === null
+      ? validateProviderPolicyAdoptionRecord
+      : validateVersionedProviderPolicyAdoptionRecord)(record, input.current.registry, [
       ...(Array.isArray(input.current.budgetEvents) ? input.current.budgetEvents : []),
       ...(initialization ? [initialization.event] : []),
     ]);
@@ -214,9 +250,12 @@ export function prepareProviderPolicyAdoption(
     return refuse("archive-proof-invalid");
   }
   return {
-    status: "prepared",
-    plan: providerPolicyAdoptionWritePlanSchema.parse({
-      planVersion: 1,
+    status: "prepared" as const,
+    plan: (version === null
+      ? providerPolicyAdoptionWritePlanSchema
+      : versionedProviderPolicyAdoptionWritePlanSchema
+    ).parse({
+      planVersion: version === null ? 1 : 2,
       status: "prepared-not-committed",
       transaction: "single-immediate-transaction-required",
       record,

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { versionedProviderPolicyArchiveJsonSchema } from "./local-data-quality-provider-policy-versioned-schema.mjs";
 import { providerPolicyArchiveJsonSchema } from "./local-data-quality-provider-policy-schema.mjs";
 import {
   providerDigest as digest,
@@ -8,6 +9,7 @@ import {
   validateProviderBudgetLedger,
   validateProviderFinancialBasis,
   validateProviderRequestEvidence,
+  validateVersionedProviderRequestEvidence,
   inspectProviderLedger,
 } from "./local-data-quality-provider.mjs";
 import { validateProviderUsagePolicy } from "./local-data-quality-provider-usage.mjs";
@@ -15,6 +17,12 @@ import { validateProviderUsagePolicy } from "./local-data-quality-provider-usage
 // Frozen archive v1: never import today's prompts, server configuration, credentials or clock.
 export const providerPolicyArchiveLimits = { records: 100, recordBytes: 2 * 1024 * 1024 };
 const recordSchema = z.fromJSONSchema(providerPolicyArchiveJsonSchema);
+const versionedRecordSchema = z.union([
+  recordSchema,
+  z.fromJSONSchema(versionedProviderPolicyArchiveJsonSchema),
+]);
+const parseRecord = (raw, versioned) =>
+  (versioned ? versionedRecordSchema : recordSchema).parse(raw);
 const liveScope = "candidate-quality-provider-v2-live";
 const same = (a, b) => digest(a) === digest(b);
 const omit = (value, key) => Object.fromEntries(Object.entries(value).filter(([k]) => k !== key));
@@ -39,6 +47,12 @@ const sameHead = (a, b) => a.revision === b.revision && a.headDigest === b.headD
 
 /** Bounded immutable SQL rows, shared by the app and backup reader. No schema migration or writes. */
 export function decodeProviderPolicyRows(rows) {
+  return decodeRows(rows, false);
+}
+export function decodeVersionedProviderPolicyRows(rows) {
+  return decodeRows(rows, true);
+}
+function decodeRows(rows, versioned) {
   try {
     if (!Array.isArray(rows) || rows.length > providerPolicyArchiveLimits.records) invalid();
     let previousOrder = 0,
@@ -52,7 +66,7 @@ export function decodeProviderPolicyRows(rows) {
       )
         invalid();
       previousOrder = row.storage_order;
-      const record = recordSchema.parse(JSON.parse(row.body));
+      const record = parseRecord(JSON.parse(row.body), versioned);
       if (
         row.body_hash !== digest(record) ||
         row.scope_id !== record.scopeId ||
@@ -69,9 +83,9 @@ export function decodeProviderPolicyRows(rows) {
   }
 }
 
-function inspectProof(raw) {
+function inspectProof(raw, versioned = false) {
   if (bytes(raw) > providerPolicyArchiveLimits.recordBytes) invalid();
-  const r = recordSchema.parse(raw),
+  const r = parseRecord(raw, versioned),
     c = r.command,
     v = r.reviewedProposal,
     p = v.proposal,
@@ -242,8 +256,8 @@ function inspectProof(raw) {
   return r;
 }
 
-function inspectRecord(raw, registry, budgetEvents) {
-  const r = inspectProof(raw),
+function inspectRecord(raw, registry, budgetEvents, versioned = false) {
+  const r = inspectProof(raw, versioned),
     v = r.reviewedProposal,
     b = r.approvedReview.budget;
   // Registries must also pass the parent store/backup's complete registration and receipt inspection.
@@ -257,7 +271,9 @@ function inspectRecord(raw, registry, budgetEvents) {
     Date.parse(registry.registeredAt) > Date.parse(v.inspectedAt)
   )
     invalid();
-  validateProviderRequestEvidence(v.proposal.requestReview, registry);
+  (r.recordVersion === 2
+    ? validateVersionedProviderRequestEvidence
+    : validateProviderRequestEvidence)(v.proposal.requestReview, registry);
   const events = z.array(providerBudgetEventSchema).max(1000).parse(budgetEvents);
   if (events.some((e) => e.scopeId !== liveScope)) invalid();
   validateProviderBudgetLedger(events, liveScope);
@@ -313,8 +329,14 @@ function inspectRecord(raw, registry, budgetEvents) {
 
 /** Frozen record proof, with registered candidate and production budget references. No authority grant. */
 export function validateProviderPolicyAdoptionRecord(raw, registry, budgetEvents) {
+  return validateRecord(raw, registry, budgetEvents, false);
+}
+export function validateVersionedProviderPolicyAdoptionRecord(raw, registry, budgetEvents) {
+  return validateRecord(raw, registry, budgetEvents, true);
+}
+function validateRecord(raw, registry, budgetEvents, versioned) {
   try {
-    return inspectRecord(raw, registry, budgetEvents);
+    return inspectRecord(raw, registry, budgetEvents, versioned);
   } catch {
     return invalid();
   }
@@ -325,12 +347,16 @@ export function validateProviderPolicyAdoptionRecord(raw, registry, budgetEvents
  * ledgers and their shared capacity too; include every other operation nonce in otherNonces.
  * Records must be in immutable insertion order. A digest is integrity evidence, not a signature.
  */
-export function inspectProviderPolicyLedger({
-  records: raw,
-  registries,
-  provider,
-  otherNonces = /** @type {string[]} */ ([]),
-}) {
+export function inspectProviderPolicyLedger(input) {
+  return inspectLedger(input, false);
+}
+export function inspectVersionedProviderPolicyLedger(input) {
+  return inspectLedger(input, true);
+}
+function inspectLedger(
+  { records: raw, registries, provider, otherNonces = /** @type {string[]} */ ([]) },
+  versioned,
+) {
   try {
     if (
       !Array.isArray(raw) ||
@@ -341,7 +367,7 @@ export function inspectProviderPolicyLedger({
       invalid();
     const other = z.array(z.string().uuid()).max(10000).parse(otherNonces);
     if (new Set(other).size !== other.length) invalid();
-    const records = raw.map(inspectProof),
+    const records = raw.map((item) => inspectProof(item, versioned)),
       nonces = records.map((r) => r.clientRequestId);
     const ledger = inspectProviderLedger({
       ...provider,
@@ -361,7 +387,7 @@ export function inspectProviderPolicyLedger({
             r.budgetTransition.before.revision < previous.budgetTransition.after.revision))
       )
         invalid();
-      inspectRecord(r, candidates[0], budgets);
+      inspectRecord(r, candidates[0], budgets, versioned);
       previous = r;
     }
     const usedBytes = records.reduce((n, r) => n + bytes(r), 0);
