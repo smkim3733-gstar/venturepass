@@ -1,14 +1,13 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { BadgeCheck, CircleAlert, Copy, Download, FileCheck2, Save, Sparkles } from "lucide-react";
+import { BadgeCheck, Copy, Download, FileCheck2, Save, Sparkles } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { Badge } from "@/components/ui/badge";
-import type { BusinessPlan, PlanContent, StudioCase } from "@/lib/studio-schema";
+import type { PlanContent, StudioCase } from "@/lib/studio-schema";
 import { currentCandidateSelection } from "@/lib/studio-candidate-selection-types";
 import { cn } from "@/lib/utils";
 import {
@@ -27,6 +26,8 @@ import { PlanComparison } from "./plan-comparison";
 import { PlanReviewDecisions } from "./plan-review-decisions";
 import { NumericChecks } from "./numeric-checks";
 import { ClaimReviews } from "./claim-reviews";
+import { PlanLanguagePanel } from "./plan-language-panel";
+import { PlanReviewPanel } from "./plan-review-panel";
 
 export type PlanReviewTarget = {
   companyId: string;
@@ -445,7 +446,10 @@ export function PlanEditor({
               </div>
             </div>
             <aside className="min-w-0">
-              <ReviewPanel plan={plan} onSection={setSectionKey} />
+              <PlanLanguagePanel content={content} onSection={setSectionKey} />
+              <div className="mt-4">
+                <PlanReviewPanel plan={plan} onSection={setSectionKey} />
+              </div>
               <div className="mt-4 rounded-2xl border bg-white p-5">
                 <FileCheck2 className="mb-3 size-6 text-primary" />
                 <h3 className="text-sm font-bold">제출 전 내부 검토</h3>
@@ -511,68 +515,6 @@ export function PlanEditor({
         </div>
       )}
     </div>
-  );
-}
-function ReviewPanel({
-  plan,
-  onSection,
-}: {
-  plan: BusinessPlan;
-  onSection: (key: string) => void;
-}) {
-  return (
-    <section className="rounded-2xl border bg-muted/25 p-4">
-      <h3 className="mb-2 flex items-center gap-2 text-sm font-bold">
-        <CircleAlert className="size-4 text-primary" />
-        검토 의견 <Badge variant="secondary">{plan.review.length}</Badge>
-      </h3>
-      <p className="mb-4 text-xs leading-6 text-muted-foreground">
-        저장된 버전을 기준으로 표시합니다. 수정 후 저장하면 다시 검토합니다.
-      </p>
-      {plan.review.length === 0 ? (
-        <p className="text-xs leading-6 text-muted-foreground">
-          자동 점검에서 표시할 의견이 없습니다. 사실과 증빙은 직접 확인해 주세요.
-        </p>
-      ) : (
-        <div className="max-h-[560px] space-y-3 overflow-y-auto pr-1">
-          {plan.review.map((finding) => (
-            <div key={finding.id} className="rounded-xl border bg-white p-3">
-              <p className="mb-2 text-xs font-bold leading-5 text-primary">
-                {plan.content.sections.find((section) => section.key === finding.sectionKey)
-                  ?.title || "사업계획서 전체"}
-              </p>
-              <Badge
-                variant="outline"
-                className={
-                  finding.severity === "error"
-                    ? "border-red-200 text-red-700"
-                    : finding.severity === "warning"
-                      ? "border-amber-200 text-amber-800"
-                      : "text-muted-foreground"
-                }
-              >
-                {finding.severity === "error"
-                  ? "수정 필요"
-                  : finding.severity === "warning"
-                    ? "확인 필요"
-                    : "참고"}
-              </Badge>
-              <p className="mt-2 text-xs font-semibold leading-6">{finding.message}</p>
-              <p className="mt-1 text-xs leading-6 text-muted-foreground">{finding.action}</p>
-              {finding.sectionKey && (
-                <button
-                  type="button"
-                  className="mt-2 text-xs font-semibold text-primary hover:underline"
-                  onClick={() => onSection(finding.sectionKey!)}
-                >
-                  해당 항목 보기 →
-                </button>
-              )}
-            </div>
-          ))}
-        </div>
-      )}
-    </section>
   );
 }
 function ListBox({ title, items }: { title: string; items: string[] }) {
