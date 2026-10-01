@@ -110,6 +110,7 @@ import {
   type ProviderGenerationValidationRecord,
   type ProviderGenerationValidationCommitResult,
 } from "./studio-plan-quality-provider-generation-validation";
+import type { ProviderSnapshot } from "./studio-plan-quality-provider-types";
 import type { ProviderExecutionCommand } from "./studio-plan-quality-provider-execution-types";
 import {
   prepareProviderGenerationStop,
@@ -124,11 +125,11 @@ export type ProviderDispatchContext = {
   transaction: <T>(work: () => T, write?: boolean) => T;
   registry: (version: number) => CandidateRegistrySnapshot;
   capacity: (addedBytes: number) => void;
-  get: ProviderApprovedRunnerStore["providerGet"];
+  get: (id: string, revision?: number) => ProviderSnapshot;
   artifact: ProviderApprovedRunnerStore["providerArtifact"];
 };
 type Context = ProviderDispatchContext & {
-  // Explicit server selection is currently connected only to the mock callback path.
+  // Fixed server selection is limited to synthetic callbacks and injected SDK simulations.
   selection?: ReturnType<typeof createServerProviderPolicyContext>;
   synthetic: boolean;
   sdkTestNetwork?: ProviderSdkTestNetwork;
@@ -430,9 +431,9 @@ export class ProviderGenerationDispatchStore {
       if (id !== identity.runId) return fail("PRODUCTION_SCOPE_CHANGED");
     };
     const port: ProviderApprovedRunnerStore = {
-      providerGet: (id, revision) => {
+      providerGet: (id) => {
         checkId(id);
-        return this.#context.get(id, revision);
+        return this.#context.get(id);
       },
       providerArtifact: (id, key) => {
         checkId(id);
@@ -592,7 +593,7 @@ export class ProviderGenerationDispatchStore {
     if (!this.#context.synthetic || !this.#context.sdkTestNetwork)
       return fail("SDK_SIMULATION_DISABLED");
     const identity = freezeProviderValue(providerGenerationDispatchIdentitySchema.parse(raw));
-    const committed = this.#commit(identity);
+    const committed = this.#commit(identity, undefined, true);
     const plan = committed.plan;
     return {
       record: committed.record,
@@ -613,7 +614,7 @@ export class ProviderGenerationDispatchStore {
     if (!this.#context.synthetic || !this.#context.sdkTestNetwork)
       return fail("REVIEW_SDK_SIMULATION_DISABLED");
     const identity = freezeProviderValue(providerReviewDispatchIdentitySchema.parse(raw));
-    const committed = this.#commitReview(identity);
+    const committed = this.#commitReview(identity, undefined, true);
     const plan = committed.plan;
     return {
       record: committed.record,
@@ -627,6 +628,20 @@ export class ProviderGenerationDispatchStore {
       responsePersisted: false,
       automaticRetryAllowed: false,
     };
+  }
+  /** The original passive v1 reader remains available without simulation authority.
+   * Only constructor-gated simulations receive stored v2 views. No read grants send ownership. */
+  simulationGet(id: string) {
+    if (!this.#context.synthetic || !this.#context.sdkTestNetwork)
+      return this.#context.get(id);
+    providerGenerationDispatchIdentitySchema.shape.runId.parse(id);
+    return this.#context.transaction(() => {
+      const snapshot = this.inspect().audit.reservationArchive.ledger.provider.snapshots.find(
+        (row) => row.run.id === id,
+      );
+      if (!snapshot) return fail("RUN_NOT_FOUND", 404);
+      return freezeProviderValue(snapshot);
+    });
   }
   private inspect() {
     try {
@@ -1835,7 +1850,7 @@ export class ProviderGenerationDispatchStore {
   #commitReview(
     identity: ProviderReviewDispatchIdentity,
     checkNew?: () => void,
-    mockVersioned = false,
+    syntheticVersioned = false,
   ) {
     return this.#context.transaction(() => {
       const before = this.inspect(),
@@ -1850,8 +1865,8 @@ export class ProviderGenerationDispatchStore {
         );
       const plan = prepared.plan,
         artifact = plan.rows.artifact;
-      // SDK capture/continuation remains v1. This new v2 writer is mock-callback only.
-      if (plan.planVersion === 2 && (!mockVersioned || !this.#context.synthetic))
+      // Only explicitly synthetic callbacks or injected SDK calls may own a v2 commit.
+      if (plan.planVersion === 2 && (!syntheticVersioned || !this.#context.synthetic))
         return fail("REVIEW_NATIVE_VERSION_UNSUPPORTED");
       this.#context.capacity(0); // All five rows consume the original native storage reservation.
       this.#context.db
@@ -2187,7 +2202,7 @@ export class ProviderGenerationDispatchStore {
   #commit(
     identity: ProviderGenerationDispatchIdentity,
     checkNew?: () => void,
-    mockVersioned = false,
+    syntheticVersioned = false,
   ) {
     return this.#context.transaction(() => {
       const before = this.inspect(),
@@ -2212,9 +2227,9 @@ export class ProviderGenerationDispatchStore {
           prepared.reason === "capacity-exceeded" ? 413 : 409,
         );
       const plan = prepared.plan;
-      // Versioned SDK ownership/continuation is not yet connected. Only the explicit
-      // synthetic callback path can commit a new v2 dispatch in this unit.
-      if (plan.planVersion === 2 && (!mockVersioned || !this.#context.synthetic))
+      // Only an explicit synthetic callback or constructor-injected SDK invocation may
+      // own a new v2 commit. Production callers never pass this capability.
+      if (plan.planVersion === 2 && (!syntheticVersioned || !this.#context.synthetic))
         return fail("NATIVE_VERSION_UNSUPPORTED");
       this.#context.capacity(0); // All four rows consume already reserved native storage/slots.
       const insert = (table: string, keys: Record<string, SQLInputValue>, value: unknown) => {

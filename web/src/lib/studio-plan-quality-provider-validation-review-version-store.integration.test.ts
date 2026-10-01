@@ -562,14 +562,14 @@ it("rechecks original approval expiry at the final initiation lock", async () =>
   expect(send).not.toHaveBeenCalled();
   expect(await execute(r)).toMatchObject({ replayed: true, delivery: "already-recorded" });
 });
-it("does not promote v2 review plans into SDK or default production writes", async () => {
+it("does not promote v2 review plans without an injected network or into production writes", async () => {
   const r = reviewIdentity(),
     before = inspectQualityDatabase(db);
-  reopen(v2, true);
+  reopen(v2, false);
   await store.providerLoadValidationPlanning();
   await expect(store.providerSimulateReviewSdkDispatch(r)).rejects.toThrow(
     expect.objectContaining({
-      code: "QUALITY_PROVIDER_DISPATCH_REVIEW_NATIVE_VERSION_UNSUPPORTED",
+      code: "QUALITY_PROVIDER_DISPATCH_REVIEW_SDK_SIMULATION_DISABLED",
     }),
   );
   expect(inspectQualityDatabase(db)).toEqual(before);

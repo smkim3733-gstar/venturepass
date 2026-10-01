@@ -4,6 +4,7 @@ import { z } from "zod";
 import { freezeProviderValue } from "../../scripts/local-data-quality-provider-usage.mjs";
 import {
   providerGenerationRunnerNonces,
+  providerGenerationSimulationPort,
   runQualityProviderGenerationContinuation,
   type ProviderGenerationRunnerStore,
   type ProviderGenerationRunnerResult,
@@ -27,13 +28,12 @@ import type {
   ProviderReviewStopIdentity,
   ProviderReviewStopRecord,
 } from "./studio-plan-quality-provider-review-stop";
-import type { ProviderSnapshot } from "./studio-plan-quality-provider-types";
+import type { StoredProviderSnapshot } from "./studio-plan-quality-provider-types";
 import type { PlanQualityStore } from "./studio-plan-quality-store";
 /** Internal continuation port. Concrete stores retain all write/send authorization. */
 export type ProviderApprovedRunnerStore = ProviderGenerationRunnerStore &
   Pick<
     PlanQualityStore,
-    | "providerGet"
     | "providerRecordReviewStop"
     | "providerReviewStopLookup"
     | "providerRecordReviewResponse"
@@ -109,7 +109,7 @@ type Stage = "dispatch" | "response" | "validation" | "finalization" | "stop" | 
 export type ProviderReviewRunnerResult = {
   status: "completed" | "review-validated" | "review-stopped" | "last-confirmed";
   /** Last audited read; confirmed phase records can be newer if a later snapshot read fails. */
-  snapshot: ProviderSnapshot | null;
+  snapshot: StoredProviderSnapshot | null;
   replayed: boolean;
   recoveredStages: Stage[];
   failure: { stage: Stage; reason: string } | null;
@@ -434,10 +434,31 @@ export function recoverQualityProviderReviewCapture(
   return run.persist(capture);
 }
 
+/** Scoped simulation adapter; the shared continuation never turns archive reads into authority. */
+export function providerApprovedSimulationPort(
+  store: PlanQualityStore,
+): ProviderApprovedRunnerStore {
+  return Object.freeze({
+    ...providerGenerationSimulationPort(store),
+    providerReviewDispatchLookup: (value: unknown) => store.providerReviewDispatchLookup(value),
+    providerReviewResponseLookup: (value: unknown) => store.providerReviewResponseLookup(value),
+    providerReviewValidationLookup: (value: unknown) => store.providerReviewValidationLookup(value),
+    providerReviewStopLookup: (value: unknown) => store.providerReviewStopLookup(value),
+    providerFinalizationLookup: (value: unknown) => store.providerFinalizationLookup(value),
+    providerPrepareReviewValidation: (value: unknown) =>
+      store.providerPrepareReviewValidation(value),
+    providerPrepareFinalization: (value: unknown) => store.providerPrepareFinalization(value),
+    providerRecordReviewResponse: (value: unknown) => store.providerRecordReviewResponse(value),
+    providerRecordReviewValidation: (value: unknown) => store.providerRecordReviewValidation(value),
+    providerRecordReviewStop: (value: unknown) => store.providerRecordReviewStop(value),
+    providerRecordFinalization: (value: unknown) => store.providerRecordFinalization(value),
+  });
+}
+
 /** Existing constructor-gated synthetic entry point. */
 export function runQualityProviderApprovedSimulation(store: PlanQualityStore, raw: unknown) {
   return runQualityProviderApprovedContinuation(
-    store,
+    providerApprovedSimulationPort(store),
     raw,
     (id) => store.providerSimulateGenerationSdkDispatch(id),
     (id) => store.providerSimulateReviewSdkDispatch(id),

@@ -1348,6 +1348,10 @@ export class PlanQualityStore {
   providerArchiveGet(id: string, revision?: number) {
     return this.provider.getArchive(id, revision);
   }
+  /** Internal, constructor-gated simulation read; the public getter remains frozen v1. */
+  providerSimulationGet(id: string) {
+    return this.providerGenerationDispatch.simulationGet(id);
+  }
   providerGet(id: string, revision?: number) {
     return this.provider.get(id, revision);
   }

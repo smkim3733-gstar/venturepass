@@ -428,11 +428,11 @@ it("keeps the full unresolved hold when usage is absent", async () => {
   expect(store.providerRecordGenerationResponse(capture).record.usageBudgetEventDigest).toBeNull();
   expect(store.providerBudgetGet("production")).toEqual(budget);
 });
-it("blocks the v2 SDK path before commit and keeps non-synthetic response writes closed", async () => {
-  reopen(v2, true);
+it("blocks SDK access without an injected network and keeps non-synthetic response writes closed", async () => {
+  reopen(v2, false);
   const before = inspectQualityDatabase(db);
   await expect(store.providerSimulateGenerationSdkDispatch(identity)).rejects.toThrow(
-    expect.objectContaining({ code: "QUALITY_PROVIDER_DISPATCH_NATIVE_VERSION_UNSUPPORTED" }),
+    expect.objectContaining({ code: "QUALITY_PROVIDER_DISPATCH_SDK_SIMULATION_DISABLED" }),
   );
   expect(inspectQualityDatabase(db)).toEqual(before);
   await execute();

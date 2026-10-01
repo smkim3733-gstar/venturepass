@@ -19,12 +19,11 @@ import type {
   ProviderGenerationStopRecord,
 } from "./studio-plan-quality-provider-generation-stop";
 import type { ProviderOwnedSdkDispatchResult } from "./studio-plan-quality-provider-sdk-dispatch";
-import type { ProviderSnapshot } from "./studio-plan-quality-provider-types";
+import type { StoredProviderSnapshot } from "./studio-plan-quality-provider-types";
 import type { PlanQualityStore } from "./studio-plan-quality-store";
 /** Internal continuation port. Concrete stores retain all write/send authorization. */
 export type ProviderGenerationRunnerStore = Pick<
   PlanQualityStore,
-  | "providerGet"
   | "providerRecordGenerationStop"
   | "providerGenerationStopLookup"
   | "providerRecordGenerationResponse"
@@ -34,7 +33,7 @@ export type ProviderGenerationRunnerStore = Pick<
   | "providerPrepareGenerationValidation"
   | "providerRecordGenerationValidation"
   | "providerGenerationDispatchLookup"
->;
+> & { providerGet: (id: string) => StoredProviderSnapshot };
 
 /** Versioned server nonce namespace; retain v1 for recovery of existing executions.
  * UUIDv5 (SHA-1 namespace/name), not a capability. Every store still audits global collisions. */
@@ -69,7 +68,7 @@ export function providerGenerationRunnerNonces(raw: unknown) {
 type Stage = "dispatch" | "response" | "validation" | "stop" | "history";
 export type ProviderGenerationRunnerResult = {
   status: "generation-validated" | "generation-stopped" | "last-confirmed";
-  snapshot: ProviderSnapshot | null;
+  snapshot: StoredProviderSnapshot | null;
   replayed: boolean;
   recoveredStages: Stage[];
   failure: { stage: Stage; reason: string } | null;
@@ -329,9 +328,37 @@ export function recoverQualityProviderGenerationCapture(
   return run.persist(capture);
 }
 
+/** Explicit simulation read port. Delegation retains the original store's write gates,
+ * including nonce-first historical recovery after a selection change. No runtime is created. */
+export function providerGenerationSimulationPort(
+  store: PlanQualityStore,
+): ProviderGenerationRunnerStore {
+  return Object.freeze({
+    providerGet: (id: string) => store.providerSimulationGet(id),
+    providerArtifact: (id: string, key: Parameters<PlanQualityStore["providerArtifact"]>[1]) =>
+      store.providerArtifact(id, key),
+    providerGenerationDispatchLookup: (value: unknown) =>
+      store.providerGenerationDispatchLookup(value),
+    providerGenerationResponseLookup: (value: unknown) =>
+      store.providerGenerationResponseLookup(value),
+    providerGenerationValidationLookup: (value: unknown) =>
+      store.providerGenerationValidationLookup(value),
+    providerGenerationStopLookup: (value: unknown) => store.providerGenerationStopLookup(value),
+    providerPrepareGenerationValidation: (value: unknown) =>
+      store.providerPrepareGenerationValidation(value),
+    providerRecordGenerationResponse: (value: unknown) =>
+      store.providerRecordGenerationResponse(value),
+    providerRecordGenerationValidation: (value: unknown) =>
+      store.providerRecordGenerationValidation(value),
+    providerRecordGenerationStop: (value: unknown) => store.providerRecordGenerationStop(value),
+  });
+}
+
 /** Existing constructor-gated synthetic entry point. */
 export function runQualityProviderGenerationSimulation(store: PlanQualityStore, raw: unknown) {
-  return runQualityProviderGenerationContinuation(store, raw, (id) =>
-    store.providerSimulateGenerationSdkDispatch(id),
+  return runQualityProviderGenerationContinuation(
+    providerGenerationSimulationPort(store),
+    raw,
+    (id) => store.providerSimulateGenerationSdkDispatch(id),
   );
 }
