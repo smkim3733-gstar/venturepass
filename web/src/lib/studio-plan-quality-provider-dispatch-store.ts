@@ -291,6 +291,34 @@ export class ProviderGenerationDispatchStore {
       ? this.#selectedValidationPlanning().prepareFinalization(input)
       : prepareProviderFinalization(input);
   }
+  #planGenerationStop(
+    before: ReturnType<ProviderGenerationDispatchStore["inspect"]>,
+    identity: unknown,
+  ) {
+    const input = {
+      identity,
+      archive: before.input,
+      inspectedAt: new Date().toISOString(),
+      additionalUsedBytes: before.additionalUsedBytes,
+    };
+    return this.#context.selection
+      ? this.#selectedValidationPlanning().prepareGenerationStop(input)
+      : prepareProviderGenerationStop(input);
+  }
+  #planReviewStop(
+    before: ReturnType<ProviderGenerationDispatchStore["inspect"]>,
+    identity: unknown,
+  ) {
+    const input = {
+      identity,
+      archive: before.input,
+      inspectedAt: new Date().toISOString(),
+      additionalUsedBytes: before.additionalUsedBytes,
+    };
+    return this.#context.selection
+      ? this.#selectedValidationPlanning().prepareReviewStop(input)
+      : prepareProviderReviewStop(input);
+  }
   #productionInput(
     permit: object | undefined,
     operation: ProviderProductionOperation,
@@ -1236,12 +1264,7 @@ export class ProviderGenerationDispatchStore {
   prepareReviewStop(identity: unknown) {
     return this.#context.transaction(() => {
       const before = this.inspect();
-      return prepareProviderReviewStop({
-        identity,
-        archive: before.input,
-        inspectedAt: new Date().toISOString(),
-        additionalUsedBytes: before.additionalUsedBytes,
-      });
+      return this.#planReviewStop(before, identity);
     });
   }
   private reviewStopHistory(
@@ -1255,7 +1278,7 @@ export class ProviderGenerationDispatchStore {
       snapshot = state.provider.snapshots.find((row) => row.run.id === id);
     if (
       !snapshot ||
-      snapshot.archiveFormatVersion !== 3 ||
+      (snapshot.archiveFormatVersion !== 3 && snapshot.archiveFormatVersion !== 5) ||
       snapshot.run.environment !== "production"
     )
       return fail("REVIEW_STOP_DISPATCH_REQUIRED");
@@ -1330,8 +1353,11 @@ export class ProviderGenerationDispatchStore {
         finalArtifactSha256: null,
       },
     };
-    if (receipt.inputDigest !== providerExecutionOperationDigest(id, command))
-      return fail("REVIEW_STOP_CONFLICT");
+    const operationDigest =
+      snapshot.archiveFormatVersion === 5
+        ? versionedProviderExecutionOperationDigest
+        : providerExecutionOperationDigest;
+    if (receipt.inputDigest !== operationDigest(id, command)) return fail("REVIEW_STOP_CONFLICT");
     const budget = getProviderExecutionBudgetSnapshot(
         state.provider.budgetEvents.filter(
           (row) => row.scopeId === receipt.scopeId && row.revision <= event.budgetRevision,
@@ -1386,12 +1412,7 @@ export class ProviderGenerationDispatchStore {
       const before = this.inspect(),
         previous = this.reviewStopHistory(before, identity);
       if (previous) return { record: previous, newlyCommitted: false, replayed: true };
-      const prepared = prepareProviderReviewStop({
-        identity,
-        archive: before.input,
-        inspectedAt: new Date().toISOString(),
-        additionalUsedBytes: before.additionalUsedBytes,
-      });
+      const prepared = this.#planReviewStop(before, identity);
       if (prepared.status !== "prepared")
         return fail(
           `REVIEW_STOP_${prepared.reason.replaceAll("-", "_").toUpperCase()}`,
@@ -1423,12 +1444,7 @@ export class ProviderGenerationDispatchStore {
   prepareGenerationStop(identity: unknown) {
     return this.#context.transaction(() => {
       const before = this.inspect();
-      return prepareProviderGenerationStop({
-        identity,
-        archive: before.input,
-        inspectedAt: new Date().toISOString(),
-        additionalUsedBytes: before.additionalUsedBytes,
-      });
+      return this.#planGenerationStop(before, identity);
     });
   }
   private stopHistory(
@@ -1440,7 +1456,7 @@ export class ProviderGenerationDispatchStore {
       snapshot = state.provider.snapshots.find((row) => row.run.id === identity.dispatch.runId);
     if (
       !snapshot ||
-      snapshot.archiveFormatVersion !== 3 ||
+      (snapshot.archiveFormatVersion !== 3 && snapshot.archiveFormatVersion !== 5) ||
       snapshot.run.environment !== "production"
     )
       return fail("STOP_DISPATCH_REQUIRED");
@@ -1531,7 +1547,11 @@ export class ProviderGenerationDispatchStore {
         finalArtifactSha256: null,
       },
     };
-    if (receipt.inputDigest !== providerExecutionOperationDigest(snapshot.run.id, command))
+    const operationDigest =
+      snapshot.archiveFormatVersion === 5
+        ? versionedProviderExecutionOperationDigest
+        : providerExecutionOperationDigest;
+    if (receipt.inputDigest !== operationDigest(snapshot.run.id, command))
       return fail("STOP_CONFLICT");
     const budget = getProviderExecutionBudgetSnapshot(
         state.provider.budgetEvents.filter(
@@ -1581,12 +1601,7 @@ export class ProviderGenerationDispatchStore {
       const before = this.inspect(),
         previous = this.stopHistory(before, identity);
       if (previous) return { record: previous, newlyCommitted: false, replayed: true };
-      const prepared = prepareProviderGenerationStop({
-        identity,
-        archive: before.input,
-        inspectedAt: new Date().toISOString(),
-        additionalUsedBytes: before.additionalUsedBytes,
-      });
+      const prepared = this.#planGenerationStop(before, identity);
       if (prepared.status !== "prepared")
         return fail(
           `STOP_${prepared.reason.replaceAll("-", "_").toUpperCase()}`,
