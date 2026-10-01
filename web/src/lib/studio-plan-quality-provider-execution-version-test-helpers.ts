@@ -81,7 +81,12 @@ export function fixture(base: ReturnType<typeof versionedTransmissionFixture>) {
     }),
   };
 }
-export type Fixture = ReturnType<typeof fixture>;
+export type Fixture = Pick<ReturnType<typeof fixture>, "data" | "registry" | "preparation">;
+const initialPlan = (f: Fixture) =>
+  actualTestPlan(
+    f.registry,
+    f.registry.entries.findIndex((entry) => entry.candidateId === f.preparation.scope.candidateId),
+  );
 const usagePolicy = (f: Fixture) => {
   const payload = f.data.events[0].payload;
   if (payload.kind !== "transmission-approved") throw Error("approval");
@@ -227,9 +232,7 @@ export function receive(
         content: [
           {
             type: "output_text",
-            text: JSON.stringify(
-              phase === "generation" ? actualTestPlan(f.registry) : { findings: [] },
-            ),
+            text: JSON.stringify(phase === "generation" ? initialPlan(f) : { findings: [] }),
           },
         ],
       },
@@ -299,7 +302,7 @@ export function validate(f: Fixture, phase: "generation" | "review") {
   if (response.payload.kind !== "response-received") throw new Error("invalid fixture");
   const output =
     phase === "generation"
-      ? { kind: "plan", content: actualTestPlan(f.registry) }
+      ? { kind: "plan", content: initialPlan(f) }
       : { kind: "review", findings: [] };
   const artifact = core.createProviderExecutionArtifact({
     runId: f.data.run.id,
@@ -330,7 +333,9 @@ export function finish(
     )
       continue;
     const b = budget(f),
-      s = b.reservations[0].phases.find((v) => v.phase === phase)!;
+      s = b.reservations
+        .find((r) => r.runId === f.data.run.id)!
+        .phases.find((v) => v.phase === phase)!;
     const e = core.createProviderExecutionBudgetEvent({
       schemaVersion: 2,
       scopeId: b.scopeId,
@@ -362,7 +367,7 @@ export function finish(
           runId: f.data.run.id,
           key: "final-result",
           body: JSON.stringify({
-            content: actualTestPlan(f.registry),
+            content: initialPlan(f),
             review: [],
             semanticReview: [],
             contractDigest: approved.payload.manifest.executionContract.contractDigest,
@@ -386,7 +391,7 @@ export function finish(
     artifact,
   );
 }
-export function complete(f: Fixture) {
+export function complete<T extends Fixture>(f: T): T {
   for (const phase of ["generation", "review"] as const) {
     prepare(f, phase);
     dispatch(f, phase);
