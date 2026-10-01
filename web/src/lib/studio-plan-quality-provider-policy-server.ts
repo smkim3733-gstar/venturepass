@@ -31,6 +31,11 @@ import {
   prepareVersionedProviderTransmissionApproval,
   type ProviderTransmissionPlannerInput,
 } from "./studio-plan-quality-provider-transmission-plan";
+import {
+  prepareVersionedProviderGenerationDispatch,
+  type ProviderGenerationDispatchInput,
+} from "./studio-plan-quality-provider-dispatch-plan";
+type GenerationDispatch = Omit<ProviderGenerationDispatchInput, "configuration">;
 type TransmissionApproval = Omit<ProviderTransmissionPlannerInput, "current"> & {
   current: TransmissionInspection;
 };
@@ -56,9 +61,9 @@ export function createServerProviderPolicyContext(
   const configuration = structuredClone(
     providerConfigurationProposalSchema.parse(fixedConfiguration),
   );
-  function bind<T extends Inspection | ReservationInspection | TransmissionInspection>(
-    input: T,
-  ): T & { configuration: typeof configuration } {
+  function bind<
+    T extends Inspection | ReservationInspection | TransmissionInspection | GenerationDispatch,
+  >(input: T): T & { configuration: typeof configuration } {
     // Do not treat payload fields as server configuration or version selection.
     if (
       "configuration" in input ||
@@ -77,6 +82,15 @@ export function createServerProviderPolicyContext(
     return bind(input);
   }
   return Object.freeze({
+    prepareGenerationDispatch: (input: GenerationDispatch) => {
+      if (
+        Object.keys(input).some(
+          (key) => !["identity", "inspectedAt", "archive", "additionalUsedBytes"].includes(key),
+        )
+      )
+        throw new Error("Unsupported generation dispatch evidence");
+      return prepareVersionedProviderGenerationDispatch(version, bind(input));
+    },
     prepareTransmissionApproval: (input: TransmissionApproval) => {
       if (
         Object.keys(input).some(

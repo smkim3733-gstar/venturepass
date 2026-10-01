@@ -1,7 +1,12 @@
 import { z } from "zod";
-import { inspectProviderTransmissionApprovalArchive } from "../../scripts/local-data-quality-provider-transmission-binding.mjs";
+import {
+  inspectProviderTransmissionApprovalArchive,
+  inspectVersionedProviderTransmissionApprovalArchive,
+} from "../../scripts/local-data-quality-provider-transmission-binding.mjs";
 import {
   createProviderExecutionEvent,
+  createVersionedProviderExecutionEvent,
+  versionedProviderExecutionOperationDigest,
   createProviderExecutionReceipt,
   providerExecutionOperationDigest,
 } from "../../scripts/local-data-quality-provider-execution.mjs";
@@ -11,13 +16,19 @@ import {
   providerWireDigest,
 } from "../../scripts/local-data-quality-provider.mjs";
 import { freezeProviderValue } from "../../scripts/local-data-quality-provider-usage.mjs";
-import { createProviderTransmissionReview } from "./studio-plan-quality-provider-transmission-review";
+import {
+  createProviderTransmissionReview,
+  createVersionedProviderTransmissionReview,
+} from "./studio-plan-quality-provider-transmission-review";
 import type {
   ProviderExecutionCommand,
   ProviderExecutionEvent,
   ProviderExecutionReceipt,
+  VersionedProviderExecutionEvent,
 } from "./studio-plan-quality-provider-execution-types";
 import type { ProviderObservationPrepared } from "./studio-provider-observation";
+import type { PlanPromptVersion } from "./studio-plan-prompt-versions";
+import { createVersionedProviderPreparationBuilder } from "./studio-plan-quality-provider-core";
 
 export const providerGenerationDispatchIdentitySchema = z
   .object({
@@ -84,8 +95,19 @@ export type ProviderGenerationDispatchPlan = {
   budgetWriteAllowed: false;
   planDigest: string;
 };
+export type VersionedProviderGenerationDispatchPlan = Omit<
+  ProviderGenerationDispatchPlan,
+  "planVersion" | "rows"
+> & {
+  planVersion: 2;
+  rows: {
+    events: [VersionedProviderExecutionEvent, VersionedProviderExecutionEvent];
+    receipts: [ProviderExecutionReceipt, ProviderExecutionReceipt];
+  };
+};
 type Refusal =
   | "invalid-input"
+  | "server-version-mismatch"
   | "archive-invalid"
   | "selection-changed"
   | "approval-binding-required"
@@ -101,6 +123,12 @@ type Refusal =
 export type ProviderGenerationDispatchResult =
   | { status: "prepared"; plan: ProviderGenerationDispatchPlan }
   | { status: "refused"; reason: Refusal; plan: null };
+export type VersionedProviderGenerationDispatchResult =
+  | {
+      status: "prepared";
+      plan: ProviderGenerationDispatchPlan | VersionedProviderGenerationDispatchPlan;
+    }
+  | Extract<ProviderGenerationDispatchResult, { status: "refused" }>;
 const refuse = (reason: Refusal): ProviderGenerationDispatchResult => ({
   status: "refused",
   reason,
@@ -115,6 +143,37 @@ const same = (a: unknown, b: unknown) => digest(a) === digest(b);
 export function prepareProviderGenerationDispatch(
   input: ProviderGenerationDispatchInput,
 ): ProviderGenerationDispatchResult {
+  // The frozen entry point uses only v1 readers and can never emit a v2 plan.
+  return prepareGenerationDispatch(input, null) as ProviderGenerationDispatchResult;
+}
+
+/** Explicit server selection; this pure planner grants no DB or sending ownership. */
+export function prepareVersionedProviderGenerationDispatch(
+  version: PlanPromptVersion,
+  input: ProviderGenerationDispatchInput,
+): VersionedProviderGenerationDispatchResult {
+  createVersionedProviderPreparationBuilder(version); // No unsupported/default fallback.
+  if (
+    !input ||
+    Object.keys(input).some(
+      (key) =>
+        !["identity", "inspectedAt", "configuration", "archive", "additionalUsedBytes"].includes(
+          key,
+        ),
+    )
+  )
+    return refuse("invalid-input");
+  return prepareGenerationDispatch(input, version);
+}
+function prepareGenerationDispatch(
+  input: ProviderGenerationDispatchInput,
+  version: PlanPromptVersion | null,
+): VersionedProviderGenerationDispatchResult {
+  const nativeV2 = version === "plan-observation-v2";
+  const inspect =
+    version === null
+      ? inspectProviderTransmissionApprovalArchive
+      : inspectVersionedProviderTransmissionApprovalArchive;
   const parsed = providerGenerationDispatchIdentitySchema.safeParse(input.identity);
   if (
     !parsed.success ||
@@ -127,9 +186,9 @@ export function prepareProviderGenerationDispatch(
   if (identity.preparedRequestId === identity.dispatchRequestId) return refuse("nonce-conflict");
   const inspectedAt = new Date(input.inspectedAt).toISOString(),
     now = Date.parse(inspectedAt);
-  let archive: ReturnType<typeof inspectProviderTransmissionApprovalArchive>;
+  let archive: ReturnType<typeof inspectVersionedProviderTransmissionApprovalArchive>;
   try {
-    archive = inspectProviderTransmissionApprovalArchive(input.archive);
+    archive = inspect(input.archive);
   } catch {
     return refuse("archive-invalid");
   }
@@ -137,12 +196,14 @@ export function prepareProviderGenerationDispatch(
   const snapshot = state.provider.snapshots.find((row) => row.run.id === identity.runId);
   if (!snapshot || snapshot.run.runDigest !== identity.runDigest)
     return refuse("selection-changed");
+  if (version !== null && snapshot.run.preparation.contract.baseContract.engineVersion !== version)
+    return refuse("server-version-mismatch");
   const binding = archive.records.find((row) => row.runId === identity.runId);
   if (!binding || binding.recordDigest !== identity.approvalBindingDigest)
     return refuse("approval-binding-required");
   if (
     snapshot.run.environment !== "production" ||
-    snapshot.archiveFormatVersion !== 3 ||
+    (nativeV2 ? snapshot.archiveFormatVersion !== 5 : snapshot.archiveFormatVersion !== 3) ||
     snapshot.revision !== 1 ||
     snapshot.state !== "approved" ||
     snapshot.events.length !== 1
@@ -172,12 +233,16 @@ export function prepareProviderGenerationDispatch(
 
   // This read-only review deliberately reports runUntouched=false for r1. We use its other
   // reconstructed facts, never its approval eligibility or its newly calculated review expiry.
-  const current = createProviderTransmissionReview({
+  const reviewInput = {
     selection: { runId: identity.runId, runDigest: identity.runDigest },
     inspectedAt,
     configuration: input.configuration,
     archive: input.archive.archive,
-  });
+  };
+  const current =
+    version === null
+      ? createProviderTransmissionReview(reviewInput)
+      : createVersionedProviderTransmissionReview(version, reviewInput);
   if (current.status !== "review") return refuse("current-evidence-unavailable");
   const review = current.review;
   if (
@@ -212,6 +277,17 @@ export function prepareProviderGenerationDispatch(
     return refuse("request-changed");
   if (!review.budget.headDigest) return refuse("policy-or-budget-blocked");
 
+  const createEvent = (
+    value: Omit<ProviderExecutionEvent, "eventDigest" | "executionContractVersion" | "payload"> & {
+      payload: ProviderExecutionCommand<"request-prepared" | "dispatch-intent">["payload"];
+    },
+  ) =>
+    nativeV2
+      ? createVersionedProviderExecutionEvent({ ...value, executionContractVersion: 2 })
+      : createProviderExecutionEvent({ ...value, executionContractVersion: 1 });
+  const operationDigest = nativeV2
+    ? versionedProviderExecutionOperationDigest
+    : providerExecutionOperationDigest;
   try {
     const prepared: ProviderExecutionCommand<"request-prepared"> = {
       clientRequestId: identity.preparedRequestId,
@@ -226,9 +302,8 @@ export function prepareProviderGenerationDispatch(
         budgetDigest: review.budget.headDigest,
       },
     };
-    const event = createProviderExecutionEvent({
+    const event = createEvent({
       schemaVersion: 2,
-      executionContractVersion: 1,
       runId: identity.runId,
       revision: 2,
       budgetRevision: review.budget.revision,
@@ -250,9 +325,8 @@ export function prepareProviderGenerationDispatch(
         budgetDigest: review.budget.headDigest,
       },
     };
-    const dispatchEvent = createProviderExecutionEvent({
+    const dispatchEvent = createEvent({
       schemaVersion: 2,
-      executionContractVersion: 1,
       runId: identity.runId,
       revision: 3,
       budgetRevision: review.budget.revision,
@@ -262,7 +336,7 @@ export function prepareProviderGenerationDispatch(
     });
     const receipt = (
       command: typeof prepared | typeof dispatch,
-      row: ProviderExecutionEvent,
+      row: ProviderExecutionEvent | VersionedProviderExecutionEvent,
       kind: "provider-prepared" | "provider-dispatch",
     ) =>
       createProviderExecutionReceipt({
@@ -270,14 +344,20 @@ export function prepareProviderGenerationDispatch(
         scopeId: review.budget.scopeId,
         kind,
         clientRequestId: command.clientRequestId,
-        inputDigest: providerExecutionOperationDigest(identity.runId, command),
+        inputDigest: operationDigest(identity.runId, command),
         runId: identity.runId,
         runRevision: row.revision,
         budgetRevision: row.budgetRevision,
         operationDigest: row.eventDigest,
         recordedAt: inspectedAt,
       });
-    const rows: ProviderGenerationDispatchPlan["rows"] = {
+    const rows: {
+      events: [
+        ProviderExecutionEvent | VersionedProviderExecutionEvent,
+        ProviderExecutionEvent | VersionedProviderExecutionEvent,
+      ];
+      receipts: [ProviderExecutionReceipt, ProviderExecutionReceipt];
+    } = {
       events: [event, dispatchEvent],
       receipts: [
         receipt(prepared, event, "provider-prepared"),
@@ -285,7 +365,7 @@ export function prepareProviderGenerationDispatch(
       ],
     };
     const ledger = input.archive.archive.ledger;
-    const next = inspectProviderTransmissionApprovalArchive({
+    const next = inspect({
       ...input.archive,
       archive: {
         ...input.archive.archive,
@@ -308,8 +388,11 @@ export function prepareProviderGenerationDispatch(
       totalExposureBytes > providerGenerationDispatchPlanLimits.databaseBytes
     )
       return refuse("capacity-exceeded");
-    const plan: Omit<ProviderGenerationDispatchPlan, "planDigest"> = {
-      planVersion: 1,
+    const plan: Omit<ProviderGenerationDispatchPlan, "planDigest" | "planVersion" | "rows"> & {
+      planVersion: 1 | 2;
+      rows: typeof rows;
+    } = {
+      planVersion: nativeV2 ? 2 : 1,
       kind: "provider-generation-dispatch-plan",
       status: "prepared-not-committed",
       transaction: "single-immediate-transaction-required",
@@ -355,7 +438,9 @@ export function prepareProviderGenerationDispatch(
     };
     return {
       status: "prepared",
-      plan: freezeProviderValue(structuredClone({ ...plan, planDigest: digest(plan) })),
+      // The selected event factory and full planned archive audit establish this correlation.
+      plan: freezeProviderValue(structuredClone({ ...plan, planDigest: digest(plan) })) as
+        ProviderGenerationDispatchPlan | VersionedProviderGenerationDispatchPlan,
     };
   } catch {
     return refuse("planned-archive-invalid");
