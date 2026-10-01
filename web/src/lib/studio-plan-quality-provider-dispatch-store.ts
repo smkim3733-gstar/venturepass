@@ -263,6 +263,34 @@ export class ProviderGenerationDispatchStore {
           configuration,
         });
   }
+  #planReviewValidation(
+    before: ReturnType<ProviderGenerationDispatchStore["inspect"]>,
+    identity: unknown,
+  ) {
+    const input = {
+      identity,
+      archive: before.input,
+      inspectedAt: new Date().toISOString(),
+      additionalUsedBytes: before.additionalUsedBytes,
+    };
+    return this.#context.selection
+      ? this.#selectedValidationPlanning().prepareReviewValidation(input)
+      : prepareProviderReviewValidation(input);
+  }
+  #planFinalization(
+    before: ReturnType<ProviderGenerationDispatchStore["inspect"]>,
+    identity: unknown,
+  ) {
+    const input = {
+      identity,
+      archive: before.input,
+      inspectedAt: new Date().toISOString(),
+      additionalUsedBytes: before.additionalUsedBytes,
+    };
+    return this.#context.selection
+      ? this.#selectedValidationPlanning().prepareFinalization(input)
+      : prepareProviderFinalization(input);
+  }
   #productionInput(
     permit: object | undefined,
     operation: ProviderProductionOperation,
@@ -745,12 +773,7 @@ export class ProviderGenerationDispatchStore {
   prepareFinalization(identity: unknown) {
     return this.#context.transaction(() => {
       const before = this.inspect();
-      return prepareProviderFinalization({
-        identity,
-        archive: before.input,
-        inspectedAt: new Date().toISOString(),
-        additionalUsedBytes: before.additionalUsedBytes,
-      });
+      return this.#planFinalization(before, identity);
     });
   }
   private finalizationHistory(
@@ -787,7 +810,7 @@ export class ProviderGenerationDispatchStore {
       !event ||
       !artifact ||
       !snapshot ||
-      snapshot.archiveFormatVersion !== 3 ||
+      (snapshot.archiveFormatVersion !== 3 && snapshot.archiveFormatVersion !== 5) ||
       snapshot.run.environment !== "production" ||
       !snapshot.terminal ||
       snapshot.state !== "completed" ||
@@ -816,8 +839,11 @@ export class ProviderGenerationDispatchStore {
         finalArtifactSha256: artifact.sha256,
       },
     };
-    if (receipt.inputDigest !== providerExecutionOperationDigest(id, command))
-      return fail("FINALIZATION_CONFLICT");
+    const operationDigest =
+      snapshot.archiveFormatVersion === 5
+        ? versionedProviderExecutionOperationDigest
+        : providerExecutionOperationDigest;
+    if (receipt.inputDigest !== operationDigest(id, command)) return fail("FINALIZATION_CONFLICT");
     return freezeProviderValue(
       structuredClone({
         ...identity,
@@ -857,12 +883,7 @@ export class ProviderGenerationDispatchStore {
       const before = this.inspect(),
         previous = this.finalizationHistory(before, identity);
       if (previous) return { record: previous, newlyCommitted: false, replayed: true };
-      const prepared = prepareProviderFinalization({
-        identity,
-        archive: before.input,
-        inspectedAt: new Date().toISOString(),
-        additionalUsedBytes: before.additionalUsedBytes,
-      });
+      const prepared = this.#planFinalization(before, identity);
       if (prepared.status !== "prepared")
         return fail(
           `FINALIZATION_${prepared.reason.replaceAll("-", "_").toUpperCase()}`,
@@ -901,12 +922,7 @@ export class ProviderGenerationDispatchStore {
   prepareReviewValidation(identity: unknown) {
     return this.#context.transaction(() => {
       const before = this.inspect();
-      return prepareProviderReviewValidation({
-        identity,
-        archive: before.input,
-        inspectedAt: new Date().toISOString(),
-        additionalUsedBytes: before.additionalUsedBytes,
-      });
+      return this.#planReviewValidation(before, identity);
     });
   }
   private reviewValidationHistory(
@@ -926,7 +942,7 @@ export class ProviderGenerationDispatchStore {
       );
     if (
       !snapshot ||
-      snapshot.archiveFormatVersion !== 3 ||
+      (snapshot.archiveFormatVersion !== 3 && snapshot.archiveFormatVersion !== 5) ||
       snapshot.run.environment !== "production" ||
       response?.payload.kind !== "response-received" ||
       ![8, 9].includes(response.revision) ||
@@ -982,7 +998,11 @@ export class ProviderGenerationDispatchStore {
       artifact,
       payload: event.payload,
     };
-    if (receipt.inputDigest !== providerExecutionOperationDigest(id, command))
+    const operationDigest =
+      snapshot.archiveFormatVersion === 5
+        ? versionedProviderExecutionOperationDigest
+        : providerExecutionOperationDigest;
+    if (receipt.inputDigest !== operationDigest(id, command))
       return fail("REVIEW_VALIDATION_CONFLICT");
     return freezeProviderValue(
       structuredClone({
@@ -1025,12 +1045,7 @@ export class ProviderGenerationDispatchStore {
       const before = this.inspect(),
         previous = this.reviewValidationHistory(before, identity);
       if (previous) return { record: previous, newlyCommitted: false, replayed: true };
-      const prepared = prepareProviderReviewValidation({
-        identity,
-        archive: before.input,
-        inspectedAt: new Date().toISOString(),
-        additionalUsedBytes: before.additionalUsedBytes,
-      });
+      const prepared = this.#planReviewValidation(before, identity);
       if (prepared.status !== "prepared")
         return fail(
           `REVIEW_VALIDATION_${prepared.reason.replaceAll("-", "_").toUpperCase()}`,
