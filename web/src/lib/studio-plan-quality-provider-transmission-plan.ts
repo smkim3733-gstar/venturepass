@@ -1,30 +1,46 @@
 import { z } from "zod";
 import { inspectVersionedProviderReservationArchive as inspectProviderReservationArchive } from "../../scripts/local-data-quality-provider-reservation-binding.mjs";
-import { validateProviderTransmissionApprovalBinding } from "../../scripts/local-data-quality-provider-transmission-binding.mjs";
+import {
+  validateProviderTransmissionApprovalBinding,
+  validateVersionedProviderTransmissionApprovalBinding,
+} from "../../scripts/local-data-quality-provider-transmission-binding.mjs";
 import { providerDigest as digest } from "../../scripts/local-data-quality-provider.mjs";
 import {
   createProviderExecutionEvent,
   createProviderExecutionReceipt,
   providerExecutionOperationDigest,
+  versionedProviderApprovalOperationDigest,
+  createVersionedProviderApprovalEvent,
+  versionedProviderApprovalCommandSchema,
 } from "../../scripts/local-data-quality-provider-execution.mjs";
 import { providerTransmissionCommandSchema } from "./studio-plan-quality-provider-transmission-command";
 import {
   providerTransmissionApprovalBindingSchema,
   type ProviderTransmissionApprovalBinding,
+  versionedProviderTransmissionApprovalBindingSchema,
+  type VersionedProviderTransmissionApprovalBinding,
 } from "./studio-plan-quality-provider-transmission-approval-types";
 import {
   providerTransmissionReviewInputSchema,
   providerTransmissionReviewSchema,
+  versionedProviderTransmissionReviewSchema,
+  providerTransmissionReviewManifestSchema,
 } from "./studio-plan-quality-provider-transmission-review-types";
 import {
   isProviderTransmissionReviewCurrent,
+  isVersionedProviderTransmissionReviewCurrent,
   type ProviderTransmissionReviewInput,
 } from "./studio-plan-quality-provider-transmission-review";
 import type {
   ProviderExecutionCommand,
   ProviderExecutionEvent,
   ProviderExecutionReceipt,
+  VersionedProviderApprovalCommand,
+  VersionedProviderApprovalEvent,
 } from "./studio-plan-quality-provider-execution-types";
+
+import type { PlanPromptVersion } from "./studio-plan-prompt-versions";
+import { createVersionedProviderPreparationBuilder } from "./studio-plan-quality-provider-core";
 
 const same = (a: unknown, b: unknown) => digest(a) === digest(b);
 const bytes = (value: unknown) => Buffer.byteLength(JSON.stringify(value), "utf8");
@@ -67,6 +83,18 @@ export type ProviderTransmissionWritePlan = {
   dispatchAllowed: false;
   budgetWriteAllowed: false;
 };
+export type VersionedProviderTransmissionWritePlan = Omit<
+  ProviderTransmissionWritePlan,
+  "planVersion" | "execution" | "rows"
+> & {
+  planVersion: 2;
+  execution: VersionedProviderApprovalCommand;
+  rows: {
+    event: VersionedProviderApprovalEvent;
+    receipt: ProviderExecutionReceipt;
+    binding: VersionedProviderTransmissionApprovalBinding;
+  };
+};
 type Refusal =
   | "invalid-input"
   | "selection-changed"
@@ -81,6 +109,12 @@ type Refusal =
 export type ProviderTransmissionPlanResult =
   | { status: "prepared"; plan: ProviderTransmissionWritePlan }
   | { status: "refused"; reason: Refusal; plan: null };
+export type VersionedProviderTransmissionPlanResult =
+  | {
+      status: "prepared";
+      plan: ProviderTransmissionWritePlan | VersionedProviderTransmissionWritePlan;
+    }
+  | Extract<ProviderTransmissionPlanResult, { status: "refused" }>;
 const refuse = (reason: Refusal): ProviderTransmissionPlanResult => ({
   status: "refused",
   reason,
@@ -94,8 +128,25 @@ const refuse = (reason: Refusal): ProviderTransmissionPlanResult => ({
 export function prepareProviderTransmissionApproval(
   input: ProviderTransmissionPlannerInput,
 ): ProviderTransmissionPlanResult {
+  // Null uses only frozen v1 shapes; the internal implementation cannot return a v2 plan.
+  return prepareTransmissionApproval(input, null) as ProviderTransmissionPlanResult;
+}
+export function prepareVersionedProviderTransmissionApproval(
+  version: PlanPromptVersion,
+  input: ProviderTransmissionPlannerInput,
+): VersionedProviderTransmissionPlanResult {
+  createVersionedProviderPreparationBuilder(version); // Explicit unsupported selections never fall back.
+  return prepareTransmissionApproval(input, version);
+}
+function prepareTransmissionApproval(
+  input: ProviderTransmissionPlannerInput,
+  version: PlanPromptVersion | null,
+): VersionedProviderTransmissionPlanResult {
+  const nativeV2 = version === "plan-observation-v2";
   const parsed = providerTransmissionCommandSchema.safeParse(input.command);
-  const reviewed = providerTransmissionReviewSchema.safeParse(input.review);
+  const reviewed = (
+    nativeV2 ? versionedProviderTransmissionReviewSchema : providerTransmissionReviewSchema
+  ).safeParse(input.review);
   const selected = providerTransmissionReviewInputSchema.safeParse(input.current.selection);
   if (
     !parsed.success ||
@@ -131,7 +182,9 @@ export function prepareProviderTransmissionApproval(
   if (used.includes(command.clientRequestId)) return refuse("nonce-conflict");
   if (
     command.approvedReviewDigest !== review.reviewDigest ||
-    !isProviderTransmissionReviewCurrent(review, input.current)
+    !(version === null
+      ? isProviderTransmissionReviewCurrent(review, input.current)
+      : isVersionedProviderTransmissionReviewCurrent(version, review, input.current))
   )
     return refuse("review-not-current");
   if (review.assessment.state !== "conditions-met") return refuse("approval-blocked");
@@ -165,35 +218,59 @@ export function prepareProviderTransmissionApproval(
 
   try {
     const recordedAt = new Date(input.current.inspectedAt).toISOString();
-    const execution: ProviderExecutionCommand<"transmission-approved"> = {
+    const executionBody = {
       clientRequestId: command.clientRequestId,
-      expectedRevision: 0,
+      expectedRevision: 0 as const,
       payload: {
-        kind: "transmission-approved",
+        kind: "transmission-approved" as const,
         manifest: review.manifest,
-        provenance: "explicit-user",
+        provenance: "explicit-user" as const,
         approvedAt: command.approval.approvedAt,
         expiresAt: review.expiresAt,
-        acknowledgedExternalTransmission: true,
-        acknowledgedGenerationAndDerivedReview: true,
+        acknowledgedExternalTransmission: true as const,
+        acknowledgedGenerationAndDerivedReview: true as const,
         acknowledgedRetentionNoticeDigest: command.approval.acknowledgedRetentionNoticeDigest,
-        acknowledgedFinancialReservationNotTokenFit: true,
-        acknowledgedUnknownCostHoldAndNoRetry: true,
+        acknowledgedFinancialReservationNotTokenFit: true as const,
+        acknowledgedUnknownCostHoldAndNoRetry: true as const,
         budgetRevision: command.expectedBudgetHead.revision,
         budgetDigest: command.expectedBudgetHead.headDigest,
       },
     };
-    const executionInputDigest = providerExecutionOperationDigest(command.runId, execution);
-    const event = createProviderExecutionEvent({
-      schemaVersion: 2,
-      executionContractVersion: 1,
+    const oldExecution = () => ({
+      ...executionBody,
+      payload: {
+        ...executionBody.payload,
+        manifest: providerTransmissionReviewManifestSchema.parse(review.manifest),
+      },
+    });
+    const execution = nativeV2
+      ? versionedProviderApprovalCommandSchema.parse(executionBody)
+      : oldExecution();
+    const executionInputDigest = nativeV2
+      ? versionedProviderApprovalOperationDigest(
+          command.runId,
+          versionedProviderApprovalCommandSchema.parse(executionBody),
+        )
+      : providerExecutionOperationDigest(command.runId, oldExecution());
+    const eventBody = {
+      schemaVersion: 2 as const,
       runId: command.runId,
-      revision: 1,
+      revision: 1 as const,
       budgetRevision: command.expectedBudgetHead.revision,
       previousEventDigest: null,
       recordedAt,
-      payload: execution.payload,
-    });
+    };
+    const event = nativeV2
+      ? createVersionedProviderApprovalEvent({
+          ...eventBody,
+          executionContractVersion: 2,
+          payload: versionedProviderApprovalCommandSchema.parse(executionBody).payload,
+        })
+      : createProviderExecutionEvent({
+          ...eventBody,
+          executionContractVersion: 1,
+          payload: oldExecution().payload,
+        });
     const receipt = createProviderExecutionReceipt({
       schemaVersion: 2,
       scopeId: review.budget.scopeId,
@@ -206,8 +283,8 @@ export function prepareProviderTransmissionApproval(
       operationDigest: event.eventDigest,
       recordedAt,
     });
-    const body: Omit<ProviderTransmissionApprovalBinding, "recordDigest"> = {
-      recordVersion: 1,
+    const body = {
+      recordVersion: nativeV2 ? 2 : 1,
       kind: "provider-transmission-approval-binding",
       clientRequestId: command.clientRequestId,
       command,
@@ -221,7 +298,11 @@ export function prepareProviderTransmissionApproval(
       recordedAt,
       dispatchAllowed: false,
     };
-    const binding = providerTransmissionApprovalBindingSchema.parse({
+    const binding = (
+      nativeV2
+        ? versionedProviderTransmissionApprovalBindingSchema
+        : providerTransmissionApprovalBindingSchema
+    ).parse({
       ...body,
       recordDigest: digest(body),
     });
@@ -241,7 +322,9 @@ export function prepareProviderTransmissionApproval(
       },
     };
     const next = inspectProviderReservationArchive(nextArchive);
-    validateProviderTransmissionApprovalBinding(binding, nextArchive);
+    (nativeV2
+      ? validateVersionedProviderTransmissionApprovalBinding
+      : validateProviderTransmissionApprovalBinding)(binding, nextArchive);
     const totalExposureBytes =
       next.ledger.usedBytes +
       next.ledger.reservedBytes +
@@ -253,26 +336,63 @@ export function prepareProviderTransmissionApproval(
       totalExposureBytes > providerTransmissionPlanLimits.databaseBytes
     )
       return refuse("capacity-exceeded");
-    return {
-      status: "prepared",
-      plan: {
-        planVersion: 1,
-        status: "prepared-not-committed",
-        transaction: "single-immediate-transaction-required",
-        persistence: "audited-transmission-binding-transaction-required",
-        execution,
-        rows: { event, receipt, binding },
-        capacity: {
-          additionalUsedBytes: input.additionalUsedBytes,
-          bindingBytes,
-          totalExposureBytes,
-          reservedBudgetEventSlots: next.ledger.reservedBudgetEventSlots,
-          reservedReceiptSlots: next.ledger.reservedReceiptSlots,
-        },
-        dispatchAllowed: false,
-        budgetWriteAllowed: false,
+    const common = {
+      status: "prepared-not-committed" as const,
+      transaction: "single-immediate-transaction-required" as const,
+      persistence: "audited-transmission-binding-transaction-required" as const,
+
+      capacity: {
+        additionalUsedBytes: input.additionalUsedBytes,
+        bindingBytes,
+        totalExposureBytes,
+        reservedBudgetEventSlots: next.ledger.reservedBudgetEventSlots,
+        reservedReceiptSlots: next.ledger.reservedReceiptSlots,
       },
+      dispatchAllowed: false as const,
+      budgetWriteAllowed: false as const,
     };
+    const materialize = <E, R>(execution: E, rows: R) => ({
+      status: common.status,
+      transaction: common.transaction,
+      persistence: common.persistence,
+      execution,
+      rows,
+      capacity: common.capacity,
+      dispatchAllowed: common.dispatchAllowed,
+      budgetWriteAllowed: common.budgetWriteAllowed,
+    });
+    // Reparse each branch to keep public plan types correlated with their stored versions.
+    return nativeV2
+      ? {
+          status: "prepared",
+          plan: {
+            planVersion: 2,
+            ...materialize(versionedProviderApprovalCommandSchema.parse(execution), {
+              event: createVersionedProviderApprovalEvent({
+                ...eventBody,
+                executionContractVersion: 2,
+                payload: versionedProviderApprovalCommandSchema.parse(execution).payload,
+              }),
+              receipt,
+              binding: versionedProviderTransmissionApprovalBindingSchema.parse(binding),
+            }),
+          },
+        }
+      : {
+          status: "prepared",
+          plan: {
+            planVersion: 1,
+            ...materialize(oldExecution(), {
+              event: createProviderExecutionEvent({
+                ...eventBody,
+                executionContractVersion: 1,
+                payload: oldExecution().payload,
+              }),
+              receipt,
+              binding: providerTransmissionApprovalBindingSchema.parse(binding),
+            }),
+          },
+        };
   } catch {
     return refuse("planned-archive-invalid");
   }

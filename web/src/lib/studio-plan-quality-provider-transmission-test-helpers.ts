@@ -11,7 +11,7 @@ import {
   createProviderTransmissionReview,
   type ProviderTransmissionReviewInput,
 } from "./studio-plan-quality-provider-transmission-review";
-import type { ProviderTransmissionReview } from "./studio-plan-quality-provider-transmission-review-types";
+import type { StoredProviderTransmissionReview } from "./studio-plan-quality-provider-transmission-review-types";
 import {
   providerTransmissionCommandSchema,
   type ProviderTransmissionCommand,
@@ -25,7 +25,9 @@ export function transmissionReview(current: ProviderTransmissionReviewInput) {
   if (result.status !== "review") throw new Error(result.reason);
   return result.review;
 }
-export function transmissionCommandFor(v: ProviderTransmissionReview): ProviderTransmissionCommand {
+export function transmissionCommandFor(
+  v: StoredProviderTransmissionReview,
+): ProviderTransmissionCommand {
   return providerTransmissionCommandSchema.parse({
     commandVersion: 1,
     kind: "approve-provider-transmission",

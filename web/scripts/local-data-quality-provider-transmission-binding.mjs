@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { versionedProviderTransmissionApprovalBindingJsonSchema } from "./local-data-quality-provider-transmission-versioned-schema.mjs";
 import {
   providerTransmissionApprovalBindingJsonSchema,
   providerTransmissionApprovalCoverageJsonSchema,
@@ -7,10 +8,13 @@ import { inspectVersionedProviderReservationArchive as inspectProviderReservatio
 import {
   providerDigest as digest,
   validateProviderRunLedger,
+  validateVersionedProviderRunLedger,
 } from "./local-data-quality-provider.mjs";
 import {
   getProviderExecutionBudgetSnapshot,
   validateProviderExecutionManifest,
+  validateVersionedProviderExecutionManifest,
+  versionedProviderApprovalOperationDigest,
   providerExecutionOperationDigest,
 } from "./local-data-quality-provider-execution.mjs";
 
@@ -22,6 +26,11 @@ export const providerTransmissionApprovalArchiveLimits = {
   totalBytes: 256 * 1024 * 1024,
 };
 const recordSchema = z.fromJSONSchema(providerTransmissionApprovalBindingJsonSchema);
+const versionedRecordSchema = z.fromJSONSchema(
+  versionedProviderTransmissionApprovalBindingJsonSchema,
+);
+const parseRecord = (raw, versioned) =>
+  (versioned && raw?.recordVersion === 2 ? versionedRecordSchema : recordSchema).parse(raw);
 const coverageSchema = z.fromJSONSchema(providerTransmissionApprovalCoverageJsonSchema);
 const liveScope = "candidate-quality-provider-v2-live";
 const same = (a, b) => digest(a) === digest(b);
@@ -44,14 +53,19 @@ const reference = (p) => ({
 });
 const approvals = (events) =>
   events.filter(
-    // Count every supported native approval. The frozen record reader below deliberately
-    // rejects v2 until its separate binding format is implemented; never ignore its presence.
+    // Both readers count every native approval. The v1 reader must reject unsupported v2, not ignore it.
     (e) =>
       [1, 2].includes(e.executionContractVersion) && e.payload.kind === "transmission-approved",
   );
 
 /** Indexed row/shape checks only. Complete archive inspection is still mandatory. */
 export function decodeProviderTransmissionApprovalBindingRows(rows) {
+  return decodeRows(rows, false);
+}
+export function decodeVersionedProviderTransmissionApprovalBindingRows(rows) {
+  return decodeRows(rows, true);
+}
+function decodeRows(rows, versioned) {
   try {
     if (!Array.isArray(rows) || rows.length > providerTransmissionApprovalArchiveLimits.records)
       invalid();
@@ -66,7 +80,7 @@ export function decodeProviderTransmissionApprovalBindingRows(rows) {
       )
         invalid();
       lastOrder = row.storage_order;
-      const record = recordSchema.parse(JSON.parse(row.body));
+      const record = parseRecord(JSON.parse(row.body), versioned);
       if (
         row.run_id !== record.runId ||
         row.nonce !== record.clientRequestId ||
@@ -82,20 +96,23 @@ export function decodeProviderTransmissionApprovalBindingRows(rows) {
   }
 }
 
-function inspectRecord(raw, archive, inspected) {
+function inspectRecord(raw, archive, inspected, versioned = false) {
   if (bytes(raw) > providerTransmissionApprovalArchiveLimits.recordBytes) invalid();
-  const record = recordSchema.parse(raw),
+  const record = parseRecord(raw, versioned),
     c = record.command,
     r = record.approvedReview;
   const state = inspected.ledger;
   const run = state.provider.runs.find((v) => v.id === record.runId);
   const binding = inspected.records.find((v) => v.runId === record.runId);
-  if (!run || run.archiveFormatVersion !== 2 || !production(run) || !binding) invalid();
+  const nativeV2 = record.recordVersion === 2;
+  if (!run || run.archiveFormatVersion !== (nativeV2 ? 3 : 2) || !production(run) || !binding)
+    invalid();
   const prep = run.preparation;
   const event = state.provider.events.find((v) => v.runId === run.id && v.revision === 1);
   const receipt = state.provider.receipts.find((v) => v.clientRequestId === record.clientRequestId);
   if (
     !event ||
+    event.executionContractVersion !== (nativeV2 ? 2 : 1) ||
     event.payload.kind !== "transmission-approved" ||
     !receipt ||
     receipt.kind !== "provider-approve"
@@ -116,7 +133,7 @@ function inspectRecord(raw, archive, inspected) {
   const generation = held?.phases.find((v) => v.phase === "generation"),
     review = held?.phases.find((v) => v.phase === "review");
   if (!held || !generation || !review) invalid();
-  const start = validateProviderRunLedger({
+  const start = (nativeV2 ? validateVersionedProviderRunLedger : validateProviderRunLedger)({
     run,
     events: [],
     artifacts: state.provider.artifacts.filter(
@@ -128,7 +145,10 @@ function inspectRecord(raw, archive, inspected) {
     ),
     registry: archive.ledger.registries.find((v) => v.version === prep.scope.version),
   });
-  validateProviderExecutionManifest(run, r.manifest);
+  (nativeV2 ? validateVersionedProviderExecutionManifest : validateProviderExecutionManifest)(
+    run,
+    r.manifest,
+  );
   const inspectedAt = Date.parse(r.inspectedAt),
     approvedAt = Date.parse(c.approval.approvedAt),
     recordedAt = Date.parse(record.recordedAt),
@@ -171,7 +191,7 @@ function inspectRecord(raw, archive, inspected) {
       preparedAt: prep.preparedAt,
       preparationExpiresAt: prep.expiresAt,
       revision: 0,
-      archiveFormatVersion: 2,
+      archiveFormatVersion: nativeV2 ? 4 : 2,
       state: "reserved",
       snapshotDigest: start.snapshotDigest,
     }) ||
@@ -254,11 +274,14 @@ function inspectRecord(raw, archive, inspected) {
       budgetDigest: b.headDigest,
     }) ||
     receipt.inputDigest !==
-      providerExecutionOperationDigest(run.id, {
-        clientRequestId: c.clientRequestId,
-        expectedRevision: 0,
-        payload: p,
-      }) ||
+      (nativeV2 ? versionedProviderApprovalOperationDigest : providerExecutionOperationDigest)(
+        run.id,
+        {
+          clientRequestId: c.clientRequestId,
+          expectedRevision: 0,
+          payload: p,
+        },
+      ) ||
     !(
       Date.parse(run.recordedAt) <= inspectedAt &&
       inspectedAt <= approvedAt &&
@@ -295,8 +318,14 @@ function inspectRecord(raw, archive, inspected) {
 
 /** Complete v8 audit + one binding, NOT coverage of all transmission approvals. */
 export function validateProviderTransmissionApprovalBinding(raw, archive) {
+  return validateBinding(raw, archive, false);
+}
+export function validateVersionedProviderTransmissionApprovalBinding(raw, archive) {
+  return validateBinding(raw, archive, true);
+}
+function validateBinding(raw, archive, versioned) {
   try {
-    return inspectRecord(raw, archive, inspectProviderReservationArchive(archive));
+    return inspectRecord(raw, archive, inspectProviderReservationArchive(archive), versioned);
   } catch {
     return invalid();
   }
@@ -361,11 +390,13 @@ export function createProviderTransmissionApprovalMigrationCoverage(archive) {
 /** All production first approvals need either an exact cutover event identity or one binding.
  * Binding rows may be committed in a different order than run creation. Parent readers must also
  * audit schema/raw bytes and atomically persist coverage; hashes alone do not authenticate it. */
-export function inspectProviderTransmissionApprovalArchive({
-  archive,
-  coverage: rawCoverage,
-  records: rawRecords,
-}) {
+export function inspectProviderTransmissionApprovalArchive(input) {
+  return inspectArchive(input, false);
+}
+export function inspectVersionedProviderTransmissionApprovalArchive(input) {
+  return inspectArchive(input, true);
+}
+function inspectArchive({ archive, coverage: rawCoverage, records: rawRecords }, versioned) {
   try {
     const inspected = inspectProviderReservationArchive(archive),
       state = inspected.ledger;
@@ -398,7 +429,7 @@ export function inspectProviderTransmissionApprovalArchive({
     );
     if (rawRecords.length !== required.size) invalid();
     const records = rawRecords.map((raw) => {
-      const record = inspectRecord(raw, archive, inspected);
+      const record = inspectRecord(raw, archive, inspected, versioned);
       if (required.get(record.runId) !== record.approvalEventDigest) invalid();
       required.delete(record.runId);
       return record;

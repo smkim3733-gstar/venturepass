@@ -27,6 +27,13 @@ import {
   isVersionedProviderTransmissionReviewCurrent,
   type ProviderTransmissionReviewInput,
 } from "./studio-plan-quality-provider-transmission-review";
+import {
+  prepareVersionedProviderTransmissionApproval,
+  type ProviderTransmissionPlannerInput,
+} from "./studio-plan-quality-provider-transmission-plan";
+type TransmissionApproval = Omit<ProviderTransmissionPlannerInput, "current"> & {
+  current: TransmissionInspection;
+};
 type TransmissionInspection = Omit<ProviderTransmissionReviewInput, "configuration">;
 
 type Inspection = Omit<ProviderPolicyReviewInput, "configuration">;
@@ -70,6 +77,18 @@ export function createServerProviderPolicyContext(
     return bind(input);
   }
   return Object.freeze({
+    prepareTransmissionApproval: (input: TransmissionApproval) => {
+      if (
+        Object.keys(input).some(
+          (key) => !["command", "review", "current", "additionalUsedBytes"].includes(key),
+        )
+      )
+        throw new Error("Unsupported transmission approval evidence");
+      return prepareVersionedProviderTransmissionApproval(version, {
+        ...structuredClone(input),
+        current: bindTransmission(input.current),
+      });
+    },
     transmissionReview: (input: TransmissionInspection) =>
       createVersionedProviderTransmissionReview(version, bindTransmission(input)),
     isTransmissionReviewCurrent: (review: unknown, input: TransmissionInspection) =>
