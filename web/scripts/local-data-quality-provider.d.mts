@@ -12,6 +12,7 @@ export {
 import type { CandidateRegistrySnapshot } from "../src/lib/studio-plan-quality-candidate-registry-types";
 import type {
   ProviderPreparation,
+  VersionedProviderPreparation,
   ProviderRequestBody,
   ProviderApproval,
   ProviderStart,
@@ -95,3 +96,16 @@ export function inspectProviderLedger(input: {
   reservedReceiptSlots: number;
   usedBytes: number;
 };
+
+export const versionedProviderPreparationSchema: z.ZodType<VersionedProviderPreparation>;
+export function validateVersionedProviderPreparation(
+  value: unknown,
+  registry: CandidateRegistrySnapshot,
+): VersionedProviderPreparation;
+export function validateVersionedProviderRequestEvidence(
+  value: unknown,
+  registry: CandidateRegistrySnapshot,
+): Pick<
+  VersionedProviderPreparation,
+  "scope" | "model" | "contract" | "generation" | "reviewTemplate"
+>;

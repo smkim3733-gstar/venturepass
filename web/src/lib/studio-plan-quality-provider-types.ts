@@ -1,5 +1,8 @@
 import type { ProviderContextReservationBasis } from "./studio-plan-quality-provider-reservation";
-import type { EnginePlanReviewTemplate } from "./studio-engine-request-preparation";
+import type {
+  EnginePlanReviewTemplate,
+  VersionedPlanExecutionContract,
+} from "./studio-engine-request-preparation";
 import type {
   EngineExecutionContract,
   EngineExecutionTransportRequest,
@@ -276,3 +279,11 @@ export {
   providerArtifactSchema,
   providerCancelSchema,
 } from "../../scripts/local-data-quality-provider.mjs";
+
+// Explicit preparation/archive support only. Legacy Provider* types remain v1.
+export type VersionedProviderContract = Omit<ProviderContract, "baseContract"> & {
+  baseContract: VersionedPlanExecutionContract;
+};
+export type VersionedProviderPreparation = Omit<ProviderPreparation, "contract"> & {
+  contract: VersionedProviderContract;
+};

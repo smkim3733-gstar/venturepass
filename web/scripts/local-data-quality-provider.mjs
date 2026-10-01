@@ -543,9 +543,31 @@ export const providerRequestEvidenceSchema = providerPreparationSchema.pick({
   generation: true,
   reviewTemplate: true,
 });
+// Additive preparation readers: never widen the old run/start/reservation schemas.
+// v2 uses the frozen v1 wire shape with a distinct, fixed contract identity.
+const archivedV2Engine = structuredClone(
+  actualArchiveJsonSchemas.actualLedgerRunSchema.properties.preparation.properties.engine,
+);
+archivedV2Engine.properties.engineVersion.const = "plan-observation-v2";
+archivedV2Engine.properties.contractDigest.const =
+  "bb7dcb203e8ef0c41450df04778f3dec22b4dd18835fdf592974752b32322f22";
+const versionedContract = contract.extend({
+  baseContract: z.union([baseContract, z.fromJSONSchema(archivedV2Engine)]),
+});
+export const versionedProviderPreparationSchema = providerPreparationSchema.extend({
+  contract: versionedContract,
+});
+const versionedRequestEvidenceSchema = providerRequestEvidenceSchema.extend({
+  contract: versionedContract,
+});
 export function validateProviderPreparation(value, registry) {
-  const p = providerPreparationSchema.parse(value),
-    f = validateFinance(p.financialBasis);
+  return validateParsedPreparation(providerPreparationSchema.parse(value), registry);
+}
+export function validateVersionedProviderPreparation(value, registry) {
+  return validateParsedPreparation(versionedProviderPreparationSchema.parse(value), registry);
+}
+function validateParsedPreparation(p, registry) {
+  const f = validateFinance(p.financialBasis);
   if (
     p.preparationDigest !== providerDigest(omit(p, "preparationDigest")) ||
     p.financialBasisDigest !== providerDigest(f) ||
@@ -571,7 +593,7 @@ export function validateProviderPreparation(value, registry) {
     expires > Date.parse(p.retention.validUntil)
   )
     fail();
-  validateProviderRequestEvidence(
+  validateParsedRequestEvidence(
     {
       scope: p.scope,
       model: p.model,
@@ -586,8 +608,13 @@ export function validateProviderPreparation(value, registry) {
 
 /** Frozen request evidence checks shared by preparations and policy archives; no current engine. */
 export function validateProviderRequestEvidence(value, registry) {
-  const p = providerRequestEvidenceSchema.parse(value),
-    s = p.scope;
+  return validateParsedRequestEvidence(providerRequestEvidenceSchema.parse(value), registry);
+}
+export function validateVersionedProviderRequestEvidence(value, registry) {
+  return validateParsedRequestEvidence(versionedRequestEvidenceSchema.parse(value), registry);
+}
+function validateParsedRequestEvidence(p, registry) {
+  const s = p.scope;
   const entry = registry.entries.filter((v) => v.candidateId === s.candidateId),
     manifest = registry.manifest.filter((v) => v.candidateId === s.candidateId);
   if (
@@ -636,9 +663,16 @@ export function validateProviderRequestEvidence(value, registry) {
   ]) {
     const d = base.phases.find((v) => v.phase === phase);
     if (!d || fmt.name !== d.name || providerWireDigest(fmt) !== d.schemaDigest) fail();
-    const marker = systemMessage.content.lastIndexOf("\n\n");
+    // v2 has paragraphs in BOTH components. Its frozen system is 2685 UTF-16
+    // code units; verify both stored phase hashes at that exact boundary.
+    // Do not import today's prompt or scan/hash every possible delimiter.
+    const marker =
+      base.engineVersion === "plan-observation-v2"
+        ? 2685
+        : systemMessage.content.lastIndexOf("\n\n");
     if (
       marker < 0 ||
+      systemMessage.content.slice(marker, marker + 2) !== "\n\n" ||
       providerWireDigest(systemMessage.content.slice(0, marker)) !== d.systemDigest ||
       providerWireDigest(systemMessage.content.slice(marker + 2)) !== d.instructionDigest
     )

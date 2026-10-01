@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { PlanPromptVersion } from "./studio-plan-prompt-versions";
 import { caseSchema } from "./studio-schema";
 import {
   candidateRegistryModelInput,
@@ -6,9 +7,9 @@ import {
 } from "./studio-plan-quality-candidate-registry";
 import type { CandidateRegistrySnapshot } from "./studio-plan-quality-candidate-registry-types";
 import {
-  buildPlanGenerationRequest,
-  buildPlanReviewTemplate,
-  getPlanExecutionContract,
+  buildPlanGenerationRequestForVersion,
+  buildPlanReviewTemplateForVersion,
+  getPlanExecutionContractForVersion,
 } from "./studio-engine-request-preparation";
 import {
   createProviderContextReservation,
@@ -19,14 +20,16 @@ import type {
   ProviderPreparation,
   ProviderContract,
   ProviderRetentionNotice,
+  VersionedProviderContract,
+  VersionedProviderPreparation,
 } from "./studio-plan-quality-provider-types";
 import {
   providerBudgetScope,
   providerDigest,
   providerRawDigest,
   providerWireDigest,
-  providerPreparationSchema,
-  validateProviderPreparation,
+  versionedProviderPreparationSchema,
+  validateVersionedProviderPreparation,
 } from "../../scripts/local-data-quality-provider.mjs";
 export {
   providerBudgetScope,
@@ -81,10 +84,13 @@ const requestOptions = {
   stream: false,
 } as const;
 export function getProviderExecutionContract(): ProviderContract {
-  const value: Omit<ProviderContract, "contractDigest"> = {
+  return contractForVersion("plan-observation-v1") as ProviderContract;
+}
+function contractForVersion(version: PlanPromptVersion): VersionedProviderContract {
+  const value: Omit<VersionedProviderContract, "contractDigest"> = {
     schemaVersion: 2,
     engineVersion: "plan-provider-reservation-v2",
-    baseContract: getPlanExecutionContract(),
+    baseContract: getPlanExecutionContractForVersion(version),
     requestOptions: { ...requestOptions },
     omittedFields: ["previous_response_id", "conversation", "tools", "context_management"],
     maxCalls: 2,
@@ -98,6 +104,9 @@ export function getProviderExecutionContract(): ProviderContract {
 export function createProviderRequestReview(
   input: ProviderRequestReviewInput,
 ): ProviderRequestReview {
+  return requestReviewForVersion("plan-observation-v1", input) as ProviderRequestReview;
+}
+function requestReviewForVersion(version: PlanPromptVersion, input: ProviderRequestReviewInput) {
   const identity = requestReviewIdentitySchema.parse({
     candidateId: input.candidateId,
     model: input.model,
@@ -121,9 +130,19 @@ export function createProviderRequestReview(
     createdAt: identity.preparedAt,
     updatedAt: identity.preparedAt,
   });
-  const contract = getProviderExecutionContract();
-  const generation = buildPlanGenerationRequest(company, source.candidate, identity.model);
-  const template = buildPlanReviewTemplate(company, source.candidate, identity.model);
+  const contract = contractForVersion(version);
+  const generation = buildPlanGenerationRequestForVersion(
+    version,
+    company,
+    source.candidate,
+    identity.model,
+  );
+  const template = buildPlanReviewTemplateForVersion(
+    version,
+    company,
+    source.candidate,
+    identity.model,
+  );
   const body = { ...generation.body, ...requestOptions };
   const review: Omit<ProviderPreparation["reviewTemplate"], "templateDigest"> = {
     ...template,
@@ -155,6 +174,12 @@ export function createProviderRequestReview(
 
 /** Pure review payload; it creates no approval, reservation or provider capability. */
 export function createProviderPreparation(input: ProviderPreparationInput): ProviderPreparation {
+  return preparationForVersion("plan-observation-v1", input) as ProviderPreparation;
+}
+function preparationForVersion(
+  version: PlanPromptVersion,
+  input: ProviderPreparationInput,
+): VersionedProviderPreparation {
   const registry = validateCandidateRegistrySnapshot(input.registry);
   const financialBasis = createProviderContextReservation(input.financialInput);
   if (
@@ -167,13 +192,13 @@ export function createProviderPreparation(input: ProviderPreparationInput): Prov
     input.budget.scopeId !== providerBudgetScope(input.environment)
   )
     throw new Error("Provider financial scope invalid");
-  const request = createProviderRequestReview({
+  const request = requestReviewForVersion(version, {
     registry,
     candidateId: input.candidateId,
     model: financialBasis.model,
     preparedAt: input.preparedAt,
   });
-  const value: Omit<ProviderPreparation, "preparationDigest"> = {
+  const value: Omit<VersionedProviderPreparation, "preparationDigest"> = {
     schemaVersion: 2,
     kind: "provider-execution-preparation",
     environment: input.environment,
@@ -191,11 +216,11 @@ export function createProviderPreparation(input: ProviderPreparationInput): Prov
     retentionDigest: providerDigest(input.retention),
     permissions: { dispatchAllowed: false, tokenFitVerified: false, accountAccessVerified: false },
   };
-  const result = providerPreparationSchema.parse({
+  const result = versionedProviderPreparationSchema.parse({
     ...value,
     preparationDigest: providerDigest(value),
   });
-  return validateProviderPreparation(result, registry);
+  return validateVersionedProviderPreparation(result, registry);
 }
 
 /** New writes rebind current builders and current time; archival reads never call this. */
@@ -204,12 +229,27 @@ export function validateNewProviderPreparation(
   registry: CandidateRegistrySnapshot,
   now: string,
 ) {
-  const p = validateProviderPreparation(value, registry);
+  return validateNewPreparationForVersion(
+    "plan-observation-v1",
+    value,
+    registry,
+    now,
+  ) as ProviderPreparation;
+}
+function validateNewPreparationForVersion(
+  version: PlanPromptVersion,
+  value: unknown,
+  registry: CandidateRegistrySnapshot,
+  now: string,
+) {
+  const p = validateVersionedProviderPreparation(value, registry);
+  if (p.contract.baseContract.engineVersion !== version)
+    throw new Error("Provider preparation version mismatch");
   const time = Date.parse(now);
   if (!Number.isFinite(time) || time < Date.parse(p.preparedAt) || time >= Date.parse(p.expiresAt))
     throw new Error("Provider preparation expired");
   const f = p.financialBasis;
-  const expected = createProviderPreparation({
+  const expected = preparationForVersion(version, {
     registry,
     candidateId: p.scope.candidateId,
     environment: p.environment,
@@ -230,4 +270,21 @@ export function validateNewProviderPreparation(
   if (expected.preparationDigest !== p.preparationDigest)
     throw new Error("Provider preparation changed");
   return p;
+}
+
+/**
+ * Pure, explicitly selected preparation. No approval, dispatch or storage authority.
+ * Current operational entry points still call the v1 wrappers above.
+ */
+export function createVersionedProviderPreparationBuilder(version: PlanPromptVersion) {
+  // Resolve eagerly: unsupported versions fail before any caller input is processed.
+  contractForVersion(version);
+  return Object.freeze({
+    getContract: () => contractForVersion(version),
+    createRequestReview: (input: ProviderRequestReviewInput) =>
+      requestReviewForVersion(version, input),
+    createPreparation: (input: ProviderPreparationInput) => preparationForVersion(version, input),
+    validateNewPreparation: (value: unknown, registry: CandidateRegistrySnapshot, now: string) =>
+      validateNewPreparationForVersion(version, value, registry, now),
+  });
 }
