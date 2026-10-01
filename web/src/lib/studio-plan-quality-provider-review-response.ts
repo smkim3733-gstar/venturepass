@@ -1,10 +1,15 @@
 import "server-only";
 import { z } from "zod";
-import { inspectProviderTransmissionApprovalArchive } from "../../scripts/local-data-quality-provider-transmission-binding.mjs";
+import {
+  inspectProviderTransmissionApprovalArchive,
+  inspectVersionedProviderTransmissionApprovalArchive,
+} from "../../scripts/local-data-quality-provider-transmission-binding.mjs";
 import {
   createProviderExecutionArtifact,
   createProviderExecutionBudgetEvent,
   createProviderExecutionEvent,
+  createVersionedProviderExecutionEvent,
+  versionedProviderExecutionOperationDigest,
   createProviderExecutionReceipt,
   providerExecutionOperationDigest,
   providerUsageRecognitionPayload,
@@ -22,6 +27,8 @@ import type {
   ProviderExecutionCommand,
   ProviderExecutionEvent,
   ProviderExecutionSnapshot,
+  VersionedProviderExecutionSnapshot,
+  VersionedProviderExecutionEvent,
 } from "./studio-plan-quality-provider-execution-types";
 import type { ProviderGenerationResponseRecord } from "./studio-plan-quality-provider-generation-response";
 
@@ -74,6 +81,14 @@ export function reviewResponseCommand(
   snapshot: ProviderExecutionSnapshot,
   expectedRevision = snapshot.revision,
 ): ProviderExecutionCommand<"response-received"> {
+  return versionedReviewResponseCommand(input, snapshot, expectedRevision);
+}
+/** Shared captured bytes; version comes only from the fully audited stored snapshot. */
+export function versionedReviewResponseCommand(
+  input: ProviderReviewResponseCapture,
+  snapshot: ProviderExecutionSnapshot | VersionedProviderExecutionSnapshot,
+  expectedRevision = snapshot.revision,
+): ProviderExecutionCommand<"response-received"> {
   const dispatch = snapshot.events[6];
   if (dispatch?.payload.kind !== "dispatch-intent" || dispatch.payload.phase !== "review")
     throw Error("Review dispatch required");
@@ -102,7 +117,27 @@ export function reviewResponseCommand(
 /** NEW response plan only. An expired approval or changed current policy/configuration cannot
  * erase an already obtained response. Original frozen pricing/usage rules determine its cost.
  * A writer must regenerate under its lock; this read-only plan grants no sending or writing. */
-export function prepareProviderReviewResponse(input: ProviderReviewResponseInput) {
+export function prepareProviderReviewResponse(
+  input: ProviderReviewResponseInput,
+): ProviderReviewResponseResult {
+  return prepareReviewResponse(input, false) as ProviderReviewResponseResult;
+}
+/** Preserve an already obtained response using its stored contract. Current server selection
+ * cannot erase a capture or change its price; this planner never grants transmission ownership. */
+export function prepareVersionedProviderReviewResponse(input: ProviderReviewResponseInput) {
+  if (
+    !input ||
+    Object.keys(input).some(
+      (key) => !["capture", "inspectedAt", "archive", "additionalUsedBytes"].includes(key),
+    )
+  )
+    return refused("invalid-input");
+  return prepareReviewResponse(input, true);
+}
+function prepareReviewResponse(input: ProviderReviewResponseInput, versioned: boolean) {
+  const inspect = versioned
+    ? inspectVersionedProviderTransmissionApprovalArchive
+    : inspectProviderTransmissionApprovalArchive;
   if (
     !captureSchema.safeParse(input.capture).success ||
     !z.string().datetime().safeParse(input.inspectedAt).success ||
@@ -116,9 +151,9 @@ export function prepareProviderReviewResponse(input: ProviderReviewResponseInput
   } catch {
     return refused("response-not-capturable");
   }
-  let archive: ReturnType<typeof inspectProviderTransmissionApprovalArchive>;
+  let archive: ReturnType<typeof inspectVersionedProviderTransmissionApprovalArchive>;
   try {
-    archive = inspectProviderTransmissionApprovalArchive(input.archive);
+    archive = inspect(input.archive);
   } catch {
     return refused("archive-invalid");
   }
@@ -139,13 +174,17 @@ export function prepareProviderReviewResponse(input: ProviderReviewResponseInput
     binding = archive.records.find((row) => row.runId === id);
   if (
     !snapshot ||
-    snapshot.archiveFormatVersion !== 3 ||
+    (snapshot.archiveFormatVersion !== 3 && (!versioned || snapshot.archiveFormatVersion !== 5)) ||
     snapshot.run.environment !== "production" ||
     snapshot.run.runDigest !== generation.dispatch.runDigest ||
     !binding ||
     binding.recordDigest !== generation.dispatch.approvalBindingDigest
   )
     return refused("bindings-changed");
+  const nativeV2 = snapshot.archiveFormatVersion === 5;
+  const operationDigest = nativeV2
+    ? versionedProviderExecutionOperationDigest
+    : providerExecutionOperationDigest;
   const [approval, genPrepared, genDispatch, genResponse, validated, prepared, dispatch] =
     snapshot.events;
   if (
@@ -155,7 +194,11 @@ export function prepareProviderReviewResponse(input: ProviderReviewResponseInput
     dispatch.payload.phase !== "review"
   )
     return refused("review-dispatch-required");
-  const matches = (nonce: string, kind: string, event: ProviderExecutionEvent) =>
+  const matches = (
+    nonce: string,
+    kind: string,
+    event: ProviderExecutionEvent | VersionedProviderExecutionEvent,
+  ) =>
     state.provider.receipts.some(
       (row) =>
         row.clientRequestId === nonce &&
@@ -208,7 +251,7 @@ export function prepareProviderReviewResponse(input: ProviderReviewResponseInput
   if (now < Date.parse(last.recordedAt) || (head && now < Date.parse(head.recordedAt)))
     return refused("capture-time-before-history");
   try {
-    const command = reviewResponseCommand(capture, snapshot),
+    const command = versionedReviewResponseCommand(capture, snapshot),
       artifact = command.artifact!,
       assessment = assessProviderUsage({
         response: capture.response,
@@ -238,9 +281,7 @@ export function prepareProviderReviewResponse(input: ProviderReviewResponseInput
           payload: recognition,
         })
       : null;
-    const event = createProviderExecutionEvent({
-      schemaVersion: 2,
-      executionContractVersion: 1,
+    const eventBody = {
       runId: id,
       revision: snapshot.revision + 1,
       budgetRevision: usageEvent?.revision ?? budget.revision,
@@ -251,13 +292,24 @@ export function prepareProviderReviewResponse(input: ProviderReviewResponseInput
         usageAssessment: assessment,
         usageBudgetEventDigest: usageEvent?.eventDigest ?? null,
       },
-    });
+    };
+    const event = nativeV2
+      ? createVersionedProviderExecutionEvent({
+          schemaVersion: 2,
+          executionContractVersion: 2,
+          ...eventBody,
+        })
+      : createProviderExecutionEvent({
+          schemaVersion: 2,
+          executionContractVersion: 1,
+          ...eventBody,
+        });
     const receipt = createProviderExecutionReceipt({
       schemaVersion: 2,
       scopeId: budget.scopeId,
       kind: "provider-response",
       clientRequestId: capture.responseRequestId,
-      inputDigest: providerExecutionOperationDigest(id, command),
+      inputDigest: operationDigest(id, command),
       runId: id,
       runRevision: event.revision,
       budgetRevision: event.budgetRevision,
@@ -265,7 +317,7 @@ export function prepareProviderReviewResponse(input: ProviderReviewResponseInput
       recordedAt: inspectedAt,
     });
     const ledger = input.archive.archive.ledger;
-    const next = inspectProviderTransmissionApprovalArchive({
+    const next = inspect({
       ...input.archive,
       archive: {
         ...input.archive.archive,
@@ -282,9 +334,10 @@ export function prepareProviderReviewResponse(input: ProviderReviewResponseInput
     if (!withinCapacity(totalExposureBytes)) return refused("capacity-exceeded");
     const after = next.reservationArchive.ledger.provider,
       resultingSnapshot = after.snapshots.find((row) => row.run.id === id)!;
-    if (resultingSnapshot.archiveFormatVersion !== 3) return refused("planned-archive-invalid");
+    if (resultingSnapshot.archiveFormatVersion !== (nativeV2 ? 5 : 3))
+      return refused("planned-archive-invalid");
     const plan = {
-      planVersion: 1 as const,
+      planVersion: nativeV2 ? (2 as const) : (1 as const),
       kind: "provider-review-response-plan" as const,
       status: "prepared-not-committed" as const,
       transaction: "single-immediate-transaction-required" as const,
@@ -334,8 +387,19 @@ export function prepareProviderReviewResponse(input: ProviderReviewResponseInput
     return refused("planned-archive-invalid");
   }
 }
-export type ProviderReviewResponseResult = ReturnType<typeof prepareProviderReviewResponse>;
-export type ProviderReviewResponsePlan = Extract<
-  ProviderReviewResponseResult,
+export type VersionedProviderReviewResponseResult = ReturnType<typeof prepareReviewResponse>;
+export type VersionedProviderReviewResponsePlan = Extract<
+  VersionedProviderReviewResponseResult,
   { status: "prepared" }
 >["plan"];
+export type ProviderReviewResponsePlan = Omit<
+  VersionedProviderReviewResponsePlan,
+  "planVersion" | "rows"
+> & {
+  planVersion: 1;
+  rows: Omit<VersionedProviderReviewResponsePlan["rows"], "event"> & {
+    event: ProviderExecutionEvent;
+  };
+};
+export type ProviderReviewResponseResult =
+  { status: "prepared"; plan: ProviderReviewResponsePlan } | ReturnType<typeof refused>;

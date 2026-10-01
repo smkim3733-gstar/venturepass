@@ -169,8 +169,8 @@ it.each([false, true])("plans late r9 with terminal state preserved, unknown=%s"
 });
 it("keeps audited raw usage and response planning within the same read transaction", () => {
   const before = inspectQualityDatabase(db),
-    original = planner.prepareProviderReviewResponse;
-  const hook = vi.spyOn(planner, "prepareProviderReviewResponse").mockImplementation((input) => {
+    original = planner.prepareVersionedProviderReviewResponse;
+  const hook = vi.spyOn(planner, "prepareVersionedProviderReviewResponse").mockImplementation((input) => {
     expect(input.additionalUsedBytes).toBeGreaterThan(0);
     db.exec("BEGIN IMMEDIATE");
     try {
@@ -212,7 +212,7 @@ it.each([
   for (const trigger of triggers) db.exec(`DROP TRIGGER "${trigger.name}"`);
   db.exec(`DELETE FROM ${table}`);
   for (const trigger of triggers) db.exec(trigger.sql);
-  const hook = vi.spyOn(planner, "prepareProviderReviewResponse");
+  const hook = vi.spyOn(planner, "prepareVersionedProviderReviewResponse");
   expect(() => store.providerPrepareReviewResponse(capture)).toThrow();
   expect(hook).not.toHaveBeenCalled();
 });

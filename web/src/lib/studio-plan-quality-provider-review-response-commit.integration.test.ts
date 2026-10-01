@@ -257,7 +257,7 @@ it("historical replay/lookup precedes current planner, clock and configuration a
   const before = inspect(),
     budget = store.providerBudgetGet("production");
   reopen();
-  vi.spyOn(planner, "prepareProviderReviewResponse").mockImplementation(() => {
+  vi.spyOn(planner, "prepareVersionedProviderReviewResponse").mockImplementation(() => {
     throw Error("Do not plan historical response");
   });
   vi.spyOn(configuration, "getProviderConfigurationProposal").mockImplementation(() => {
@@ -487,8 +487,8 @@ it.each(["before", "after"])(
 );
 it.each(["DELETE", "WAL"])("plans and audits under a writer lock in %s", (mode) => {
   db.exec(`PRAGMA journal_mode=${mode}`);
-  const original = planner.prepareProviderReviewResponse;
-  const hook = vi.spyOn(planner, "prepareProviderReviewResponse").mockImplementation((value) => {
+  const original = planner.prepareVersionedProviderReviewResponse;
+  const hook = vi.spyOn(planner, "prepareVersionedProviderReviewResponse").mockImplementation((value) => {
     expect(value.additionalUsedBytes).toBeGreaterThan(0);
     expect(() => db.exec("BEGIN IMMEDIATE")).toThrow(/locked/);
     return original(value);

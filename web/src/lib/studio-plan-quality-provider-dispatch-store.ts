@@ -89,9 +89,9 @@ import {
 } from "./studio-plan-quality-provider-dispatch-plan";
 import type { ProviderObservationPrepared } from "./studio-provider-observation";
 import {
-  prepareProviderReviewResponse,
+  prepareVersionedProviderReviewResponse,
   captureReviewResponseInput,
-  reviewResponseCommand,
+  versionedReviewResponseCommand,
   type ProviderReviewResponseCapture,
   type ProviderReviewResponseRecord,
   type ProviderReviewResponseCommitResult,
@@ -734,7 +734,7 @@ export class ProviderGenerationDispatchStore {
   prepareReviewResponse(capture: unknown) {
     return this.#context.transaction(() => {
       const before = this.inspect();
-      return prepareProviderReviewResponse({
+      return prepareVersionedProviderReviewResponse({
         capture,
         archive: before.input,
         inspectedAt: new Date().toISOString(),
@@ -1077,7 +1077,7 @@ export class ProviderGenerationDispatchStore {
       snapshot = state.provider.snapshots.find((row) => row.run.id === id);
     if (
       !snapshot ||
-      snapshot.archiveFormatVersion !== 3 ||
+      (snapshot.archiveFormatVersion !== 3 && snapshot.archiveFormatVersion !== 5) ||
       snapshot.run.environment !== "production"
     )
       return fail("REVIEW_RESPONSE_DISPATCH_REQUIRED");
@@ -1110,9 +1110,12 @@ export class ProviderGenerationDispatchStore {
       return fail("REVIEW_RESPONSE_CONFLICT");
     // Historical recovery uses the original prefix revision, including after a late capture or
     // subsequent terminal/validation events. No current plan, clock, policy or configuration.
-    const command = reviewResponseCommand(capture, snapshot, response.revision - 1);
+    const command = versionedReviewResponseCommand(capture, snapshot, response.revision - 1);
     if (
-      receipt.inputDigest !== providerExecutionOperationDigest(id, command) ||
+      receipt.inputDigest !==
+        (snapshot.archiveFormatVersion === 5
+          ? versionedProviderExecutionOperationDigest
+          : providerExecutionOperationDigest)(id, command) ||
       !same(artifact, command.artifact) ||
       response.payload.artifactSha256 !== artifact.sha256
     )
@@ -1156,7 +1159,7 @@ export class ProviderGenerationDispatchStore {
       const before = this.inspect(),
         previous = this.reviewResponseHistory(before, capture);
       if (previous) return { record: previous, newlyCommitted: false, replayed: true };
-      const prepared = prepareProviderReviewResponse({
+      const prepared = prepareVersionedProviderReviewResponse({
         capture,
         archive: before.input,
         inspectedAt: new Date().toISOString(),
