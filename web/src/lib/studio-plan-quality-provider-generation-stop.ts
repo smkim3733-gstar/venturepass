@@ -1,9 +1,16 @@
 import "server-only";
+import type { PlanPromptVersion } from "./studio-plan-prompt-versions";
+import { createVersionedProviderPreparationBuilder } from "./studio-plan-quality-provider-core";
 import { z } from "zod";
-import { inspectProviderTransmissionApprovalArchive } from "../../scripts/local-data-quality-provider-transmission-binding.mjs";
+import {
+  inspectProviderTransmissionApprovalArchive,
+  inspectVersionedProviderTransmissionApprovalArchive,
+} from "../../scripts/local-data-quality-provider-transmission-binding.mjs";
 import {
   createProviderExecutionBudgetEvent,
   createProviderExecutionEvent,
+  createVersionedProviderExecutionEvent,
+  versionedProviderExecutionOperationDigest,
   createProviderExecutionReceipt,
   getProviderExecutionBudgetSnapshot,
   providerExecutionOperationDigest,
@@ -14,8 +21,14 @@ import {
   providerGenerationDispatchIdentitySchema,
   providerGenerationDispatchPlanLimits,
 } from "./studio-plan-quality-provider-dispatch-plan";
-import { prepareProviderGenerationValidation } from "./studio-plan-quality-provider-generation-validation";
-import type { ProviderExecutionCommand } from "./studio-plan-quality-provider-execution-types";
+import {
+  prepareProviderGenerationValidation,
+  prepareVersionedProviderGenerationValidation,
+} from "./studio-plan-quality-provider-generation-validation";
+import type {
+  ProviderExecutionCommand,
+  ProviderExecutionEvent,
+} from "./studio-plan-quality-provider-execution-types";
 
 export const providerGenerationStopIdentitySchema = z
   .object({
@@ -48,6 +61,7 @@ export type ProviderGenerationStopInput = {
   additionalUsedBytes: number;
 };
 type Refusal =
+  | "server-version-mismatch"
   | "invalid-input"
   | "archive-invalid"
   | "bindings-changed"
@@ -64,7 +78,39 @@ const refuse = (reason: Refusal) => ({ status: "refused" as const, reason, plan:
 
 /** Pure stop preparation only. Rebuild under the writer lock before saving. An unobserved stop
  * means "do not continue or resend", not "the provider can no longer return/charge a response". */
-export function prepareProviderGenerationStop(input: ProviderGenerationStopInput) {
+export function prepareProviderGenerationStop(
+  input: ProviderGenerationStopInput,
+): ProviderGenerationStopResult {
+  // Frozen entry point preserves v1 archive acceptance and complete plan bytes.
+  return prepareGenerationStop(input, null) as ProviderGenerationStopResult;
+}
+/** Server-selected stop planning grants no write, dispatch or retry capability. */
+export function prepareVersionedProviderGenerationStop(
+  version: PlanPromptVersion,
+  input: ProviderGenerationStopInput,
+): VersionedProviderGenerationStopResult {
+  createVersionedProviderPreparationBuilder(version);
+  if (
+    !input ||
+    Object.keys(input).some(
+      (key) => !["identity", "inspectedAt", "archive", "additionalUsedBytes"].includes(key),
+    )
+  )
+    return refuse("invalid-input");
+  return prepareGenerationStop(input, version);
+}
+function prepareGenerationStop(
+  input: ProviderGenerationStopInput,
+  version: PlanPromptVersion | null,
+) {
+  const nativeV2 = version === "plan-observation-v2";
+  const inspect =
+    version === null
+      ? inspectProviderTransmissionApprovalArchive
+      : inspectVersionedProviderTransmissionApprovalArchive;
+  const operationDigest = nativeV2
+    ? versionedProviderExecutionOperationDigest
+    : providerExecutionOperationDigest;
   const parsed = providerGenerationStopIdentitySchema.safeParse(input.identity);
   if (
     !parsed.success ||
@@ -75,9 +121,9 @@ export function prepareProviderGenerationStop(input: ProviderGenerationStopInput
     return refuse("invalid-input");
   const identity = parsed.data,
     id = identity.dispatch.runId;
-  let archive: ReturnType<typeof inspectProviderTransmissionApprovalArchive>;
+  let archive: ReturnType<typeof inspectVersionedProviderTransmissionApprovalArchive>;
   try {
-    archive = inspectProviderTransmissionApprovalArchive(input.archive);
+    archive = inspect(input.archive);
   } catch {
     return refuse("archive-invalid");
   }
@@ -85,8 +131,15 @@ export function prepareProviderGenerationStop(input: ProviderGenerationStopInput
     snapshot = state.provider.snapshots.find((row) => row.run.id === id),
     binding = archive.records.find((row) => row.runId === id);
   if (
+    snapshot &&
+    version !== null &&
+    snapshot.run.preparation.contract.baseContract.engineVersion !== version
+  )
+    return refuse("server-version-mismatch");
+  if (
     !snapshot ||
-    snapshot.archiveFormatVersion !== 3 ||
+    (snapshot.archiveFormatVersion !== 3 && snapshot.archiveFormatVersion !== 5) ||
+    snapshot.archiveFormatVersion !== (nativeV2 ? 5 : 3) ||
     snapshot.run.environment !== "production" ||
     snapshot.run.runDigest !== identity.dispatch.runDigest ||
     !binding ||
@@ -185,9 +238,9 @@ export function prepareProviderGenerationStop(input: ProviderGenerationStopInput
       return refuse("observation-changed");
     // Reuse the exact validated-output decision. Do not classify storage/contract/capacity errors
     // as invalid output, and never accept an outcome or failure code supplied by a caller.
-    let validation: ReturnType<typeof prepareProviderGenerationValidation>;
+    let validation: ReturnType<typeof prepareVersionedProviderGenerationValidation>;
     try {
-      validation = prepareProviderGenerationValidation({
+      const validationInput = {
         ...input,
         identity: {
           dispatch: identity.dispatch,
@@ -195,7 +248,11 @@ export function prepareProviderGenerationStop(input: ProviderGenerationStopInput
           responseEventDigest: observation.responseEventDigest,
           validationRequestId: identity.stopRequestId,
         },
-      });
+      };
+      validation =
+        version === null
+          ? prepareProviderGenerationValidation(validationInput)
+          : prepareVersionedProviderGenerationValidation(version, validationInput);
     } catch {
       return refuse("validation-unavailable");
     }
@@ -255,22 +312,31 @@ export function prepareProviderGenerationStop(input: ProviderGenerationStopInput
       expectedRevision: snapshot.revision,
       payload,
     };
-    const event = createProviderExecutionEvent({
-      schemaVersion: 2,
-      executionContractVersion: 1,
+    const eventBody = {
       runId: id,
       revision: snapshot.revision + 1,
       budgetRevision: release.revision,
       previousEventDigest: snapshot.events.at(-1)!.eventDigest,
       recordedAt: input.inspectedAt,
       payload: { ...payload, releasedBudgetEventDigests: [release.eventDigest] },
-    });
+    };
+    const event = nativeV2
+      ? createVersionedProviderExecutionEvent({
+          schemaVersion: 2,
+          executionContractVersion: 2,
+          ...eventBody,
+        })
+      : createProviderExecutionEvent({
+          schemaVersion: 2,
+          executionContractVersion: 1,
+          ...eventBody,
+        });
     const receipt = createProviderExecutionReceipt({
       schemaVersion: 2,
       scopeId: budget.scopeId,
       kind: "provider-finish",
       clientRequestId: identity.stopRequestId,
-      inputDigest: providerExecutionOperationDigest(id, command),
+      inputDigest: operationDigest(id, command),
       runId: id,
       runRevision: event.revision,
       budgetRevision: release.revision,
@@ -278,7 +344,7 @@ export function prepareProviderGenerationStop(input: ProviderGenerationStopInput
       recordedAt: input.inspectedAt,
     });
     const ledger = input.archive.archive.ledger;
-    const after = inspectProviderTransmissionApprovalArchive({
+    const after = inspect({
       ...input.archive,
       archive: {
         ...input.archive.archive,
@@ -311,7 +377,7 @@ export function prepareProviderGenerationStop(input: ProviderGenerationStopInput
     )
       return refuse("capacity-exceeded");
     const plan = {
-      planVersion: 1 as const,
+      planVersion: nativeV2 ? (2 as const) : (1 as const),
       kind: "provider-generation-stop-plan" as const,
       status: "prepared-not-committed" as const,
       transaction: "single-immediate-transaction-required" as const,
@@ -349,11 +415,18 @@ export function prepareProviderGenerationStop(input: ProviderGenerationStopInput
     return refuse("planned-archive-invalid");
   }
 }
-export type ProviderGenerationStopResult = ReturnType<typeof prepareProviderGenerationStop>;
-export type ProviderGenerationStopPlan = Extract<
-  ProviderGenerationStopResult,
+export type VersionedProviderGenerationStopResult = ReturnType<typeof prepareGenerationStop>;
+export type VersionedProviderGenerationStopPlan = Extract<
+  VersionedProviderGenerationStopResult,
   { status: "prepared" }
 >["plan"];
+type SharedPlan = VersionedProviderGenerationStopPlan;
+export type ProviderGenerationStopPlan = Omit<SharedPlan, "planVersion" | "rows"> & {
+  planVersion: 1;
+  rows: Omit<SharedPlan["rows"], "event"> & { event: ProviderExecutionEvent };
+};
+export type ProviderGenerationStopResult =
+  { status: "prepared"; plan: ProviderGenerationStopPlan } | ReturnType<typeof refuse>;
 
 /** Historical stop evidence. A late response can change current costs, but never this record. */
 export type ProviderGenerationStopRecord = ProviderGenerationStopIdentity & {

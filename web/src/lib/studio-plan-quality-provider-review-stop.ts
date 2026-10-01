@@ -1,8 +1,15 @@
 import "server-only";
+import type { PlanPromptVersion } from "./studio-plan-prompt-versions";
+import { createVersionedProviderPreparationBuilder } from "./studio-plan-quality-provider-core";
 import { z } from "zod";
-import { inspectProviderTransmissionApprovalArchive } from "../../scripts/local-data-quality-provider-transmission-binding.mjs";
+import {
+  inspectProviderTransmissionApprovalArchive,
+  inspectVersionedProviderTransmissionApprovalArchive,
+} from "../../scripts/local-data-quality-provider-transmission-binding.mjs";
 import {
   createProviderExecutionEvent,
+  createVersionedProviderExecutionEvent,
+  versionedProviderExecutionOperationDigest,
   createProviderExecutionReceipt,
   getProviderExecutionBudgetSnapshot,
   providerExecutionOperationDigest,
@@ -11,10 +18,14 @@ import { providerDigest as digest } from "../../scripts/local-data-quality-provi
 import { freezeProviderValue } from "../../scripts/local-data-quality-provider-usage.mjs";
 import { providerReviewDispatchIdentitySchema } from "./studio-plan-quality-provider-review-dispatch-plan";
 import { providerGenerationDispatchPlanLimits } from "./studio-plan-quality-provider-dispatch-plan";
-import { prepareProviderReviewValidation } from "./studio-plan-quality-provider-review-validation";
+import {
+  prepareProviderReviewValidation,
+  prepareVersionedProviderReviewValidation,
+} from "./studio-plan-quality-provider-review-validation";
 import type {
   ProviderExecutionCommand,
   ProviderExecutionEvent,
+  VersionedProviderExecutionEvent,
 } from "./studio-plan-quality-provider-execution-types";
 
 export const providerReviewStopIdentitySchema = z
@@ -48,6 +59,7 @@ export type ProviderReviewStopInput = {
   additionalUsedBytes: number;
 };
 type Refusal =
+  | "server-version-mismatch"
   | "invalid-input"
   | "archive-invalid"
   | "bindings-changed"
@@ -65,7 +77,36 @@ const refused = (reason: Refusal) => ({ status: "refused" as const, reason, plan
 
 /** Pure r7/r8 stop plan only. Both phases were dispatched: no release or recognition is
  * permitted here. A late review response can still be captured without reopening the run. */
-export function prepareProviderReviewStop(input: ProviderReviewStopInput) {
+export function prepareProviderReviewStop(
+  input: ProviderReviewStopInput,
+): ProviderReviewStopResult {
+  // Frozen entry point preserves v1 archive acceptance and complete plan bytes.
+  return prepareReviewStop(input, null) as ProviderReviewStopResult;
+}
+/** Server-selected stop planning grants no write, dispatch or retry capability. */
+export function prepareVersionedProviderReviewStop(
+  version: PlanPromptVersion,
+  input: ProviderReviewStopInput,
+): VersionedProviderReviewStopResult {
+  createVersionedProviderPreparationBuilder(version);
+  if (
+    !input ||
+    Object.keys(input).some(
+      (key) => !["identity", "inspectedAt", "archive", "additionalUsedBytes"].includes(key),
+    )
+  )
+    return refused("invalid-input");
+  return prepareReviewStop(input, version);
+}
+function prepareReviewStop(input: ProviderReviewStopInput, version: PlanPromptVersion | null) {
+  const nativeV2 = version === "plan-observation-v2";
+  const inspect =
+    version === null
+      ? inspectProviderTransmissionApprovalArchive
+      : inspectVersionedProviderTransmissionApprovalArchive;
+  const operationDigest = nativeV2
+    ? versionedProviderExecutionOperationDigest
+    : providerExecutionOperationDigest;
   const parsed = providerReviewStopIdentitySchema.safeParse(input.identity);
   if (
     !parsed.success ||
@@ -77,9 +118,9 @@ export function prepareProviderReviewStop(input: ProviderReviewStopInput) {
   const identity = parsed.data,
     generationIdentity = identity.dispatch.generation,
     id = generationIdentity.dispatch.runId;
-  let archive: ReturnType<typeof inspectProviderTransmissionApprovalArchive>;
+  let archive: ReturnType<typeof inspectVersionedProviderTransmissionApprovalArchive>;
   try {
-    archive = inspectProviderTransmissionApprovalArchive(input.archive);
+    archive = inspect(input.archive);
   } catch {
     return refused("archive-invalid");
   }
@@ -96,8 +137,15 @@ export function prepareProviderReviewStop(input: ProviderReviewStopInput) {
     snapshot = state.provider.snapshots.find((row) => row.run.id === id),
     binding = archive.records.find((row) => row.runId === id);
   if (
+    snapshot &&
+    version !== null &&
+    snapshot.run.preparation.contract.baseContract.engineVersion !== version
+  )
+    return refused("server-version-mismatch");
+  if (
     !snapshot ||
-    snapshot.archiveFormatVersion !== 3 ||
+    (snapshot.archiveFormatVersion !== 3 && snapshot.archiveFormatVersion !== 5) ||
+    snapshot.archiveFormatVersion !== (nativeV2 ? 5 : 3) ||
     snapshot.run.environment !== "production" ||
     snapshot.run.runDigest !== generationIdentity.dispatch.runDigest ||
     !binding ||
@@ -106,7 +154,11 @@ export function prepareProviderReviewStop(input: ProviderReviewStopInput) {
     return refused("bindings-changed");
   const [approval, genPrepared, genDispatch, genResponse, genValidated, prepared, dispatch] =
     snapshot.events;
-  const matches = (nonce: string, kind: string, event: ProviderExecutionEvent) =>
+  const matches = (
+    nonce: string,
+    kind: string,
+    event: ProviderExecutionEvent | VersionedProviderExecutionEvent,
+  ) =>
     state.provider.receipts.some(
       (row) =>
         row.clientRequestId === nonce &&
@@ -186,9 +238,9 @@ export function prepareProviderReviewStop(input: ProviderReviewStopInput) {
       return refused("observation-changed");
     // Reuse application validation. A native test fixture's permissive stop constructor is
     // not eligibility evidence, and internal/contract/finalization failures are not bad output.
-    let validation: ReturnType<typeof prepareProviderReviewValidation>;
+    let validation: ReturnType<typeof prepareVersionedProviderReviewValidation>;
     try {
-      validation = prepareProviderReviewValidation({
+      const validationInput = {
         ...input,
         identity: {
           dispatch: identity.dispatch,
@@ -196,7 +248,11 @@ export function prepareProviderReviewStop(input: ProviderReviewStopInput) {
           responseEventDigest: observation.responseEventDigest,
           validationRequestId: identity.stopRequestId,
         },
-      });
+      };
+      validation =
+        version === null
+          ? prepareProviderReviewValidation(validationInput)
+          : prepareVersionedProviderReviewValidation(version, validationInput);
     } catch {
       return refused("validation-unavailable");
     }
@@ -237,22 +293,31 @@ export function prepareProviderReviewStop(input: ProviderReviewStopInput) {
         expectedRevision: snapshot.revision,
         payload,
       },
-      event = createProviderExecutionEvent({
-        schemaVersion: 2,
-        executionContractVersion: 1,
+      eventBody = {
         runId: id,
         revision: snapshot.revision + 1,
         budgetRevision: budget.revision,
         previousEventDigest: snapshot.events.at(-1)!.eventDigest,
         recordedAt: input.inspectedAt,
         payload: { ...payload, releasedBudgetEventDigests: [] },
-      }),
+      },
+      event = nativeV2
+        ? createVersionedProviderExecutionEvent({
+            schemaVersion: 2,
+            executionContractVersion: 2,
+            ...eventBody,
+          })
+        : createProviderExecutionEvent({
+            schemaVersion: 2,
+            executionContractVersion: 1,
+            ...eventBody,
+          }),
       receipt = createProviderExecutionReceipt({
         schemaVersion: 2,
         scopeId: budget.scopeId,
         kind: "provider-finish",
         clientRequestId: identity.stopRequestId,
-        inputDigest: providerExecutionOperationDigest(id, command),
+        inputDigest: operationDigest(id, command),
         runId: id,
         runRevision: event.revision,
         budgetRevision: budget.revision,
@@ -260,7 +325,7 @@ export function prepareProviderReviewStop(input: ProviderReviewStopInput) {
         recordedAt: input.inspectedAt,
       }),
       ledger = input.archive.archive.ledger,
-      after = inspectProviderTransmissionApprovalArchive({
+      after = inspect({
         ...input.archive,
         archive: {
           ...input.archive.archive,
@@ -279,7 +344,7 @@ export function prepareProviderReviewStop(input: ProviderReviewStopInput) {
       stopped = native.snapshots.find((row) => row.run.id === id);
     if (
       digest(nextBudget) !== digest(budget) ||
-      stopped?.archiveFormatVersion !== 3 ||
+      stopped?.archiveFormatVersion !== (nativeV2 ? 5 : 3) ||
       !stopped.terminal ||
       stopped.revision !== event.revision ||
       stopped.state !== payload.outcome
@@ -288,7 +353,7 @@ export function prepareProviderReviewStop(input: ProviderReviewStopInput) {
     const totalExposureBytes = exposure(after);
     if (!withinCapacity(totalExposureBytes)) return refused("capacity-exceeded");
     const plan = {
-      planVersion: 1 as const,
+      planVersion: nativeV2 ? (2 as const) : (1 as const),
       kind: "provider-review-stop-plan" as const,
       status: "prepared-not-committed" as const,
       transaction: "single-immediate-transaction-required" as const,
@@ -330,11 +395,18 @@ export function prepareProviderReviewStop(input: ProviderReviewStopInput) {
     return refused("planned-archive-invalid");
   }
 }
-export type ProviderReviewStopResult = ReturnType<typeof prepareProviderReviewStop>;
-export type ProviderReviewStopPlan = Extract<
-  ProviderReviewStopResult,
+export type VersionedProviderReviewStopResult = ReturnType<typeof prepareReviewStop>;
+export type VersionedProviderReviewStopPlan = Extract<
+  VersionedProviderReviewStopResult,
   { status: "prepared" }
 >["plan"];
+type SharedPlan = VersionedProviderReviewStopPlan;
+export type ProviderReviewStopPlan = Omit<SharedPlan, "planVersion" | "rows"> & {
+  planVersion: 1;
+  rows: Omit<SharedPlan["rows"], "event"> & { event: ProviderExecutionEvent };
+};
+export type ProviderReviewStopResult =
+  { status: "prepared"; plan: ProviderReviewStopPlan } | ReturnType<typeof refused>;
 
 /** Immutable historical evidence. A late capture can change today's budget, never this record. */
 export type ProviderReviewStopRecord = ProviderReviewStopIdentity & {

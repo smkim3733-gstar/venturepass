@@ -41,6 +41,9 @@ type ReviewDispatch = Omit<ProviderReviewDispatchInput, "configuration">;
 import type { ProviderReviewValidationInput } from "./studio-plan-quality-provider-review-validation";
 import type { ProviderFinalizationInput } from "./studio-plan-quality-provider-finalization";
 
+import type { ProviderGenerationStopInput } from "./studio-plan-quality-provider-generation-stop";
+import type { ProviderReviewStopInput } from "./studio-plan-quality-provider-review-stop";
+
 type GenerationDispatch = Omit<ProviderGenerationDispatchInput, "configuration">;
 type TransmissionApproval = Omit<ProviderTransmissionPlannerInput, "current"> & {
   current: TransmissionInspection;
@@ -101,13 +104,36 @@ export function createServerProviderPolicyContext(
         { prepareVersionedProviderReviewDispatch },
         { prepareVersionedProviderReviewValidation },
         { prepareVersionedProviderFinalization },
+        { prepareVersionedProviderGenerationStop },
+        { prepareVersionedProviderReviewStop },
       ] = await Promise.all([
         import("./studio-plan-quality-provider-generation-validation"),
         import("./studio-plan-quality-provider-review-dispatch-plan"),
         import("./studio-plan-quality-provider-review-validation"),
         import("./studio-plan-quality-provider-finalization"),
+        import("./studio-plan-quality-provider-generation-stop"),
+        import("./studio-plan-quality-provider-review-stop"),
       ]);
       return Object.freeze({
+        prepareGenerationStop: (input: ProviderGenerationStopInput) => {
+          if (
+            Object.keys(input).some(
+              (key) => !["identity", "inspectedAt", "archive", "additionalUsedBytes"].includes(key),
+            )
+          )
+            throw new Error("Unsupported generation stop evidence");
+          return prepareVersionedProviderGenerationStop(version, structuredClone(input));
+        },
+        prepareReviewStop: (input: ProviderReviewStopInput) => {
+          if (
+            Object.keys(input).some(
+              (key) => !["identity", "inspectedAt", "archive", "additionalUsedBytes"].includes(key),
+            )
+          )
+            throw new Error("Unsupported review stop evidence");
+          return prepareVersionedProviderReviewStop(version, structuredClone(input));
+        },
+
         prepareReviewValidation: (input: ProviderReviewValidationInput) => {
           if (
             Object.keys(input).some(
