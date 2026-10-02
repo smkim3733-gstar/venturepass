@@ -336,8 +336,11 @@ export function auditAdditionalValidationJournal(
   }
 
   let additionalPolicy: z.infer<typeof versionedProviderPolicyAdoptionRecordSchema> | null = null;
-  let additionalReservation: z.infer<typeof versionedProviderReservationBindingSchema> | null = null;
-  let additionalApproval: z.infer<typeof versionedProviderTransmissionApprovalBindingSchema> | null = null;
+  let additionalReservation: z.infer<typeof versionedProviderReservationBindingSchema> | null =
+    null;
+  let additionalApproval: z.infer<
+    typeof versionedProviderTransmissionApprovalBindingSchema
+  > | null = null;
   if (before.additional) {
     same(before.additional.approval, evidence);
     const rawPolicy = bind("policy", true);
@@ -441,6 +444,15 @@ export function auditAdditionalValidationJournal(
     evidence: approvalEvidence as AdditionalValidationEvidence,
     current: proof.current,
     currentBudget: proof.currentBudget,
+    // All values below come from this same fully audited snapshot, not current authority.
+    registry,
+    journal: before,
+    additionalPolicy,
+    additionalReservation,
+    additionalApproval,
+    additionalSnapshot: additionalReservation
+      ? (state.snapshots.find((row) => row.run.id === additionalReservation.runId) ?? fail())
+      : null,
     recoverable,
     originalCommandsAudited: true as const,
     additionalCommandsAudited: true as const,

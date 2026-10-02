@@ -8,8 +8,11 @@ import { inspectValidationJournal } from "./operational-validation-journal.mjs";
 export async function recoverOperationalPolicy(profile) {
   let session;
   try {
-    if (process.platform !== "win32" || !process.execArgv.includes("--conditions=react-server") ||
-      inspectValidationJournal(profile).state !== "initialized")
+    if (
+      process.platform !== "win32" ||
+      !process.execArgv.includes("--conditions=react-server") ||
+      inspectValidationJournal(profile).state !== "initialized"
+    )
       throw Error("Recovery unavailable");
     process.env.VENTURE_DATA_DIR = profile.directory;
     const { OperationalValidationSession } =
@@ -17,8 +20,13 @@ export async function recoverOperationalPolicy(profile) {
     session = new OperationalValidationSession(profile);
     console.log(JSON.stringify(session.recoverPolicy()));
   } catch {
-    console.log(JSON.stringify({ state: "blocked", reason: "POLICY_RECOVERY_UNCONFIRMED",
-      transmissionAllowed: false }));
+    console.log(
+      JSON.stringify({
+        state: "blocked",
+        reason: "POLICY_RECOVERY_UNCONFIRMED",
+        transmissionAllowed: false,
+      }),
+    );
     process.exitCode = 1;
   } finally {
     if (session && !session.close()) process.exitCode = 1;
@@ -27,6 +35,35 @@ export async function recoverOperationalPolicy(profile) {
 
 /** Explicit PC-local command only. Status never imports this module. */
 export async function runOperationalValidation(profile, command) {
+  return run(profile, command, false);
+}
+/** Explicit additional campaign only. Reuses the original owner-retaining CLI event loop. */
+export async function runAdditionalOperationalValidation(profile, command) {
+  return run(profile, command, true);
+}
+export async function additionalOperationalValidationStatus(profile) {
+  let session;
+  try {
+    if (process.platform !== "win32" || !process.execArgv.includes("--conditions=react-server"))
+      throw Error("Unsupported host");
+    process.env.VENTURE_DATA_DIR = profile.directory;
+    const { AdditionalOperationalValidationSession } =
+      await import("../src/lib/studio-operational-validation-additional-session.ts");
+    session = new AdditionalOperationalValidationSession(profile);
+    // Inspection never acknowledges files, loads keys or installs a runtime.
+    return session.inspect();
+  } catch {
+    process.exitCode = 1;
+    return {
+      state: "blocked",
+      reason: "ADDITIONAL_VALIDATION_UNCONFIRMED",
+      transmissionAllowed: false,
+    };
+  } finally {
+    session?.close();
+  }
+}
+async function run(profile, command, additional) {
   const output = (value) => console.log(JSON.stringify(value));
   if (
     process.platform !== "win32" ||
@@ -68,15 +105,32 @@ export async function runOperationalValidation(profile, command) {
     return true;
   };
   try {
+    if (additional) {
+      process.env.VENTURE_DATA_DIR = profile.directory;
+      const { AdditionalOperationalValidationSession } =
+        await import("../src/lib/studio-operational-validation-additional-session.ts");
+      session = new AdditionalOperationalValidationSession(profile);
+      // Recover exact acknowledged DB records before current key/configuration/time is needed.
+      session.reconcile();
+      const state = session.inspect();
+      const attempted = command === "run" ? state.attemptRecorded : state.continuationRecorded;
+      if (attempted) {
+        output(state); // A restart is read/recovery only; it cannot replay the attempted send.
+        stopIfDrained();
+        return;
+      }
+    }
     // Only the key is consumed. Never copy ambient/old customer data directory into this process.
     const envFile = fileURLToPath(new URL("../.env.local", import.meta.url));
     const env = parseEnv(readSafe(envFile, 64 * 1024, null, true).bytes.toString("utf8"));
     if (!env.OPENAI_API_KEY) throw Error("Missing key");
     process.env.OPENAI_API_KEY = env.OPENAI_API_KEY;
     process.env.VENTURE_DATA_DIR = profile.directory;
-    const { OperationalValidationSession } =
-      await import("../src/lib/studio-operational-validation-session.ts");
-    session = new OperationalValidationSession(profile);
+    if (!additional) {
+      const { OperationalValidationSession } =
+        await import("../src/lib/studio-operational-validation-session.ts");
+      session = new OperationalValidationSession(profile);
+    }
     keepAlive = setInterval(() => {}, 1000);
     input = createInterface({ input: process.stdin, terminal: false });
     input.on("line", (line) => {

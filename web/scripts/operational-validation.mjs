@@ -23,7 +23,22 @@ export function operationalValidationStatus(args = []) {
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
   const args = process.argv.slice(2);
-  if (args.length === 1 && args[0] === "recover-policy") {
+  if (args.length === 1 && args[0] === "additional-status") {
+    const { additionalOperationalValidationStatus } =
+      await import("./operational-validation-run.mjs");
+    console.log(
+      JSON.stringify(await additionalOperationalValidationStatus(operationalValidationProfile())),
+    );
+  } else if (
+    args.length === 1 &&
+    ["additional-run", "additional-continue-review"].includes(args[0])
+  ) {
+    const { runAdditionalOperationalValidation } = await import("./operational-validation-run.mjs");
+    await runAdditionalOperationalValidation(
+      operationalValidationProfile(),
+      args[0] === "additional-run" ? "run" : "continue-review",
+    );
+  } else if (args.length === 1 && args[0] === "recover-policy") {
     const { recoverOperationalPolicy } = await import("./operational-validation-run.mjs");
     await recoverOperationalPolicy(operationalValidationProfile());
   } else if (args.length === 1 && ["run", "continue-review"].includes(args[0])) {

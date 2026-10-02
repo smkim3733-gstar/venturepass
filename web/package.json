@@ -21,7 +21,10 @@
     "validation:run": "node --conditions=react-server --import ./scripts/operational-typescript-loader.mjs scripts/operational-validation.mjs run",
     "validation:continue-review": "node --conditions=react-server --import ./scripts/operational-typescript-loader.mjs scripts/operational-validation.mjs continue-review",
     "test:operational-validation": "node --test --test-concurrency=1 scripts/operational-validation-journal.test.mjs scripts/operational-validation-additional-records.test.mjs scripts/operational-validation-additional-journal.test.mjs scripts/operational-typescript-loader.test.mjs",
-    "test:local-data": "node --test scripts/local-data.test.mjs scripts/local-data-cold.test.mjs scripts/local-data.integration.test.mjs"
+    "test:local-data": "node --test scripts/local-data.test.mjs scripts/local-data-cold.test.mjs scripts/local-data.integration.test.mjs",
+    "validation:additional-status": "node --conditions=react-server --import ./scripts/operational-typescript-loader.mjs scripts/operational-validation.mjs additional-status",
+    "validation:additional-run": "node --conditions=react-server --import ./scripts/operational-typescript-loader.mjs scripts/operational-validation.mjs additional-run",
+    "validation:additional-continue-review": "node --conditions=react-server --import ./scripts/operational-typescript-loader.mjs scripts/operational-validation.mjs additional-continue-review"
   },
   "engines": {
     "node": ">=24.0.0 <25"
