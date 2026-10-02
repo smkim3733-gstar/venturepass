@@ -208,3 +208,23 @@ test("extension interface is read-only for the original campaign before any addi
   assert.equal(readdirSync(f.inner).length, Object.keys(f.original).length);
   originalUnchanged(f);
 });
+
+test("audit view keeps the original/suffix chain together, is detached, and rechecks identity/lease", (t) => {
+  const f = fixture(t, { continuation: true });
+  const before = f.j.readAuditView();
+  assert.deepEqual(before.original, f.evidence.original);
+  assert.deepEqual(before.steps.execute, f.j.readStep("execute"));
+  assert.deepEqual(before.steps["continue-review"], f.j.readStep("continue-review"));
+  assert.deepEqual(before.rejection, f.j.readPolicyRejection());
+  assert.equal(before.additional, null);
+  before.original.headDigest = "0".repeat(64);
+  before.steps.execute.command.automaticRetryAllowed = true;
+  assert.notDeepEqual(f.j.readAuditView(), before);
+  f.j.appendAdditionalApproval(f.evidence);
+  const after = f.j.readAuditView();
+  assert.deepEqual(after.additional, f.j.readAdditionalState());
+  assert.deepEqual(after.original, f.evidence.original);
+  originalUnchanged(f);
+  f.j.close();
+  assert.throws(() => f.j.readAuditView());
+});

@@ -8,13 +8,14 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 vi.mock("server-only", () => ({}));
 const forbidden = vi.hoisted(() => vi.fn(() => { throw Error("Customer access forbidden"); }));
 vi.mock("./studio-storage", () => ({ getStudioStore: forbidden, StudioStore: forbidden }));
+import { auditAdditionalValidationJournal } from "./studio-operational-validation-cross-audit";
 import { OperationalValidationPreparation } from "./studio-operational-validation-preparation";
 import { OperationalValidationSession } from "./studio-operational-validation-session";
 import { PlanQualityStore } from "./studio-plan-quality-store";
 import { actualTestPlan, actualTestRegistry } from "./studio-plan-quality-actual-test-helpers";
 import { inspectProviderProductionServer } from "./studio-plan-quality-provider-production-server";
 import {
-  acquireValidationJournal, type ValidationProfile,
+  acquireValidationJournal, acquireAdditionalValidationJournal, type ValidationProfile,
 } from "../../scripts/operational-validation-journal.mjs";
 
 let root: string, profile: ValidationProfile;
@@ -126,6 +127,16 @@ it("preserves the impossible original and recovers a fresh review without a key/
   expect(network).toHaveBeenCalledTimes(2);
   expect(s.inspect().budget).toMatchObject({ capUnits: "15000000", heldUnits: "0", recognizedUnits: "380" });
   unchanged(before);
+  expect(s.close()).toBe(true);
+  const journal = acquireAdditionalValidationJournal(profile), store = new PlanQualityStore(profile.directory);
+  try {
+    expect(auditAdditionalValidationJournal(store, journal).originalCommandsAudited).toBe(true);
+    for (const field of ["databaseDigest", "registrationDigest", "commandDigest"]) {
+      const view = journal.readAuditView();
+      (view.rejection!.evidence as Record<string, unknown>)[field] = "a".repeat(64);
+      expect(() => auditAdditionalValidationJournal(store, { readAuditView: () => view })).toThrow();
+    }
+  } finally { store.close(); journal.close(); }
 }, timeout);
 
 it("resumes lost rejection and replacement acknowledgements without replacing any already preserved nonce", () => {

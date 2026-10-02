@@ -67,6 +67,55 @@ function fail(code: string, message: string, status = 409): never {
   throw new StudioError(message, status, code);
 }
 
+export function providerArchivedSnapshot(
+  state: State,
+  id: string,
+  registry: Context["registry"],
+  revision?: number,
+) {
+  const run = state.runs.find((row) => row.id === id);
+  if (!run) fail("QUALITY_PROVIDER_NOT_FOUND", "예약 기록을 찾을 수 없습니다.", 404);
+  const events = state.events.filter((row) => row.runId === id);
+  const target = revision ?? events.length;
+  if (!Number.isInteger(target) || target < 0 || target > events.length)
+    fail("QUALITY_PROVIDER_REVISION_NOT_FOUND", "예약 기록 버전이 없습니다.", 404);
+  const receipts = state.receipts.filter(
+      (row) => row.runId === id && row.runRevision !== null && row.runRevision <= target,
+    ),
+    head = Math.max(run.reservedBudgetRevision, ...receipts.map((row) => row.budgetRevision));
+  const prefix = events.slice(0, target);
+  const keys = new Set<string>(["generation-request"]);
+  for (const event of prefix) {
+    const payload = event.payload as {
+      kind: string;
+      phase?: string;
+      artifactSha256?: string;
+      finalArtifactSha256?: string;
+    };
+    const suffix =
+      payload.kind === "request-prepared"
+        ? "request"
+        : payload.kind === "response-received"
+          ? "response"
+          : payload.kind === "domain-validated"
+            ? "validated"
+            : null;
+    if (suffix && payload.phase && payload.artifactSha256) keys.add(`${payload.phase}-${suffix}`);
+    if (payload.kind === "execution-stopped" && payload.finalArtifactSha256)
+      keys.add("final-result");
+  }
+  return validateVersionedProviderRunLedger({
+    run,
+    events: prefix,
+    artifacts: state.artifacts.filter((row) => row.runId === id && keys.has(row.key)),
+    receipts,
+    budgetEvents: state.budgetEvents.filter(
+      (row) => row.scopeId === providerBudgetScope(run.environment) && row.revision <= head,
+    ),
+    registry: registry(run.preparation.scope.version),
+  });
+}
+
 /** Internal v2 ledger. Synthetic writes only; no transport, key or company data. */
 export class ProviderLedgerStore {
   constructor(private readonly context: Context) {}
@@ -373,47 +422,7 @@ export class ProviderLedgerStore {
     return value;
   }
   private archiveSnapshot(state: State, id: string, revision?: number) {
-    const run = state.runs.find((row) => row.id === id);
-    if (!run) fail("QUALITY_PROVIDER_NOT_FOUND", "예약 기록을 찾을 수 없습니다.", 404);
-    const events = state.events.filter((row) => row.runId === id);
-    const target = revision ?? events.length;
-    if (!Number.isInteger(target) || target < 0 || target > events.length)
-      fail("QUALITY_PROVIDER_REVISION_NOT_FOUND", "예약 기록 버전이 없습니다.", 404);
-    const receipts = state.receipts.filter(
-        (row) => row.runId === id && row.runRevision !== null && row.runRevision <= target,
-      ),
-      head = Math.max(run.reservedBudgetRevision, ...receipts.map((row) => row.budgetRevision));
-    const prefix = events.slice(0, target);
-    const keys = new Set<string>(["generation-request"]);
-    for (const event of prefix) {
-      const payload = event.payload as {
-        kind: string;
-        phase?: string;
-        artifactSha256?: string;
-        finalArtifactSha256?: string;
-      };
-      const suffix =
-        payload.kind === "request-prepared"
-          ? "request"
-          : payload.kind === "response-received"
-            ? "response"
-            : payload.kind === "domain-validated"
-              ? "validated"
-              : null;
-      if (suffix && payload.phase && payload.artifactSha256) keys.add(`${payload.phase}-${suffix}`);
-      if (payload.kind === "execution-stopped" && payload.finalArtifactSha256)
-        keys.add("final-result");
-    }
-    return validateVersionedProviderRunLedger({
-      run,
-      events: prefix,
-      artifacts: state.artifacts.filter((row) => row.runId === id && keys.has(row.key)),
-      receipts,
-      budgetEvents: state.budgetEvents.filter(
-        (row) => row.scopeId === providerBudgetScope(run.environment) && row.revision <= head,
-      ),
-      registry: this.context.registry(run.preparation.scope.version),
-    });
+    return providerArchivedSnapshot(state, id, this.context.registry, revision);
   }
   cancel(id: string, value: ProviderCancel) {
     uuid.parse(id);

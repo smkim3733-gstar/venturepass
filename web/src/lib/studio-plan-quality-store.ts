@@ -26,6 +26,7 @@ import { nativePaths, safePath } from "../../scripts/local-data-files.mjs";
 import {
   inspectQualityDatabase,
   inspectCompletedProviderHistory,
+  inspectOperationalValidationHistory,
   migrateQualitySchemaV9,
 } from "../../scripts/local-data-quality.mjs";
 import { createServerProviderPolicyContext } from "./studio-plan-quality-provider-policy-server";
@@ -374,6 +375,12 @@ export class PlanQualityStore {
     return this.transaction(() => inspectQualityDatabase(this.db, { inTransaction: true }));
   }
   /** Full current audit and immutable completed prefix, in one read transaction. No execution authority. */
+  inspectOperationalValidationHistory(selection: { runId: string; budgetRevision: number }) {
+    return this.transaction(() =>
+      inspectOperationalValidationHistory(this.db, selection, { inTransaction: true }),
+    );
+  }
+
   inspectCompletedProviderHistory(selection: { runId: string; budgetRevision: number }) {
     return this.transaction(() =>
       inspectCompletedProviderHistory(this.db, selection, { inTransaction: true }),

@@ -9,6 +9,7 @@ const forbidden = vi.hoisted(() =>
   }),
 );
 vi.mock("./studio-storage", () => ({ getStudioStore: forbidden, StudioStore: forbidden }));
+import { auditAdditionalValidationJournal } from "./studio-operational-validation-cross-audit";
 import { auditAdditionalValidationDatabase } from "./studio-operational-validation-history";
 import { OperationalValidationSession } from "./studio-operational-validation-session";
 import { OperationalValidationPreparation } from "./studio-operational-validation-preparation";
@@ -233,6 +234,16 @@ it.each(["generation", "review"] as const)(
     await expect(s.continueReview()).rejects.toThrow("VALIDATION_EXECUTION_UNAVAILABLE");
     expect(network).toHaveBeenCalledTimes(2);
     expect(s.close()).toBe(true);
+    const journal = acquireAdditionalValidationJournal(profile);
+    const store = new PlanQualityStore(profile.directory);
+    try {
+      expect(auditAdditionalValidationJournal(store, journal).originalCommandsAudited).toBe(true);
+      if (phase === "generation") {
+        const view = journal.readAuditView();
+        (view.steps.execute.receipt as { recognizedUnits: string }).recognizedUnits = "999";
+        expect(() => auditAdditionalValidationJournal(store, { readAuditView: () => view })).toThrow();
+      }
+    } finally { store.close(); journal.close(); }
   },
   timeout,
 );

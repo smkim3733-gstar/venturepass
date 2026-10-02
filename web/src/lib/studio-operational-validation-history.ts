@@ -21,6 +21,13 @@ export function auditAdditionalValidationDatabase(
     runId: evidence.selection.runId,
     budgetRevision: evidence.checkpoint.budgetRevision,
   });
+  return validateAdditionalDatabaseProof(proof, evidence);
+}
+
+export function validateAdditionalDatabaseProof(
+  proof: ReturnType<PlanQualityStore["inspectCompletedProviderHistory"]>,
+  evidence: AdditionalValidationEvidence,
+) {
   if (
     !proof ||
     proof.databaseDigest !== evidence.databaseDigest ||

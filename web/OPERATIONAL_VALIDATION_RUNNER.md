@@ -1,5 +1,9 @@
 # 고객 자료 없는 운영 검증 실행 구성
 
+2026-10-02 21:13 KST: 4D2b2a 파일·DB 교차 감사를 완료했다. 같은 lease의 파일 뷰를 한 전체 DB transaction 전후 대조하고 원래 등록/정책/예약/승인/execute·continue-review 영수증과 과거 정책 거절 근거를 확인한다. 추가 정책/예약/승인/완료도 원래 nonce/정확한 명령/저장 예산으로 확인한다. DB COMMIT만 있으면 원래 record를 복구 대상으로 반환하며 파일 ack만 있고 DB 기록이 없으면 거절한다. 자동 쓰기·전송 권한은 없고 transmissionAllowed:false다. 관련4파일38개·lint·typecheck·격리 Webpack NEruOu 통과(BUILD_ID 0XJKEp93nMDoLF-U7XV8g, 앱11파일 SHA 일치/.env.local 미복사). 다음4D2b2b는 추가 준비/session/명시 CLI와 파일·DB COMMIT 유실/owner/capture/lease 통합이다. 기본 session/CLI는 여전히 최초 캠페인용이므로 완료한 validation:run/recover-policy/continue-review를 반복하지 않는다. 추가 실제 호출0, 기존 누적USD15/과거 원장 불변. 4D3 추가 생성1/검토1/재시도0 승인은 유지한다.
+
+---
+
 2026-10-02 20:16 KST: 4D2b1 과거 완료 DB 증거 대조를 완료했다. 현재 DB 전체 감사와 원래 v1 완료 prefix를 같은 transaction에서 독립 검증하고, 추가 v2 비용/미정산 뒤에도 원래 DB digest·r10 checkpoint를 보존한다. 파일 증거의 run/승인/예산/비용/hash를 대조하나 fileIdentityAudited:false/transmissionAllowed:false이며 추가 writer/session/CLI 연결은 아직 없다. 관련36개 범위·lint·typecheck·격리 Webpack1s4qyl 통과(BUILD_ID Nq9uDhO1Q8ZsYhgkVs3a8, 앱6파일 SHA 일치/.env.local 미복사). 다음4D2b2는 원래/새 파일 명령과 DB nonce의 교차 복구·추가 준비/session/명시 CLI 연결이다. 기존 완료 validation:run/recover-policy/continue-review는 반복하지 않는다. 실제 추가 호출0이며 누적USD15/과거 운영 이력은 유지한다.
 
 ---

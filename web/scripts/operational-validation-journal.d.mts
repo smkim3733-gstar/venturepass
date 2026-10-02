@@ -33,15 +33,34 @@ export function inspectValidationJournal(profile: ValidationProfile): {
   transmissionAllowed: false;
 };
 
+export type ValidationJournalAuditView = {
+  original: { instanceId: string; recordCount: number; headDigest: string };
+  steps: Record<ValidationStage, { command: unknown | null; receipt: unknown | null }>;
+  rejection: { command: unknown; evidence: unknown } | null;
+  additional: ReturnType<
+    typeof import("./operational-validation-additional-records.mjs").inspectAdditionalValidationRecords
+  > | null;
+};
 export type AdditionalValidationJournal = ValidationJournal & {
+  /** Both file copies, immutable identities and the held lease are checked in one read. */
+  readAuditView(): ValidationJournalAuditView;
   readOriginalAnchor(): { instanceId: string; recordCount: number; headDigest: string };
   readAdditionalState(): ReturnType<
     typeof import("./operational-validation-additional-records.mjs").inspectAdditionalValidationRecords
   > | null;
-  appendAdditionalApproval(evidence: import("./operational-validation-additional-records.mjs").AdditionalValidationEvidence):
-    import("./operational-validation-additional-records.mjs").AdditionalValidationApproval;
-  prepareAdditional(stage: import("./operational-validation-additional-records.mjs").AdditionalValidationStage, payload: object): unknown;
-  acknowledgeAdditional(stage: import("./operational-validation-additional-records.mjs").AdditionalValidationStage, receipt: object): void;
+  appendAdditionalApproval(
+    evidence: import("./operational-validation-additional-records.mjs").AdditionalValidationEvidence,
+  ): import("./operational-validation-additional-records.mjs").AdditionalValidationApproval;
+  prepareAdditional(
+    stage: import("./operational-validation-additional-records.mjs").AdditionalValidationStage,
+    payload: object,
+  ): unknown;
+  acknowledgeAdditional(
+    stage: import("./operational-validation-additional-records.mjs").AdditionalValidationStage,
+    receipt: object,
+  ): void;
 };
 /** File consistency only. Existing initialized original journal is required. */
-export function acquireAdditionalValidationJournal(profile: ValidationProfile): AdditionalValidationJournal;
+export function acquireAdditionalValidationJournal(
+  profile: ValidationProfile,
+): AdditionalValidationJournal;

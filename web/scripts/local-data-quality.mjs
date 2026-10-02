@@ -989,6 +989,15 @@ export function inspectCompletedProviderHistory(db, selection, { inTransaction =
     .parse(selection);
   return auditQualityDatabase(db, { inTransaction, providerPrefix: parsed }).history;
 }
+/** Whole DB and original completion in one snapshot, for file/nonce cross-audit only.
+ * @returns {NonNullable<ReturnType<typeof inspectCompletedProviderHistory>> & {material: NonNullable<ReturnType<typeof auditQualityDatabase>["operational"]>}}
+ */
+export function inspectOperationalValidationHistory(db, selection, { inTransaction = false } = {}) {
+  const parsed = z.object({ runId: uuid, budgetRevision: z.number().int().positive().safe() }).strict().parse(selection);
+  const result = auditQualityDatabase(db, { inTransaction, providerPrefix: parsed, operational: true });
+  if (!result.history || !result.operational) fail("QUALITY_COMPLETED_PROVIDER_HISTORY_INVALID");
+  return { ...result.history, material: result.operational };
+}
 function databaseLogicalDigest(schema, groups) {
   const logicalHash = createHash("sha256").update(digest(schema));
   for (const [name, rows] of groups) {
@@ -1001,7 +1010,7 @@ function databaseLogicalDigest(schema, groups) {
 export function inspectQualityDatabaseUsage(db) {
   return auditQualityDatabase(db, { inTransaction: true }).usage;
 }
-function auditQualityDatabase(db, { inTransaction = false, providerPrefix = null } = {}) {
+function auditQualityDatabase(db, { inTransaction = false, providerPrefix = null, operational = false } = {}) {
   // A policy write must audit the same locked snapshot without committing its caller's transaction.
   if (inTransaction && !db.isTransaction) fail("QUALITY_TRANSACTION_REQUIRED");
   if (!inTransaction) db.exec("BEGIN");
@@ -1437,6 +1446,18 @@ function auditQualityDatabase(db, { inTransaction = false, providerPrefix = null
     if (!inTransaction) db.exec("COMMIT");
     return {
       history,
+      operational: !operational ? null : {
+        provider: actualVerification.ledger.provider,
+        registries: candidateRows.map((row) => decode(row, 8 * 1024 * 1024)),
+        registrationReceipts: candidateReceipts.map((row) => decode(row, 8 * 1024 * 1024)),
+        policies: policyRows.map((row) => decode(row, 8 * 1024 * 1024)),
+        reservations: reservationRows.records,
+        approvals: transmissionRows.records,
+        nonces: [...receiptRows, ...candidateReceipts, ...executionReceipts, ...actualRows.receipts, ...policyRows].map((row) => row.nonce),
+        registrationDatabaseDigest: databaseLogicalDigest(schema, groups.map(([name, rows]) => [
+          name, name.startsWith("actual") || ["providerPolicies", "providerReservationBindings", "providerTransmissionBindings"].includes(name) ? [] : rows,
+        ])),
+      },
       snapshot: result,
       ledger: actualVerification.ledgerInput,
       usage: { usedBytes: total, reservedBytes: actualVerification.reservedBytes },

@@ -362,6 +362,15 @@ function acquireJournal(profile, additional) {
   }
   return {
     ...(additional ? {
+      readAuditView() {
+        const current = ready();
+        return {
+          original: current.originalAnchor,
+          steps: Object.fromEntries(stages.map((stage, index) => [stage, current.steps[index]])),
+          rejection: current.rejection,
+          additional: current.additionalState,
+        };
+      },
       readOriginalAnchor() { return ready().originalAnchor; },
       readAdditionalState() { return ready().additionalState; },
       appendAdditionalApproval(evidence) {
