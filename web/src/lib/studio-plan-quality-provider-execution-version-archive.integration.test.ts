@@ -64,6 +64,7 @@ let seedRoot: string,
   approvedExport: string,
   reservedExport: string;
 let baselineRecognized: string;
+let originalHistory: NonNullable<ReturnType<PlanQualityStore["inspectCompletedProviderHistory"]>>;
 let originalApproval: ReturnType<PlanQualityStore["providerApproveTransmission"]>;
 let root: string, directory: string, store: PlanQualityStore, db: DatabaseSync;
 const databasePath = (d: string) => join(d, "quality-evaluation", "quality.sqlite");
@@ -116,6 +117,7 @@ beforeAll(async () => {
     oldId = legacy.identity.validation.dispatch.generation.dispatch.runId;
     oldExport = seeded.providerDownload(oldId, 10).body;
     baselineRecognized = seeded.providerBudgetGet("production").recognizedUnits;
+    originalHistory = seeded.inspectCompletedProviderHistory({ runId: oldId, budgetRevision: seeded.providerBudgetGet("production").revision })!;
     seeded.close();
     seeded = new PlanQualityStore(seedRoot, {
       providerPolicySelection: { version: v2, configuration: readFixedProviderConfiguration()! },
@@ -523,3 +525,14 @@ it("audits the mixed full database in a fresh Node reader without current time, 
     ),
   ).toEqual(expected);
 }, 15000);
+
+it.each(["completed", "unknown", "unobserved"] as const)(
+  "preserves the original completed DB prefix after v2 %s execution", outcome => {
+    append(outcome);
+    const proof = store.inspectCompletedProviderHistory({
+      runId: oldId, budgetRevision: originalHistory.checkpoint.budgetRevision,
+    })!;
+    expect({ ...proof, current: originalHistory.current, currentBudget: originalHistory.currentBudget }).toEqual(originalHistory);
+    expect(proof.current.digest).not.toBe(originalHistory.current.digest);
+    expect(proof.currentBudget.capUnits).toBe(originalHistory.currentBudget.capUnits);
+  }, 20000);

@@ -1,5 +1,10 @@
 # 고객 자료 없는 운영 검증 실행 구성
 
+2026-10-02 20:16 KST: 4D2b1 과거 완료 DB 증거 대조를 완료했다. 현재 DB 전체 감사와 원래 v1 완료 prefix를 같은 transaction에서 독립 검증하고, 추가 v2 비용/미정산 뒤에도 원래 DB digest·r10 checkpoint를 보존한다. 파일 증거의 run/승인/예산/비용/hash를 대조하나 fileIdentityAudited:false/transmissionAllowed:false이며 추가 writer/session/CLI 연결은 아직 없다. 관련36개 범위·lint·typecheck·격리 Webpack1s4qyl 통과(BUILD_ID Nq9uDhO1Q8ZsYhgkVs3a8, 앱6파일 SHA 일치/.env.local 미복사). 다음4D2b2는 원래/새 파일 명령과 DB nonce의 교차 복구·추가 준비/session/명시 CLI 연결이다. 기존 완료 validation:run/recover-policy/continue-review는 반복하지 않는다. 실제 추가 호출0이며 누적USD15/과거 운영 이력은 유지한다.
+
+---
+
+
 2026-10-02 19:26 KST: 4D2a 추가 승인 파일 프로토콜을 완료했다. 원래 prefix/완료 checkpoint/비용에 묶인 단일 추가 승인과 suffix만 저장하며 기본 CLI는 새 기록을 거절한다. 관련6파일89개·lint·typecheck·격리 Webpack jKGxDV 통과(BUILD_ID mkiMfSl9Lx-sd-OYy6lqA, 앱8파일 SHA 일치/.env.local 미복사). 실제 운영 경로에는 쓰지 않았고 추가 실제 호출0이다. 다음4D2b에서 DB 전체 감사와 원래 budget prefix/nonce, v2 준비/session/명시 CLI를 연결해야 한다. 새 파일 기록의 databaseDigest/완료 필드 자체는 DB 증명·승인·실행 권한이 아니다. 기존 validation:run/recover-policy/continue-review는 반복하지 않는다.
 
 ---

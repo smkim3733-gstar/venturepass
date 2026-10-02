@@ -9,6 +9,7 @@ const forbidden = vi.hoisted(() =>
   }),
 );
 vi.mock("./studio-storage", () => ({ getStudioStore: forbidden, StudioStore: forbidden }));
+import { auditAdditionalValidationDatabase } from "./studio-operational-validation-history";
 import { OperationalValidationSession } from "./studio-operational-validation-session";
 import { OperationalValidationPreparation } from "./studio-operational-validation-preparation";
 import { PlanQualityStore } from "./studio-plan-quality-store";
@@ -312,7 +313,6 @@ it("appends an additional file approval only after the original core completes, 
   const dbFile = join(profile.directory, "quality-evaluation", "quality.sqlite");
   const before = readFileSync(dbFile), store = new PlanQualityStore(profile.directory);
   const audited = store.inspectDatabase();
-  store.close();
   const journal = acquireAdditionalValidationJournal(profile);
   try {
     const checkpoint = journal.readStep("execute").receipt as {
@@ -322,15 +322,16 @@ it("appends an additional file approval only after the original core completes, 
     expect(checkpoint.recognizedUnits).toBe(core.budget?.recognizedUnits);
     expect(checkpoint.heldUnits).toBe(core.budget?.heldUnits);
     const evidence = { original: journal.readOriginalAnchor(), selection, checkpoint, databaseDigest: audited.digest };
+    expect(auditAdditionalValidationDatabase(store, evidence)).toMatchObject({ ledgerAudited: true, fileIdentityAudited: false, transmissionAllowed: false });
     journal.appendAdditionalApproval(evidence);
     expect(journal.readAdditionalState()).toMatchObject({
       completedStages: 0, ledgerAudited: false, transmissionAllowed: false,
       approval: { checkpoint: { recognizedUnits: "380", heldUnits: "0" } },
     });
     expect(journal.appendAdditionalApproval(evidence)).toEqual(journal.readAdditionalState()?.approval);
-  } finally { journal.close(); }
+  } finally { journal.close(); store.close(); }
   expect(readFileSync(dbFile)).toEqual(before);
   expect(() => session()).toThrow("VALIDATION_EXECUTION_UNAVAILABLE");
   expect(network).toHaveBeenCalledTimes(2);
-  // No DB attestation/writer/second runtime is introduced by the file protocol.
+  // Independent DB evidence is checked; no additional writer or second runtime is started.
 }, timeout);

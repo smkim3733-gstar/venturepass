@@ -969,17 +969,39 @@ function inspectActualRows(
     receipts.length + ledger.reservedReceiptSlots > 1000
   )
     fail("QUALITY_DATABASE_LIMIT");
-  return { total, reservedBytes: ledger.reservedBytes, ledgerInput };
+  return { total, reservedBytes: ledger.reservedBytes, ledgerInput, ledger };
 }
 /** Structural and immutable-byte verification. No execution or current model-quality claim. */
 export function inspectQualityDatabase(db, { inTransaction = false } = {}) {
   return auditQualityDatabase(db, { inTransaction }).snapshot;
 }
 /** Audited raw bytes in the caller's locked snapshot; includes all tables and original encoding. */
+/** Read-only historical proof. The whole current DB is audited before selecting any prefix.
+ * This proves stored completion, never journal identity, server selection or permission to transmit.
+ */
+export function inspectCompletedProviderHistory(db, selection, { inTransaction = false } = {}) {
+  const parsed = z
+    .object({
+      runId: uuid,
+      budgetRevision: z.number().int().positive().safe(),
+    })
+    .strict()
+    .parse(selection);
+  return auditQualityDatabase(db, { inTransaction, providerPrefix: parsed }).history;
+}
+function databaseLogicalDigest(schema, groups) {
+  const logicalHash = createHash("sha256").update(digest(schema));
+  for (const [name, rows] of groups) {
+    logicalHash.update(String(name)).update("\0");
+    for (const row of rows) logicalHash.update(digest(row));
+  }
+  return logicalHash.digest("hex");
+}
+/** Audited raw bytes in the caller's locked snapshot; includes all tables and original encoding. */
 export function inspectQualityDatabaseUsage(db) {
   return auditQualityDatabase(db, { inTransaction: true }).usage;
 }
-function auditQualityDatabase(db, { inTransaction = false } = {}) {
+function auditQualityDatabase(db, { inTransaction = false, providerPrefix = null } = {}) {
   // A policy write must audit the same locked snapshot without committing its caller's transaction.
   if (inTransaction && !db.isTransaction) fail("QUALITY_TRANSACTION_REQUIRED");
   if (!inTransaction) db.exec("BEGIN");
@@ -1304,8 +1326,7 @@ function auditQualityDatabase(db, { inTransaction = false } = {}) {
       fail("QUALITY_DATABASE_LIMIT");
     if (receipts.size || total > 256 * 1024 * 1024) fail("QUALITY_DATABASE_INVALID");
     // Hash each bounded row separately instead of materializing a second full database JSON.
-    const logicalHash = createHash("sha256").update(digest(schema));
-    for (const [name, rows] of [
+    const groups = [
       ["runs", runRows],
       ["revisions", revisionRows],
       ["receipts", receiptRows],
@@ -1354,10 +1375,7 @@ function auditQualityDatabase(db, { inTransaction = false } = {}) {
             ["providerTransmissionCoverage", transmissionRows.coverageRows],
           ]
         : []),
-    ]) {
-      logicalHash.update(String(name)).update("\0");
-      for (const row of rows) logicalHash.update(digest(row));
-    }
+    ];
     const result = {
       storageVersion,
       ...(transmissions
@@ -1373,7 +1391,7 @@ function auditQualityDatabase(db, { inTransaction = false } = {}) {
             providerReservationCoverage: reservationRows.coverageRows.length,
           }
         : {}),
-      digest: logicalHash.digest("hex"),
+      digest: databaseLogicalDigest(schema, groups),
       runs: runRows.length,
       revisions: revisionRows.length,
       requests: receiptRows.length,
@@ -1397,8 +1415,28 @@ function auditQualityDatabase(db, { inTransaction = false } = {}) {
           }
         : {}),
     };
+    const history =
+      providerPrefix === null
+        ? null
+        : completedProviderHistory({
+            selection: providerPrefix,
+            schema,
+            groups,
+            current: result,
+            currentLedger: actualVerification.ledger,
+            actualRows,
+            candidateRows,
+            otherNonces: [...receiptRows, ...candidateReceipts, ...executionReceipts].map(
+              (row) => row.nonce,
+            ),
+            storageVersion,
+            policyRows,
+            reservationRows,
+            transmissionRows,
+          });
     if (!inTransaction) db.exec("COMMIT");
     return {
+      history,
       snapshot: result,
       ledger: actualVerification.ledgerInput,
       usage: { usedBytes: total, reservedBytes: actualVerification.reservedBytes },
@@ -1407,6 +1445,140 @@ function auditQualityDatabase(db, { inTransaction = false } = {}) {
     if (!inTransaction) db.exec("ROLLBACK");
     throw error;
   }
+}
+/** Reuse the native/archive validators, retaining each original SQL row and its ordering.
+ * Rows outside the appendable provider chain stay in the digest; they cannot disappear
+ * merely because a different run was requested.
+ */
+function completedProviderHistory({
+  selection,
+  schema,
+  groups,
+  current,
+  currentLedger,
+  actualRows,
+  candidateRows,
+  otherNonces,
+  storageVersion,
+  policyRows,
+  reservationRows,
+  transmissionRows,
+}) {
+  const invalid = () => fail("QUALITY_COMPLETED_PROVIDER_HISTORY_INVALID");
+  if (storageVersion !== 9 || !actualRows || !reservationRows || !transmissionRows) invalid();
+  const binding = reservationRows.records.find((row) => row.runId === selection.runId);
+  const approval = transmissionRows.records.find((row) => row.runId === selection.runId);
+  if (!binding || !approval) invalid();
+  const policyRevision = binding.command.expectedPolicyReference.revision;
+  const runRow = actualRows.runs.find((row) => row.id === selection.runId);
+  if (!runRow) invalid();
+  const run = decode(runRow, 8 * 1024 * 1024);
+  const scopeId = run.preparation.budget.scopeId;
+  // First-campaign completion is frozen v1. A v2 record cannot impersonate that anchor.
+  if (
+    run.schemaVersion !== 2 ||
+    run.archiveFormatVersion !== 2 ||
+    run.environment !== "production" ||
+    run.preparation.contract.baseContract.engineVersion !== "plan-observation-v1"
+  )
+    invalid();
+  const prefixRows = {
+    ...actualRows,
+    runs: [runRow],
+    runOrder: actualRows.runOrder.filter((row) => row.id === selection.runId),
+    events: actualRows.events.filter((row) => row.run_id === selection.runId),
+    artifacts: actualRows.artifacts.filter((row) => row.run_id === selection.runId),
+    budget: actualRows.budget.filter(
+      (row) => row.scope_id !== scopeId || row.revision <= selection.budgetRevision,
+    ),
+    receipts: actualRows.receipts.filter((row) => {
+      const receipt = decode(row, 8 * 1024 * 1024);
+      return (
+        receipt.runId === selection.runId ||
+        (receipt.runId === null &&
+          (receipt.scopeId !== scopeId || receipt.budgetRevision <= selection.budgetRevision))
+      );
+    }),
+  };
+  const prefixPolicies = policyRows.filter((row) => row.revision <= policyRevision);
+  const prefixReservations = {
+    ...reservationRows,
+    records: [binding],
+    bindingRows: reservationRows.bindingRows.filter((row) => row.run_id === selection.runId),
+  };
+  const prefixTransmissions = {
+    ...transmissionRows,
+    records: [approval],
+    bindingRows: transmissionRows.bindingRows.filter((row) => row.run_id === selection.runId),
+  };
+  const verified = inspectActualRows(
+    prefixRows,
+    candidateRows.map((row) => decode(row, 8 * 1024 * 1024)),
+    new Set(otherNonces),
+    storageVersion,
+    prefixPolicies,
+    prefixReservations,
+    prefixTransmissions,
+  );
+  const snapshot = verified.ledger.provider.snapshots.find((row) => row.run.id === selection.runId);
+  const budget = verified.ledger.provider.budgets.find((row) => row.scopeId === scopeId);
+  if (
+    !snapshot ||
+    snapshot.archiveFormatVersion !== 3 ||
+    snapshot.revision !== 10 ||
+    snapshot.state !== "completed" ||
+    !snapshot.terminal ||
+    snapshot.unsettled ||
+    snapshot.dispatchIntentCount !== 2 ||
+    snapshot.responseCount !== 2 ||
+    !budget ||
+    budget.revision !== selection.budgetRevision ||
+    budget.heldUnits !== "0" ||
+    snapshot.events.at(-1).budgetRevision !== budget.revision
+  )
+    invalid();
+  const replacements = new Map([
+    ["actualBudgetEvents", prefixRows.budget],
+    ["actualRuns", prefixRows.runs],
+    ["actualEvents", prefixRows.events],
+    [
+      "actualArtifacts",
+      prefixRows.artifacts.map(({ run_id, artifact_key, sha256, size_bytes }) => ({
+        run_id,
+        artifact_key,
+        sha256,
+        size_bytes,
+      })),
+    ],
+    ["actualReceipts", prefixRows.receipts],
+    ["actualRunInsertionOrder", prefixRows.runOrder],
+    ["providerPolicies", prefixPolicies],
+    ["providerReservationBindings", prefixReservations.bindingRows],
+    ["providerTransmissionBindings", prefixTransmissions.bindingRows],
+  ]);
+  return {
+    current,
+    currentBudget: currentLedger.provider.budgets.find((row) => row.scopeId === scopeId),
+    databaseDigest: databaseLogicalDigest(
+      schema,
+      groups.map(([name, rows]) => [name, replacements.get(name) ?? rows]),
+    ),
+    selection: {
+      runId: run.id,
+      runDigest: run.runDigest,
+      approvalBindingDigest: approval.recordDigest,
+    },
+    checkpoint: {
+      runRevision: snapshot.revision,
+      snapshotDigest: snapshot.snapshotDigest,
+      budgetRevision: budget.revision,
+      budgetHeadDigest: budget.headDigest,
+      recognizedUnits: budget.recognizedUnits,
+      heldUnits: budget.heldUnits,
+    },
+    ledgerAudited: true,
+    transmissionAllowed: false,
+  };
 }
 /** Caller owns BEGIN IMMEDIATE and rollback on failure. Never rewrites historical row bytes.
  * Full v1-v7 audit precedes cutover capture; a v8 store never synthesizes missing coverage.

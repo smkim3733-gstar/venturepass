@@ -25,6 +25,7 @@ import { z } from "zod";
 import { nativePaths, safePath } from "../../scripts/local-data-files.mjs";
 import {
   inspectQualityDatabase,
+  inspectCompletedProviderHistory,
   migrateQualitySchemaV9,
 } from "../../scripts/local-data-quality.mjs";
 import { createServerProviderPolicyContext } from "./studio-plan-quality-provider-policy-server";
@@ -371,6 +372,12 @@ export class PlanQualityStore {
   /** Complete audited metadata only; no writer, transport, or customer store is exposed. */
   inspectDatabase() {
     return this.transaction(() => inspectQualityDatabase(this.db, { inTransaction: true }));
+  }
+  /** Full current audit and immutable completed prefix, in one read transaction. No execution authority. */
+  inspectCompletedProviderHistory(selection: { runId: string; budgetRevision: number }) {
+    return this.transaction(() =>
+      inspectCompletedProviderHistory(this.db, selection, { inTransaction: true }),
+    );
   }
   private checkPaths() {
     try {
