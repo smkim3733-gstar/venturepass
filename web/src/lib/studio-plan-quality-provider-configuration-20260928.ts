@@ -1,4 +1,4 @@
-// Fixed review completed 2026-10-02; never extends itself from wall clock or environment.
+// Fixed review completed 2026-09-28; never extends itself from wall clock or environment.
 import { createHash } from "node:crypto";
 import { planQualityEvaluationDigest as digest } from "./studio-plan-quality-evaluation";
 import {
@@ -9,10 +9,10 @@ import {
   type ProviderProposalSource,
 } from "./studio-plan-quality-provider-review-types";
 const sha = (value: string) => createHash("sha256").update(value).digest("hex");
-const reviewedAt = "2026-10-02T13:09:40.000Z";
-const validUntil = "2026-10-03T13:09:40.000Z";
-const retrievedAt = "2026-10-02T13:09:40.000Z";
-/** Curated evidence, not fetched HTTP bytes. See 기획/품질평가_운영근거_재검토_20261002.md. */
+const reviewedAt = "2026-09-28T14:34:32.000Z";
+const validUntil = "2026-09-29T14:34:32.000Z";
+const retrievedAt = "2026-09-28T14:34:00.000Z";
+/** Curated evidence, not fetched HTTP bytes. See 기획/품질평가_운영근거_재검토_20260928.md. */
 function source(id: string, url: string, title: string, excerpt: string): ProviderProposalSource {
   const value: Omit<ProviderProposalSource, "recordDigest"> = {
     id,
@@ -49,9 +49,9 @@ const sources = [
   ),
   source(
     "responses-api",
-    "https://developers.openai.com/api/reference/cli/resources/responses/methods/create",
+    "https://developers.openai.com/api/reference/java/resources/beta/subresources/responses/methods/create",
     "Responses 요청·사용량",
-    "service_tier:default는 Standard 처리 요청이며 실제 응답 tier는 다를 수 있다. max_output_tokens는 보이는 출력과 추론을 포함한다. truncation:disabled에서 문맥을 초과하면 오류가 날 수 있으므로 적합성을 보장하지 않는다. 사용량의 입력·출력·총량과 캐시 내역을 별도로 대조한다. 재열람한 공식 CLI 참조는 truncation 입력을 deprecated로 표시하므로 기존 고정 요청과 SDK 수락 여부는 별도로 확인한다.",
+    "service_tier:default는 Standard 처리 요청이며 실제 응답 tier는 다를 수 있다. max_output_tokens는 보이는 출력과 추론을 포함한다. truncation:disabled에서 문맥을 초과하면 오류가 날 수 있으므로 적합성을 보장하지 않는다. 사용량의 입력·출력·총량과 캐시 내역을 별도로 대조한다. 재열람한 Java beta 참조는 truncation 입력을 deprecated로 표시하므로 기존 고정 요청과 SDK 수락 여부는 별도로 확인한다.",
   ),
   source(
     "reasoning-cost",
@@ -67,7 +67,7 @@ const sources = [
   ),
   source(
     "long-context-pricing",
-    "https://developers.openai.com/api/docs/models/gpt-5.4",
+    "https://developers.openai.com/api/docs/guides/latest-model?model=gpt-5.4",
     "장문 처리 조건",
     "제안 범위는 기본 Global 목적지와 Standard 처리다. 입력 272K 초과 장문 요율을 확인하며, 지역·다른 처리 등급의 가산을 이 제안에 혼합하지 않는다. 실제 계정의 처리 조건·이용 권한은 별도 확인해야 한다.",
   ),
@@ -79,7 +79,7 @@ const authority = (index: number) => ({
   reviewedAt,
   validUntil,
   freshnessPolicy: "공식 자료 열람 후 내부 24시간 재확인 기한. 공급자의 가격 고정 보장이 아니다.",
-  reviewerId: "venturepass-official-proposal-review-2026-10-02",
+  reviewerId: "venturepass-official-proposal-review-2026-09-28",
   excerpt: sources[index].excerpt,
 });
 const conditions: ProviderConfigurationProposal["conditions"] = {
@@ -145,7 +145,7 @@ const fixedProposal: Omit<ProviderConfigurationProposal, "configurationDigest"> 
     },
   },
   retention: {
-    policyVersion: "gpt-54-proposal-2026-10-02",
+    policyVersion: "gpt-54-proposal-2026-09-28",
     notice: sources[5].excerpt,
     sourceUrl: sources[5].url,
     documentDigest: sources[5].recordDigest,
@@ -189,7 +189,7 @@ const fixedProposal: Omit<ProviderConfigurationProposal, "configurationDigest"> 
     capUnits: "15000000",
     status: "not-approved",
     basis:
-      "기존 완료 실행과 추가 합성 후보 평가를 합산하는 누적 USD 15 제안. 보수적 2회 예약 USD 11.22를 포함한다. 이미 사용·미정산된 금액은 차감해야 하며 재실행마다 한도가 새로 생기지 않는다. 예산 설정·예약·승인은 아니다.",
+      "고정 합성 후보 한 건 시험의 초기 누적 USD 15 제안. 보수적 2회 예약 USD 11.22를 포함한다. 이미 사용·미정산된 금액은 차감해야 하며 재실행마다 한도가 새로 생기지 않는다. 예산 설정·예약·승인은 아니다.",
   },
   sources,
 };

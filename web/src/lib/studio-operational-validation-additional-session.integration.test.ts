@@ -15,6 +15,7 @@ import { AdditionalOperationalValidationSession } from "./studio-operational-val
 import { PlanQualityStore } from "./studio-plan-quality-store";
 import { ProviderGenerationDispatchStore } from "./studio-plan-quality-provider-dispatch-store";
 import * as configuration from "./studio-plan-quality-provider-configuration";
+import { readFixedProviderConfiguration as originalConfiguration } from "./studio-plan-quality-provider-configuration-20260928";
 import * as runtime from "./studio-plan-quality-provider-production-runtime";
 import { actualTestPlan, actualTestRegistry } from "./studio-plan-quality-actual-test-helpers";
 import * as journals from "../../scripts/operational-validation-journal.mjs";
@@ -95,12 +96,14 @@ beforeAll(async () => {
   vi.stubEnv("VENTURE_DATA_DIR", profile.directory);
   vi.stubEnv("OPENAI_API_KEY", key);
   setupNetwork();
+  const originalEvidence = vi.spyOn(configuration, "getProviderConfigurationProposal").mockImplementation(originalConfiguration);
   const old = new OperationalValidationSession(profile);
   try {
     old.prepare();
     expect((await old.execute()).executionCompleted).toBe(true);
   } finally {
     expect(old.close()).toBe(true);
+    originalEvidence.mockRestore();
   }
   originalDb = readFileSync(database());
   originalFiles = files();
@@ -114,7 +117,8 @@ beforeEach(() => {
   writeFileSync(database(), originalDb);
   for (const [path] of files()) if (!originalFiles.has(path)) rmSync(path);
   for (const [path, bytes] of originalFiles) writeFileSync(path, bytes);
-  vi.setSystemTime("2026-09-28T18:01:37.000Z");
+  // Current additional campaign follows the expired, byte-preserved original campaign.
+  vi.setSystemTime("2026-10-02T13:10:00.000Z");
   vi.stubEnv("VENTURE_DATA_DIR", profile.directory);
   vi.stubEnv("OPENAI_API_KEY", key);
   setupNetwork();

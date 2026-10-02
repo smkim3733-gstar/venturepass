@@ -33,7 +33,7 @@ test("operational loader uses the real server-only condition/current evidence an
   assert.deepEqual(JSON.parse(result.stdout), {
     callable: "function",
     owner: "not-installed",
-    reviewedAt: "2026-09-28T14:34:32.000Z",
+    reviewedAt: "2026-10-02T13:09:40.000Z",
   });
 });
 test("loader cannot stub away server-only or import historical fixtures/test helpers", () => {

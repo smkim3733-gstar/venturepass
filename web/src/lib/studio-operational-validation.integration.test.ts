@@ -3,6 +3,10 @@ import { tmpdir } from "node:os";
 import { join, relative, resolve } from "node:path";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 vi.mock("server-only", () => ({}));
+// This suite preserves the original September campaign, independent of current evidence.
+vi.mock("./studio-plan-quality-provider-configuration-current", () =>
+  import("./studio-plan-quality-provider-configuration-20260928"),
+);
 const forbidden = vi.hoisted(() =>
   vi.fn(() => {
     throw Error("Customer access forbidden");

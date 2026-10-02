@@ -31,7 +31,7 @@ vi.mock("openai", () => ({
   },
 }));
 vi.mock("./studio-storage", () => ({ getStudioStore: forbidden, StudioStore: forbidden }));
-const now = "2026-09-28T14:53:34.000Z";
+const now = "2026-10-02T13:10:00.000Z";
 // Multi-stage SQLite audits and reopen need additional wall-clock time on Windows.
 const persistenceTimeout = process.platform === "win32" ? 15000 : 5000;
 let directory: string, store: PlanQualityStore, db: DatabaseSync;
@@ -89,17 +89,17 @@ it("loads the new fixed official review, retains the same rates/request conditio
   expect(
     current.sources.every(
       (s) =>
-        s.reviewedAt === "2026-09-28T14:34:32.000Z" && s.validUntil === "2026-09-29T14:34:32.000Z",
+        s.reviewedAt === "2026-10-02T13:09:40.000Z" && s.validUntil === "2026-10-03T13:09:40.000Z",
     ),
   ).toBe(true);
-  expect(current.sources.find((s) => s.id === "responses-api")?.url).toContain("/java/");
+  expect(current.sources.find((s) => s.id === "responses-api")?.url).toContain("/cli/");
   expect(current.conditions).toEqual(old.conditions);
   expect(current.pricing.shortContext).toEqual(old.pricing.shortContext);
   expect(current.pricing.longContext).toEqual(old.pricing.longContext);
   expect(current.usagePolicyTemplate.inputPartition).toEqual(
     old.usagePolicyTemplate.inputPartition,
   );
-  expect(current.proposedBudget).toEqual(old.proposedBudget);
+  expect(current.proposedBudget).toMatchObject({ ...old.proposedBudget, basis: expect.stringContaining("기존 완료 실행과 추가") });
   expect(configuration.createProviderConfigurationProposalView(input())).toMatchObject({
     state: "proposal-only",
     actualExecutionEnabled: false,
@@ -121,7 +121,7 @@ it("neither revives old evidence nor falls back to it before the new review date
     configuration.createProviderConfigurationProposalView(input(undefined, actualTestNow)),
   ).toBeNull();
   expect(configuration.getProviderConfigurationExpiry(input())).toBeNull();
-  const deadline = "2026-09-29T14:34:32.000Z";
+  const deadline = "2026-10-03T13:09:40.000Z";
   expect(
     configuration.createProviderConfigurationProposalView(input(undefined, deadline)),
   ).toBeNull();
@@ -250,7 +250,7 @@ it("serves the fresh proposal over the real read-only route and expires it at it
       configurationDigest: configuration.getProviderConfigurationProposal()!.configurationDigest,
     },
   });
-  vi.setSystemTime("2026-09-29T14:34:32.000Z");
+  vi.setSystemTime("2026-10-03T13:09:40.000Z");
   const expired = await qualityProviderReviewRoute(request());
   expect(expired.status).toBe(200);
   expect(await expired.json()).toMatchObject({
@@ -290,3 +290,12 @@ it(
   },
   persistenceTimeout,
 );
+
+it("preserves the September 28 configuration digest and its expired authority", async () => {
+  const { readFixedProviderConfiguration } = await import("./studio-plan-quality-provider-configuration-20260928");
+  const previous = readFixedProviderConfiguration()!;
+  expect(previous.configurationDigest).toBe("6c63a5f747d1dc49560f0bdbe41a9c9ce237d0669d9bf62a8183c46f571b146e");
+  expect(previous.sources.every(s => s.validUntil === "2026-09-29T14:34:32.000Z")).toBe(true);
+  expect(configuration.createProviderConfigurationProposalView(input(previous))).toBeNull();
+  expect(configuration.getProviderConfigurationProposal()!.configurationDigest).not.toBe(previous.configurationDigest);
+});
