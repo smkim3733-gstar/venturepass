@@ -3,6 +3,7 @@ import { PlanQualityStore } from "./studio-plan-quality-store";
 import { providerProductionDirectory } from "./studio-plan-quality-provider-production-directory";
 import {
   createProviderProductionRuntime,
+  createVersionedProviderProductionRuntime,
   inspectProviderProductionRuntime,
   revokeProviderProductionRuntime,
   type ProviderProductionRuntime,
@@ -13,6 +14,8 @@ import {
   type ProviderProductionView,
 } from "./studio-plan-quality-provider-production-service-types";
 import { unavailableProviderProductionView } from "./studio-plan-quality-provider-production-view";
+
+import type { PlanPromptVersion } from "./studio-plan-prompt-versions";
 
 type Lifetime = Readonly<{
   status: "not-installed" | "ready" | "draining" | "closed";
@@ -35,9 +38,12 @@ class ProductionServer {
   readonly #service: ProviderProductionExecutionService;
   #state: "ready" | "draining" | "closed" = "ready";
 
-  constructor() {
+  constructor(version?: PlanPromptVersion) {
     const directory = providerProductionDirectory();
-    this.#runtime = createProviderProductionRuntime();
+    this.#runtime =
+      version === undefined
+        ? createProviderProductionRuntime()
+        : createVersionedProviderProductionRuntime(version);
     try {
       this.#store = new PlanQualityStore(directory, { providerProductionRuntime: this.#runtime });
       this.#service = new ProviderProductionExecutionService(this.#store);
@@ -128,11 +134,23 @@ if (descriptor) {
  * presence calls this. Creates no policy/approval/reservation and sends no provider request.
  * A draining owner cannot be replaced, even by another explicit installation. */
 export function installProviderProductionServer(): Lifetime {
-  if (arguments.length || registry.epoch !== epoch)
+  if (arguments.length) throw Error("PROVIDER_PRODUCTION_SERVER_INSTALL_FORBIDDEN");
+  return install();
+}
+/** Server composition only. No HTTP command may install or replace an owner. */
+export function installVersionedProviderProductionServer(version: PlanPromptVersion): Lifetime {
+  if (
+    arguments.length !== 1 ||
+    (version !== "plan-observation-v1" && version !== "plan-observation-v2")
+  )
     throw Error("PROVIDER_PRODUCTION_SERVER_INSTALL_FORBIDDEN");
+  return install(version);
+}
+function install(version?: PlanPromptVersion): Lifetime {
+  if (registry.epoch !== epoch) throw Error("PROVIDER_PRODUCTION_SERVER_INSTALL_FORBIDDEN");
   if (registry.owner && registry.owner.inspect().status !== "closed")
     throw Error("PROVIDER_PRODUCTION_SERVER_ALREADY_INSTALLED");
-  const owner = new ProductionServer();
+  const owner = new ProductionServer(version);
   // Closures from this module retain authentic old runtime/store identities across HMR.
   registry.owner = Object.freeze({
     execute: owner.execute.bind(owner),

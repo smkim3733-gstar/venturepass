@@ -1,5 +1,9 @@
 # 고객 자료 없는 운영 검증 실행 구성
 
+## 2026-10-02 추가 v2 평가 준비
+
+4D1의 서버 전용 명시 버전 runtime/install과 기존 COMMIT owner·capture 복구 연결을 모의 SDK로 검증했다. 기본 설치/공개 선택은 v1이며 자동 설치하지 않는다. 실제 v2 호출은 아직 없다. 기존 CLI/journal은 완료된 최초 v1 캠페인에 고정돼 있으므로 현재 validation:run/recover-policy/continue-review를 반복하지 않는다. 다음4D2에서 같은 DB·외부 기록·USD15 누적 예산에 추가 생성1회/검토1회(재시도0) 승인 기록을 이어 붙이는 경로를 구현·검증한 뒤 절차를 갱신한다. 전체 승인·현재 상태는 루트 OPERATIONAL_VALIDATION.md 및 기획/v2_운영연결_추가평가_20261002.md를 따른다. 아래는 보존된 기존 캠페인 절차다.
+
 **최신 상태(2026-09-29 04:35 KST) — 이번 승인 범위 완료:** exec session 78264의 명시적 재개에서 실제 생성 1회·파생 검토 1회가 단일 run `fd0402ff-c47e-41d9-88de-05b71b1a30a4`로 완료됐다. r10 completed/settled, exit 0, 원장 인식 USD 0.227485, 미정산 0이다. 종료 직전 activeExecutions/retainedCaptures 0, 종료 뒤 lease 없음과 journal completedStages 5/pendingStage null을 확인했다. 단계 수 5는 미사용 continue-review를 제외한 정상 완료이며 미완료를 뜻하지 않는다. 파일 status의 ledgerAudited:false는 파일 검사 자체의 범위를 나타내며 별도의 core DB 감사는 통과했다. 원래 00~05를 유지하고 추가 06~13 포함 14개 두 사본이 일치한다. 호출/복구 명령을 더 실행하지 않는다. 결과 원문 7개와 최종 감사/의미 품질 대조는 `../기획/품질평가_운영검증_20260929.md`를 따른다. 추가 유료 호출 없이 한국어 표현·중복 검토를 개선할지 다음 범위를 정할 때까지 자동 후속 실행을 일시 중지한다. 아래는 이전 단계의 이력이다.
 
 **최신 상태(2026-09-29 04:21 KST):** 4B3a 복구 구현·검증과 실제 키 없는 복구를 완료했다. 원래 00~04 파일/DB 감사 digest를 보존하고 거절 근거 05만 추가했다. `policyRejectionRecorded:true`, 정책/예산/전송 0, 실제 API 호출/비용 0이다. 다음 명시적 prepare에서 새 검토를 만든다. 이 문서 마지막의 **04:21 KST 최신 상태 — 거절 근거 보존 완료** 절이 현재 실행 기준이며 아래는 이전 이력이다.

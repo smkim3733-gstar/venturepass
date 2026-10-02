@@ -11,6 +11,7 @@ import { randomUUID } from "node:crypto";
 import {
   createProviderProductionDispatchStore,
   requireProviderProductionRuntime,
+  providerProductionPolicyContext,
   type ProviderProductionRuntime,
 } from "./studio-plan-quality-provider-production-runtime";
 import {
@@ -190,20 +191,12 @@ export class PlanQualityStore {
       providerSdkTestNetwork?: ProviderSdkTestNetwork;
       /** Explicit server runtime; only the dedicated approval-scoped runner may write/send. */
       providerProductionRuntime?: ProviderProductionRuntime;
-      /** Server construction only. Pins policy/reservation/approval and mock generation selection; live v2 stays blocked. */
+      /** Server construction only. Pins policy/reservation/approval and mock selection. Production selection belongs to the runtime. */
       providerPolicySelection?: { version: PlanPromptVersion; configuration: unknown };
     } = {},
   ) {
-    // Validate/snapshot the explicit selection before opening or creating any database.
-    const policySelection =
-      options.providerPolicySelection === undefined
-        ? undefined
-        : createServerProviderPolicyContext(
-            options.providerPolicySelection.version,
-            options.providerPolicySelection.configuration,
-          );
     const suppliedRuntime = options.providerProductionRuntime;
-    // Explicit live version selection is not wired yet. Never discard it and run v1 silently.
+    // Production version/configuration can only come from the authentic server runtime.
     if (suppliedRuntime !== undefined && options.providerPolicySelection !== undefined)
       throw new Error("PROVIDER_PRODUCTION_VERSION_SELECTION_UNSUPPORTED");
     if (
@@ -215,6 +208,14 @@ export class PlanQualityStore {
       throw new Error("PROVIDER_PRODUCTION_RUNTIME_TEST_MIXED");
     const productionRuntime =
       suppliedRuntime === undefined ? undefined : requireProviderProductionRuntime(suppliedRuntime);
+    const policySelection = productionRuntime
+      ? providerProductionPolicyContext(productionRuntime)
+      : options.providerPolicySelection === undefined
+        ? undefined
+        : createServerProviderPolicyContext(
+            options.providerPolicySelection.version,
+            options.providerPolicySelection.configuration,
+          );
     if (options.providerSdkTestNetwork && options.providerEnvironment !== "synthetic-test")
       throw new Error("PROVIDER_SDK_TEST_NETWORK_DISABLED");
     const sdkTestNetwork =

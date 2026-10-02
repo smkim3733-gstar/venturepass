@@ -8,6 +8,8 @@ const forbidden = vi.hoisted(() =>
 vi.mock("openai", () => ({ default: forbidden }));
 import {
   createProviderProductionRuntime,
+  createVersionedProviderProductionRuntime,
+  providerProductionPolicyContext,
   inspectProviderProductionRuntime,
   inspectProviderProductionWire,
   requireProviderProductionRuntime,
@@ -263,4 +265,41 @@ it("rechecks revocation after header iteration and snapshots mutable input heade
   expect(
     inspectProviderProductionWire(runtime, encoded, url, { ...wire(), headers }),
   ).toMatchObject({ reason: "runtime-unavailable" });
+});
+
+it.each([undefined, null, "", "plan-observation-v3", {}, ["plan-observation-v2"]])(
+  "refuses unsupported explicit production version %j without fallback",
+  (value) => {
+    expect(() => Reflect.apply(createVersionedProviderProductionRuntime, null, [value])).toThrow(
+      "PROVIDER_PRODUCTION_RUNTIME_VERSION_INVALID",
+    );
+  },
+);
+it("requires exactly one explicit version and no caller configuration or network", () => {
+  expect(() => Reflect.apply(createVersionedProviderProductionRuntime, null, [])).toThrow(
+    "PROVIDER_PRODUCTION_RUNTIME_VERSION_INVALID",
+  );
+  expect(() =>
+    Reflect.apply(createVersionedProviderProductionRuntime, null, ["plan-observation-v2", {}]),
+  ).toThrow("PROVIDER_PRODUCTION_RUNTIME_VERSION_INVALID");
+  const legacy = createProviderProductionRuntime();
+  expect(providerProductionPolicyContext(legacy)).toBeUndefined();
+  expect(() => providerProductionPolicyContext({ ...legacy })).toThrow(
+    "PROVIDER_PRODUCTION_RUNTIME_UNAVAILABLE",
+  );
+});
+it("pins an immutable server policy context behind an unforgeable runtime", () => {
+  const runtime = createVersionedProviderProductionRuntime("plan-observation-v2");
+  const context = providerProductionPolicyContext(runtime);
+  expect(Object.isFrozen(context)).toBe(true);
+  expect(context).toBe(providerProductionPolicyContext(runtime));
+  expect(Reflect.ownKeys(runtime)).toEqual(["kind", "version"]);
+  expect(JSON.stringify(runtime)).not.toContain(key);
+  expect(() => providerProductionPolicyContext(new Proxy(runtime, {}))).toThrow(
+    "PROVIDER_PRODUCTION_RUNTIME_UNAVAILABLE",
+  );
+  revokeProviderProductionRuntime(runtime);
+  expect(() => providerProductionPolicyContext(runtime)).toThrow(
+    "PROVIDER_PRODUCTION_RUNTIME_UNAVAILABLE",
+  );
 });

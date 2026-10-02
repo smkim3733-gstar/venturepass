@@ -23,11 +23,12 @@ function sameScope(selection: ProviderProductionSelection, identity: ProviderPro
 function snapshotOf(
   selection: ProviderProductionSelection,
   result: ProviderGenerationRunnerResult | ProviderReviewRunnerResult,
+  versioned: boolean,
 ) {
   const snapshot = result.snapshot;
   if (!snapshot) return null;
   if (
-    snapshot.archiveFormatVersion !== 3 ||
+    (snapshot.archiveFormatVersion !== 3 && !(versioned && snapshot.archiveFormatVersion === 5)) ||
     snapshot.run.environment !== "production" ||
     snapshot.run.id !== selection.runId ||
     snapshot.run.runDigest !== selection.runDigest
@@ -39,8 +40,9 @@ function phaseView(
   selection: ProviderProductionSelection,
   result: ProviderGenerationRunnerResult | ProviderReviewRunnerResult,
   phase: "generation" | "review",
+  versioned: boolean,
 ): Phase {
-  const snapshot = snapshotOf(selection, result);
+  const snapshot = snapshotOf(selection, result, versioned);
   const dispatchRecorded =
     snapshot?.events.some(
       (event) => event.payload.kind === "dispatch-intent" && event.payload.phase === phase,
@@ -99,9 +101,24 @@ export function projectProviderProductionView(
   raw: unknown,
   result: ProviderApprovedRunnerResult,
 ): ProviderProductionView {
+  return project(raw, result, false);
+}
+/** Projection of already audited server results. Supports both stored formats but grants no
+ * execution authority; default runtime/store selection and public commands stay unchanged. */
+export function projectVersionedProviderProductionView(
+  raw: unknown,
+  result: ProviderApprovedRunnerResult,
+): ProviderProductionView {
+  return project(raw, result, true);
+}
+function project(
+  raw: unknown,
+  result: ProviderApprovedRunnerResult,
+  versioned: boolean,
+): ProviderProductionView {
   const selection = providerProductionSelectionSchema.parse(raw);
-  const generation = phaseView(selection, result.generation, "generation");
-  const review = result.review ? phaseView(selection, result.review, "review") : null;
+  const generation = phaseView(selection, result.generation, "generation", versioned);
+  const review = result.review ? phaseView(selection, result.review, "review", versioned) : null;
   const pending = !!(result.generation.pendingCapture || result.review?.pendingCapture);
   const completed =
     !pending &&
@@ -112,9 +129,15 @@ export function projectProviderProductionView(
   // A missing top-level confirmation must not be presented as a completed phase either.
   if (!completed && review?.lastConfirmed === "completed") review.lastConfirmed = "validated";
   const snapshots = [
-    snapshotOf(selection, result.generation),
-    result.review ? snapshotOf(selection, result.review) : null,
+    snapshotOf(selection, result.generation, versioned),
+    result.review ? snapshotOf(selection, result.review, versioned) : null,
   ];
+  if (
+    snapshots[0] &&
+    snapshots[1] &&
+    snapshots[0].archiveFormatVersion !== snapshots[1].archiveFormatVersion
+  )
+    throw Error("PROVIDER_PRODUCTION_VIEW_SCOPE_INVALID");
   const snapshot = snapshots.reduce(
     (latest, item) => (item && (!latest || item.revision >= latest.revision) ? item : latest),
     null,

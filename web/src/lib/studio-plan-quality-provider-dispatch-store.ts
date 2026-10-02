@@ -3,7 +3,10 @@ import {
   providerProductionSelectionSchema,
   providerProductionInspectionInputSchema,
 } from "./studio-plan-quality-provider-production-service-types";
-import { projectAuditedProviderProductionStatus } from "./studio-plan-quality-provider-production-status";
+import {
+  projectAuditedProviderProductionStatus,
+  projectAuditedVersionedProviderProductionStatus,
+} from "./studio-plan-quality-provider-production-status";
 import { providerInitialProductionIdentity } from "./studio-plan-quality-provider-production-identity";
 import {
   runQualityProviderApprovedContinuation,
@@ -129,7 +132,7 @@ export type ProviderDispatchContext = {
   artifact: ProviderApprovedRunnerStore["providerArtifact"];
 };
 type Context = ProviderDispatchContext & {
-  // Fixed server selection is limited to synthetic callbacks and injected SDK simulations.
+  // Production selection is authenticated against the runtime-owned immutable context.
   selection?: ReturnType<typeof createServerProviderPolicyContext>;
   synthetic: boolean;
   sdkTestNetwork?: ProviderSdkTestNetwork;
@@ -218,7 +221,11 @@ export class ProviderGenerationDispatchStore {
       context.productionExecution &&
       (context.synthetic ||
         context.sdkTestNetwork ||
-        !isProviderProductionExecution(context.productionExecution, context.productionRuntime))
+        !isProviderProductionExecution(
+          context.productionExecution,
+          context.productionRuntime,
+          context.selection,
+        ))
     )
       throw Error("PROVIDER_PRODUCTION_EXECUTION_INVALID");
     this.#context = Object.freeze(context);
@@ -320,6 +327,14 @@ export class ProviderGenerationDispatchStore {
       ? this.#selectedValidationPlanning().prepareReviewStop(input)
       : prepareProviderReviewStop(input);
   }
+  #versionedProduction() {
+    return (
+      !!this.#context.productionExecution && !this.#context.synthetic && !!this.#context.selection
+    );
+  }
+  #productionFormat(format: number) {
+    return format === 3 || (format === 5 && this.#versionedProduction());
+  }
   #productionInput(
     permit: object | undefined,
     operation: ProviderProductionOperation,
@@ -342,7 +357,7 @@ export class ProviderGenerationDispatchStore {
       if (
         !snapshot ||
         !binding ||
-        snapshot.archiveFormatVersion !== 3 ||
+        !this.#productionFormat(snapshot.archiveFormatVersion) ||
         snapshot.run.environment !== "production" ||
         snapshot.run.runDigest !== selection.runDigest ||
         binding.recordDigest !== selection.approvalBindingDigest ||
@@ -387,16 +402,17 @@ export class ProviderGenerationDispatchStore {
       if (
         !snapshot ||
         !binding ||
-        snapshot.archiveFormatVersion !== 3 ||
+        !this.#productionFormat(snapshot.archiveFormatVersion) ||
         snapshot.run.environment !== "production" ||
         snapshot.run.runDigest !== selection.runDigest ||
         snapshot.revision < 1
       )
         return fail("PRODUCTION_APPROVAL_REQUIRED");
-      return projectAuditedProviderProductionStatus(
-        { ...selection, approvalBindingDigest: binding.recordDigest },
-        snapshot,
-      );
+      const scope = { ...selection, approvalBindingDigest: binding.recordDigest };
+      if (snapshot.archiveFormatVersion === 5 && this.#versionedProduction())
+        return projectAuditedVersionedProviderProductionStatus(scope, snapshot);
+      if (snapshot.archiveFormatVersion !== 3) return fail("PRODUCTION_APPROVAL_REQUIRED");
+      return projectAuditedProviderProductionStatus(scope, snapshot);
     });
   }
   #openProductionScope(raw: unknown) {
@@ -416,7 +432,7 @@ export class ProviderGenerationDispatchStore {
         !snapshot ||
         !binding ||
         snapshot.run.environment !== "production" ||
-        snapshot.archiveFormatVersion !== 3 ||
+        !this.#productionFormat(snapshot.archiveFormatVersion) ||
         snapshot.run.runDigest !== identity.runDigest ||
         snapshot.revision < 1
       )
@@ -433,7 +449,7 @@ export class ProviderGenerationDispatchStore {
     const port: ProviderApprovedRunnerStore = {
       providerGet: (id) => {
         checkId(id);
-        return this.#context.get(id);
+        return this.#versionedProduction() ? this.#auditedGet(id) : this.#context.get(id);
       },
       providerArtifact: (id, key) => {
         checkId(id);
@@ -464,6 +480,13 @@ export class ProviderGenerationDispatchStore {
   async executeProduction(raw: unknown): Promise<ProviderApprovedRunnerResult> {
     const scope = this.#openProductionScope(raw);
     try {
+      // Scope/history were fully audited before module loading. In-flight/terminal replay
+      // needs neither current configuration nor a current validation module.
+      if (this.#versionedProduction()) {
+        const snapshot = this.#auditedGet(scope.identity.runId);
+        if ("terminal" in snapshot && !snapshot.terminal && snapshot.state !== "dispatching")
+          await this.loadValidationPlanning();
+      }
       return await runQualityProviderApprovedContinuation(
         scope.port,
         scope.identity,
@@ -502,7 +525,7 @@ export class ProviderGenerationDispatchStore {
       this.#productionInput(permit, "generation-send", raw),
     );
     const execution = this.#context.productionExecution!;
-    const committed = this.#commit(identity, execution.assertCurrent),
+    const committed = this.#commit(identity, execution.assertCurrent, false, permit),
       plan = committed.plan;
     return {
       record: committed.record,
@@ -525,7 +548,7 @@ export class ProviderGenerationDispatchStore {
       this.#productionInput(permit, "review-send", raw),
     );
     const execution = this.#context.productionExecution!;
-    const committed = this.#commitReview(identity, execution.assertCurrent),
+    const committed = this.#commitReview(identity, execution.assertCurrent, false, permit),
       plan = committed.plan;
     return {
       record: committed.record,
@@ -558,13 +581,20 @@ export class ProviderGenerationDispatchStore {
     if (runtime.status !== "configured") return blocked("runtime-unavailable");
     return this.#context.transaction(() => {
       const before = this.inspect();
-      const prepared = prepareProviderGenerationDispatch({
+      const input = {
         identity,
         inspectedAt: new Date().toISOString(),
         configuration: getProviderConfigurationProposal(),
         archive: before.input,
         additionalUsedBytes: before.additionalUsedBytes,
-      });
+      };
+      const { configuration: currentConfiguration, ...selectedInput } = input;
+      const prepared = this.#context.selection
+        ? this.#context.selection.prepareGenerationDispatch(selectedInput)
+        : prepareProviderGenerationDispatch({
+            ...selectedInput,
+            configuration: currentConfiguration,
+          });
       if (inspectProviderProductionRuntime(this.#context.productionRuntime).status !== "configured")
         return blocked("runtime-unavailable");
       if (prepared.status !== "prepared") return blocked(prepared.reason);
@@ -632,8 +662,10 @@ export class ProviderGenerationDispatchStore {
   /** The original passive v1 reader remains available without simulation authority.
    * Only constructor-gated simulations receive stored v2 views. No read grants send ownership. */
   simulationGet(id: string) {
-    if (!this.#context.synthetic || !this.#context.sdkTestNetwork)
-      return this.#context.get(id);
+    if (!this.#context.synthetic || !this.#context.sdkTestNetwork) return this.#context.get(id);
+    return this.#auditedGet(id);
+  }
+  #auditedGet(id: string) {
     providerGenerationDispatchIdentitySchema.shape.runId.parse(id);
     return this.#context.transaction(() => {
       const snapshot = this.inspect().audit.reservationArchive.ledger.provider.snapshots.find(
@@ -1851,6 +1883,7 @@ export class ProviderGenerationDispatchStore {
     identity: ProviderReviewDispatchIdentity,
     checkNew?: () => void,
     syntheticVersioned = false,
+    productionPermit?: object,
   ) {
     return this.#context.transaction(() => {
       const before = this.inspect(),
@@ -1865,8 +1898,16 @@ export class ProviderGenerationDispatchStore {
         );
       const plan = prepared.plan,
         artifact = plan.rows.artifact;
-      // Only explicitly synthetic callbacks or injected SDK calls may own a v2 commit.
-      if (plan.planVersion === 2 && (!syntheticVersioned || !this.#context.synthetic))
+      // A synthetic owner or the original private production invocation may own a v2 commit.
+      if (
+        plan.planVersion === 2 &&
+        !(syntheticVersioned && this.#context.synthetic) &&
+        !(
+          productionPermit &&
+          this.#productionScopes.has(productionPermit) &&
+          this.#versionedProduction()
+        )
+      )
         return fail("REVIEW_NATIVE_VERSION_UNSUPPORTED");
       this.#context.capacity(0); // All five rows consume the original native storage reservation.
       this.#context.db
@@ -2203,6 +2244,7 @@ export class ProviderGenerationDispatchStore {
     identity: ProviderGenerationDispatchIdentity,
     checkNew?: () => void,
     syntheticVersioned = false,
+    productionPermit?: object,
   ) {
     return this.#context.transaction(() => {
       const before = this.inspect(),
@@ -2227,9 +2269,17 @@ export class ProviderGenerationDispatchStore {
           prepared.reason === "capacity-exceeded" ? 413 : 409,
         );
       const plan = prepared.plan;
-      // Only an explicit synthetic callback or constructor-injected SDK invocation may
-      // own a new v2 commit. Production callers never pass this capability.
-      if (plan.planVersion === 2 && (!syntheticVersioned || !this.#context.synthetic))
+      // Production permits stay private to the original audited invocation; a stored
+      // v2 contract or public command alone cannot grant ownership.
+      if (
+        plan.planVersion === 2 &&
+        !(syntheticVersioned && this.#context.synthetic) &&
+        !(
+          productionPermit &&
+          this.#productionScopes.has(productionPermit) &&
+          this.#versionedProduction()
+        )
+      )
         return fail("NATIVE_VERSION_UNSUPPORTED");
       this.#context.capacity(0); // All four rows consume already reserved native storage/slots.
       const insert = (table: string, keys: Record<string, SQLInputValue>, value: unknown) => {

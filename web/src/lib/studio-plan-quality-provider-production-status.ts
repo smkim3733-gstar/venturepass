@@ -1,6 +1,9 @@
 import "server-only";
 import { freezeProviderValue } from "../../scripts/local-data-quality-provider-usage.mjs";
-import type { ProviderExecutionSnapshot } from "./studio-plan-quality-provider-execution-types";
+import type {
+  ProviderExecutionSnapshot,
+  VersionedProviderExecutionSnapshot,
+} from "./studio-plan-quality-provider-execution-types";
 import {
   providerProductionSelectionSchema,
   providerProductionViewSchema,
@@ -22,9 +25,24 @@ export function projectAuditedProviderProductionStatus(
   selection: ProviderProductionSelection,
   snapshot: ProviderExecutionSnapshot,
 ): ProviderProductionView {
+  if (snapshot.archiveFormatVersion !== 3) throw Error("PROVIDER_PRODUCTION_STATUS_SCOPE_INVALID");
+  return project(selection, snapshot);
+}
+
+/** Version-aware projection only; caller supplies the same complete transaction audit. */
+export function projectAuditedVersionedProviderProductionStatus(
+  selection: ProviderProductionSelection,
+  snapshot: ProviderExecutionSnapshot | VersionedProviderExecutionSnapshot,
+): ProviderProductionView {
+  return project(selection, snapshot);
+}
+function project(
+  selection: ProviderProductionSelection,
+  snapshot: ProviderExecutionSnapshot | VersionedProviderExecutionSnapshot,
+): ProviderProductionView {
   const scope = providerProductionSelectionSchema.parse(selection);
   if (
-    snapshot.archiveFormatVersion !== 3 ||
+    (snapshot.archiveFormatVersion !== 3 && snapshot.archiveFormatVersion !== 5) ||
     snapshot.run.environment !== "production" ||
     snapshot.run.id !== scope.runId ||
     snapshot.run.runDigest !== scope.runDigest

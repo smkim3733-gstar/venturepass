@@ -7,7 +7,7 @@ import {
   type ProviderProductionView,
 } from "./studio-plan-quality-provider-production-service-types";
 import {
-  projectProviderProductionView,
+  projectVersionedProviderProductionView,
   unavailableProviderProductionView,
 } from "./studio-plan-quality-provider-production-view";
 
@@ -108,7 +108,7 @@ export class ProviderProductionExecutionService {
     reason: ProviderProductionView["reason"] = null,
   ) {
     try {
-      const view = projectProviderProductionView(selection, result);
+      const view = projectVersionedProviderProductionView(selection, result);
       return reason ? Object.freeze({ ...view, reason }) : view;
     } catch {
       return unavailableProviderProductionView(selection, "execution-unavailable");

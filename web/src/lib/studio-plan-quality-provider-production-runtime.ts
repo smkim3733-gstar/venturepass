@@ -11,6 +11,10 @@ import {
   type ProviderDispatchContext,
 } from "./studio-plan-quality-provider-dispatch-store";
 
+import type { PlanPromptVersion } from "./studio-plan-prompt-versions";
+import { createServerProviderPolicyContext } from "./studio-plan-quality-provider-policy-server";
+import { getProviderConfigurationProposal } from "./studio-plan-quality-provider-configuration";
+
 declare const runtimeBrand: unique symbol;
 /** Nonserializable server configuration identity, NOT approval or new-COMMIT ownership. */
 export type ProviderProductionRuntime = Readonly<{
@@ -18,16 +22,27 @@ export type ProviderProductionRuntime = Readonly<{
   version: 1;
   [runtimeBrand]: true;
 }>;
-type PrivateRuntime = { apiKey: string; directory: string; revoked: boolean };
+type PolicyContext = ReturnType<typeof createServerProviderPolicyContext>;
+type PrivateRuntime = {
+  apiKey: string;
+  directory: string;
+  revoked: boolean;
+  selection?: PolicyContext;
+};
 const runtimes = new WeakMap<object, PrivateRuntime>();
 const executions = new WeakMap<object, ProviderProductionRuntime>();
 /** Constructor authenticity check only. Cannot mint or extract a credential-bearing driver. */
-export function isProviderProductionExecution(value: unknown, runtime: unknown) {
+export function isProviderProductionExecution(
+  value: unknown,
+  runtime: unknown,
+  selection?: PolicyContext,
+) {
   return (
     !!value &&
     typeof value === "object" &&
     executions.has(value) &&
-    executions.get(value) === runtime
+    executions.get(value) === runtime &&
+    lookup(runtime)?.selection === selection
   );
 }
 const lookup = (value: unknown) =>
@@ -62,6 +77,32 @@ const unavailable = (reason: "unrecognized-runtime" | "revoked") =>
  * The actual key lives only in a private WeakMap, never on the returned handle. */
 export function createProviderProductionRuntime(): ProviderProductionRuntime {
   if (arguments.length !== 0) throw Error("PROVIDER_PRODUCTION_RUNTIME_OPTIONS_FORBIDDEN");
+  return createRuntime();
+}
+
+/** Explicit trusted server selection. Configuration and credential come only from the server,
+ * never from a command, stored contract, caller-supplied configuration or test network. */
+export function createVersionedProviderProductionRuntime(
+  version: PlanPromptVersion,
+): ProviderProductionRuntime {
+  if (
+    arguments.length !== 1 ||
+    (version !== "plan-observation-v1" && version !== "plan-observation-v2")
+  )
+    throw Error("PROVIDER_PRODUCTION_RUNTIME_VERSION_INVALID");
+  return createRuntime(
+    createServerProviderPolicyContext(version, getProviderConfigurationProposal()),
+  );
+}
+
+/** Internal immutable context shared by policy writers and the runtime-owned dispatch store.
+ * Access at construction requires an authentic, current runtime; no credential is exposed. */
+export function providerProductionPolicyContext(runtime: ProviderProductionRuntime) {
+  requireProviderProductionRuntime(runtime);
+  return lookup(runtime)!.selection;
+}
+
+function createRuntime(selection?: PolicyContext): ProviderProductionRuntime {
   const key = process.env.OPENAI_API_KEY?.trim();
   if (!key || !/^sk-[A-Za-z0-9_-]{16,1024}$/.test(key))
     throw Error("PROVIDER_PRODUCTION_CREDENTIAL_UNAVAILABLE");
@@ -71,7 +112,12 @@ export function createProviderProductionRuntime(): ProviderProductionRuntime {
       version: 1,
     }),
   ) as ProviderProductionRuntime;
-  runtimes.set(runtime, { apiKey: key, directory: providerProductionDirectory(), revoked: false });
+  runtimes.set(runtime, {
+    apiKey: key,
+    directory: providerProductionDirectory(),
+    revoked: false,
+    selection,
+  });
   return runtime;
 }
 
@@ -142,6 +188,7 @@ export function createProviderProductionDispatchStore(
   return new ProviderGenerationDispatchStore({
     ...context,
     synthetic: false,
+    selection: state.selection,
     productionRuntime: runtime,
     productionExecution: execution,
   });
