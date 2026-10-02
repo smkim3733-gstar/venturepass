@@ -20,7 +20,7 @@
     "validation:recover-policy": "node --conditions=react-server --import ./scripts/operational-typescript-loader.mjs scripts/operational-validation.mjs recover-policy",
     "validation:run": "node --conditions=react-server --import ./scripts/operational-typescript-loader.mjs scripts/operational-validation.mjs run",
     "validation:continue-review": "node --conditions=react-server --import ./scripts/operational-typescript-loader.mjs scripts/operational-validation.mjs continue-review",
-    "test:operational-validation": "node --test --test-concurrency=1 scripts/operational-validation-journal.test.mjs scripts/operational-typescript-loader.test.mjs",
+    "test:operational-validation": "node --test --test-concurrency=1 scripts/operational-validation-journal.test.mjs scripts/operational-validation-additional-records.test.mjs scripts/operational-validation-additional-journal.test.mjs scripts/operational-typescript-loader.test.mjs",
     "test:local-data": "node --test scripts/local-data.test.mjs scripts/local-data-cold.test.mjs scripts/local-data.integration.test.mjs"
   },
   "engines": {

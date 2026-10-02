@@ -17,6 +17,7 @@ import { actualTestPlan, actualTestRegistry } from "./studio-plan-quality-actual
 import { inspectProviderProductionServer } from "./studio-plan-quality-provider-production-server";
 import {
   acquireValidationJournal,
+  acquireAdditionalValidationJournal,
   inspectValidationJournal,
   type ValidationProfile,
 } from "../../scripts/operational-validation-journal.mjs";
@@ -297,4 +298,39 @@ it("refuses closing or replacing the lease while the original SDK request is in 
   expect((await pending).executionCompleted).toBe(true);
   expect(network).toHaveBeenCalledTimes(2);
   expect(s.close()).toBe(true);
+}, timeout);
+
+
+it("appends an additional file approval only after the original core completes, preserving the DB and blocking the old runner", async () => {
+  const first = session();
+  const selection = first.prepare();
+  expect(await first.execute()).toMatchObject({ executionCompleted: true });
+  const core = first.inspect();
+  expect(core.budget).toMatchObject({ capUnits: "15000000", recognizedUnits: "380", heldUnits: "0" });
+  expect(core.status?.lastAuditedRevision).toBe(10);
+  first.close();
+  const dbFile = join(profile.directory, "quality-evaluation", "quality.sqlite");
+  const before = readFileSync(dbFile), store = new PlanQualityStore(profile.directory);
+  const audited = store.inspectDatabase();
+  store.close();
+  const journal = acquireAdditionalValidationJournal(profile);
+  try {
+    const checkpoint = journal.readStep("execute").receipt as {
+      runRevision: 10; snapshotDigest: string; budgetRevision: number; budgetHeadDigest: string;
+      recognizedUnits: string; heldUnits: "0";
+    };
+    expect(checkpoint.recognizedUnits).toBe(core.budget?.recognizedUnits);
+    expect(checkpoint.heldUnits).toBe(core.budget?.heldUnits);
+    const evidence = { original: journal.readOriginalAnchor(), selection, checkpoint, databaseDigest: audited.digest };
+    journal.appendAdditionalApproval(evidence);
+    expect(journal.readAdditionalState()).toMatchObject({
+      completedStages: 0, ledgerAudited: false, transmissionAllowed: false,
+      approval: { checkpoint: { recognizedUnits: "380", heldUnits: "0" } },
+    });
+    expect(journal.appendAdditionalApproval(evidence)).toEqual(journal.readAdditionalState()?.approval);
+  } finally { journal.close(); }
+  expect(readFileSync(dbFile)).toEqual(before);
+  expect(() => session()).toThrow("VALIDATION_EXECUTION_UNAVAILABLE");
+  expect(network).toHaveBeenCalledTimes(2);
+  // No DB attestation/writer/second runtime is introduced by the file protocol.
 }, timeout);

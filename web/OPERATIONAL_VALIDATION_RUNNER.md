@@ -1,5 +1,10 @@
 # 고객 자료 없는 운영 검증 실행 구성
 
+2026-10-02 19:26 KST: 4D2a 추가 승인 파일 프로토콜을 완료했다. 원래 prefix/완료 checkpoint/비용에 묶인 단일 추가 승인과 suffix만 저장하며 기본 CLI는 새 기록을 거절한다. 관련6파일89개·lint·typecheck·격리 Webpack jKGxDV 통과(BUILD_ID mkiMfSl9Lx-sd-OYy6lqA, 앱8파일 SHA 일치/.env.local 미복사). 실제 운영 경로에는 쓰지 않았고 추가 실제 호출0이다. 다음4D2b에서 DB 전체 감사와 원래 budget prefix/nonce, v2 준비/session/명시 CLI를 연결해야 한다. 새 파일 기록의 databaseDigest/완료 필드 자체는 DB 증명·승인·실행 권한이 아니다. 기존 validation:run/recover-policy/continue-review는 반복하지 않는다.
+
+---
+
+
 ## 2026-10-02 추가 v2 평가 준비
 
 4D1의 서버 전용 명시 버전 runtime/install과 기존 COMMIT owner·capture 복구 연결을 모의 SDK로 검증했다. 기본 설치/공개 선택은 v1이며 자동 설치하지 않는다. 실제 v2 호출은 아직 없다. 기존 CLI/journal은 완료된 최초 v1 캠페인에 고정돼 있으므로 현재 validation:run/recover-policy/continue-review를 반복하지 않는다. 다음4D2에서 같은 DB·외부 기록·USD15 누적 예산에 추가 생성1회/검토1회(재시도0) 승인 기록을 이어 붙이는 경로를 구현·검증한 뒤 절차를 갱신한다. 전체 승인·현재 상태는 루트 OPERATIONAL_VALIDATION.md 및 기획/v2_운영연결_추가평가_20261002.md를 따른다. 아래는 보존된 기존 캠페인 절차다.

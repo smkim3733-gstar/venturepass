@@ -13,6 +13,11 @@ import {
 } from "node:fs";
 import path from "node:path";
 import { readSafe, safePath, samePath, sha, within } from "./local-data-files.mjs";
+import {
+  createAdditionalValidationApproval,
+  inspectAdditionalValidationRecords,
+  prepareAdditionalValidationRecord,
+} from "./operational-validation-additional-records.mjs";
 
 // Local orchestration journal only. It does not grant approval, open SQLite, or send requests.
 // The production driver must validate core receipts/ledger heads before acknowledging a step.
@@ -148,7 +153,19 @@ function identity(file) {
 function fileName(index) {
   return `${String(index).padStart(2, "0")}.json`;
 }
-function readState(paths, allowLock = false) {
+function requireOriginalEvidence(current, evidence) {
+  const continuation = current.steps[5], execution = current.steps[4];
+  const completed = continuation.command === null ? execution : continuation;
+  if (!execution.receipt || !completed.receipt ||
+      completed.command?.automaticRetryAllowed !== false ||
+      json(Object.keys(completed.command)) !== json(["selection", "automaticRetryAllowed"]) ||
+      json(evidence.original) !== json(current.originalAnchor) ||
+      json(evidence.selection) !== json(completed.command.selection) ||
+      json(evidence.checkpoint) !== json(completed.receipt)) fail("JOURNAL_INVALID");
+  // Database digest and core completion must be re-audited by the trusted composition.
+  createAdditionalValidationApproval(evidence);
+}
+function readState(paths, allowLock = false, additional = false) {
   if (!allowLock && exists(paths.lock)) fail("BUSY");
   const dataExists = exists(paths.directory),
     controlExists = exists(paths.control);
@@ -163,7 +180,7 @@ function readState(paths, allowLock = false) {
   if (
     json(names) !== json(readdirSync(paths.journal).sort()) ||
     names.length < 2 ||
-    names.length > 16 ||
+    names.length > (additional ? 27 : 16) ||
     names.some((name, i) => name !== fileName(i))
   )
     fail("PARTIAL_STATE");
@@ -186,7 +203,11 @@ function readState(paths, allowLock = false) {
   )
     fail("DATABASE_CHANGED");
   let previous = hash(records[1]);
-  const entries = records.slice(2);
+  const extensionIndex = additional
+    ? records.findIndex((record) => record?.stage === "additional-approval") : -1;
+  const originalCount = extensionIndex < 0 ? records.length : extensionIndex;
+  if (originalCount > 16) fail("JOURNAL_INVALID");
+  const entries = records.slice(2, originalCount);
   const steps = stages.map(() => ({ command: null, receipt: null }));
   let nextStage = 0, rejection = null;
   for (let i = 0; i < entries.length; i++) {
@@ -218,7 +239,19 @@ function readState(paths, allowLock = false) {
     } else fail("JOURNAL_INVALID");
     previous = hash(entry);
   }
-  return { state: "initialized", binding, entries, steps, nextStage, rejection, head: previous };
+  const current = { state: "initialized", binding, entries, steps, nextStage, rejection, head: previous,
+    originalAnchor: { instanceId: binding.instanceId, recordCount: originalCount, headDigest: previous },
+    additionalRecords: extensionIndex < 0 ? [] : records.slice(extensionIndex), additionalState: null };
+  if (extensionIndex >= 0) {
+    const payload = current.additionalRecords[0]?.payload;
+    const evidence = payload && {
+      original: payload.original, selection: payload.selection, checkpoint: payload.checkpoint,
+      databaseDigest: payload.databaseDigest,
+    };
+    requireOriginalEvidence(current, evidence ?? {});
+    current.additionalState = inspectAdditionalValidationRecords(evidence, current.additionalRecords);
+  }
+  return current;
 }
 export function inspectValidationJournal(profile) {
   try {
@@ -258,6 +291,14 @@ function payloadCopy(payload) {
 /** Exclusive process lease. A leftover lease is never broken using PID/age heuristics.
  * Callers must retain it until all executions AND unpersisted captures are drained. */
 export function acquireValidationJournal(profile) {
+  return acquireJournal(profile, false);
+}
+/** Explicit extension-only file interface. It cannot initialize DB/budget or grant execution.
+ * Legacy CLI/session deliberately continue to use acquireValidationJournal. */
+export function acquireAdditionalValidationJournal(profile) {
+  return acquireJournal(profile, true);
+}
+function acquireJournal(profile, additional) {
   const paths = profilePaths(profile);
   safePath(path.dirname(paths.control), "directory");
   try {
@@ -280,7 +321,7 @@ export function acquireValidationJournal(profile) {
   }
   function state() {
     guard();
-    return readState(paths, true);
+    return readState(paths, true, additional);
   }
   function ready() {
     const value = state();
@@ -292,6 +333,7 @@ export function acquireValidationJournal(profile) {
       index = current.entries.length;
     const command = current.steps[current.nextStage]?.command;
     if (
+      additional || current.additionalState !== null ||
       stage !== stages[current.nextStage] ||
       (kind === "policy-rejection"
         ? stage !== "policy" || command === null || command === undefined || current.rejection
@@ -305,11 +347,41 @@ export function acquireValidationJournal(profile) {
       payload: payloadCopy(payload),
     });
   }
+  function extensionEvidence(current) {
+    const p = current.additionalState?.approval;
+    if (!p) fail("STAGE_ORDER");
+    return { original: p.original, selection: p.selection, checkpoint: p.checkpoint, databaseDigest: p.databaseDigest };
+  }
+  function appendAdditional(stage, kind, payload) {
+    const current = ready(), evidence = extensionEvidence(current);
+    const proposal = prepareAdditionalValidationRecord(evidence, current.additionalRecords, stage, kind, payload);
+    if (proposal.status === "append-required") {
+      pair(paths, fileName(current.originalAnchor.recordCount + current.additionalRecords.length), proposal.record);
+    }
+    return ready().additionalState.steps[stage][kind];
+  }
   return {
+    ...(additional ? {
+      readOriginalAnchor() { return ready().originalAnchor; },
+      readAdditionalState() { return ready().additionalState; },
+      appendAdditionalApproval(evidence) {
+        const current = ready(), copy = payloadCopy(evidence);
+        requireOriginalEvidence(current, copy);
+        const record = createAdditionalValidationApproval(copy);
+        if (current.additionalState) {
+          if (json(record) !== json(current.additionalRecords[0])) fail("COMMAND_CONFLICT");
+        } else {
+          pair(paths, fileName(current.originalAnchor.recordCount), record);
+        }
+        return ready().additionalState.approval;
+      },
+      prepareAdditional(stage, payload) { return appendAdditional(stage, "command", payload); },
+      acknowledgeAdditional(stage, payload) { appendAdditional(stage, "receipt", payload); },
+    } : {}),
     /** The callback may create only an empty core store. Never adopt a budget or dispatch here.
      * Any interrupted initialization is quarantined, not automatically initialized again. */
     initialize(createEmptyDatabase) {
-      if (state().state !== "virgin") fail("PARTIAL_STATE");
+      if (additional || state().state !== "virgin") fail("PARTIAL_STATE");
       mkdirSync(paths.control, { mode: 0o700 });
       const binding = { profile: paths.binding, instanceId: randomUUID() };
       write(path.join(paths.control, fileName(0)), binding);
