@@ -363,6 +363,25 @@ export function PackagePanel({
           {message}
         </p>
       )}
+      <div className="rounded-xl border bg-slate-50 p-4">
+        <p className="mb-3 text-sm leading-6">
+          원고를 읽고 확인하려면 Word 문서를 내려받으세요. 제목·목차·본문·근거와 검토 의견이 구분된
+          문서이며, 현재 선택한 저장 버전의 내용이 담깁니다.
+        </p>
+        {busy || dirty || stale ? (
+          <Button disabled>원고 v{plan.version} Word 내려받기</Button>
+        ) : (
+          <Button asChild>
+            <a
+              href={`/api/studio/cases/${company.id}/export?planId=${plan.id}&format=docx`}
+              download
+            >
+              <Download aria-hidden="true" />
+              원고 v{plan.version} Word 내려받기
+            </a>
+          </Button>
+        )}
+      </div>
       {onPreserve && (
         <Button disabled={busy || dirty || stale} onClick={() => void download("preserve")}>
           {busy ? "준비본 보관 중…" : "원고와 선택 원본 보관"}
