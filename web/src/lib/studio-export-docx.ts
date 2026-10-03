@@ -1,5 +1,10 @@
 import JSZip from "jszip";
-import type { BusinessPlan, StudioCase } from "./studio-schema";
+import {
+  sectionDefinitions,
+  type BusinessPlan,
+  type StudioCase,
+  type ReviewFinding,
+} from "./studio-schema";
 
 export const PLAN_DOCX_MIME =
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
@@ -65,6 +70,14 @@ function prose(text: string, style = "Normal") {
     })
     .join("");
 }
+function reviewField(label: string, text: string) {
+  // Bold lead-in keeps short fields compact while long explanations still flow across pages.
+  const content = prose(text, "ReviewText");
+  return content.replace(
+    "<w:r>",
+    `<w:r><w:rPr><w:b/></w:rPr><w:t xml:space="preserve">${xml(label)}: </w:t></w:r><w:r>`,
+  );
+}
 function dateLabel(value: string) {
   const date = new Date(value);
   if (!Number.isFinite(date.valueOf())) return value;
@@ -104,11 +117,164 @@ function sourceName(record: StudioCase, id: string) {
         "삭제되었거나 현재 자료에서 찾을 수 없는 출처");
 }
 
+type ReviewGroup = { findings: { finding: ReviewFinding; number: number }[] };
+
+function reviewLocation(plan: BusinessPlan, key: string | null) {
+  const matches = plan.content.sections.flatMap((section, index) =>
+    section.key === key ? [`본문 ${String(index + 2).padStart(2, "0")} ${section.title}`] : [],
+  );
+  if (matches.length) return matches.join(" / ");
+  if (key === "summary") return "본문 01 사업 개요";
+  if (key === "title") return "표지 · 원고 제목";
+  if (key === "actionItems") return "부록 2 추가 준비 과제";
+  if (key === "interviewQuestions") return "부록 3 실사 예상 질문";
+  if (key === null) return "문서 전반 · 대상 항목이 지정되지 않았습니다.";
+  const known = sectionDefinitions.find((section) => section.key === key)?.title;
+  return `현재 원고에서 찾을 수 없는 항목: ${known ?? key}`;
+}
+
+/** Only identical confirmation notices share a block. Distinct findings never disappear. */
+function reviewAppendix(record: StudioCase, plan: BusinessPlan) {
+  if (!plan.review.length)
+    return paragraph(
+      "자동 검토에서 표시된 항목이 없습니다. 사실 확인과 최종 검토는 별도로 필요합니다.",
+    );
+  const details: ReviewGroup[] = [];
+  const common = new Map<string, ReviewGroup>();
+  const scope: ReviewGroup[] = [];
+  plan.review.forEach((finding, index) => {
+    const member = { finding, number: index + 1 };
+    if (finding.category === "review-scope" && finding.severity === "info") {
+      scope.push({ findings: [member] });
+    } else if (finding.category === "confirmation") {
+      // Keep different actions, priorities and source bindings separate, even if wording is alike.
+      const key = JSON.stringify([
+        finding.severity,
+        finding.message,
+        finding.action,
+        finding.sourceIds,
+      ]);
+      const group = common.get(key) ?? { findings: [] };
+      group.findings.push(member);
+      common.set(key, group);
+    } else details.push({ findings: [member] });
+  });
+  const result = [
+    paragraph(
+      "대표·담당자가 원고와 자료를 대조할 때 사용하는 목록입니다. 확인할 내용을 먼저 읽고, 해당 본문과 원본 자료를 함께 확인해 주세요.",
+      "ReviewText",
+    ),
+    paragraph(
+      "‘우선 확인’은 원래 분류 ‘오류’, ‘확인 필요’는 ‘주의’에 해당합니다. 실제 오류가 확정되었거나 사람의 검토가 완료되었다는 뜻은 아닙니다.",
+      "Secondary",
+    ),
+    paragraph(
+      `원래 검토 의견 ${plan.review.length}건 · 개별 확인 ${details.length}건 · 공통 안내 ${common.size}묶음(${[...common.values()].reduce((n, group) => n + group.findings.length, 0)}건) · 검토 범위 안내 ${scope.length}건`,
+      "Secondary",
+    ),
+  ];
+  const renderGroup = (group: ReviewGroup, label: string) => {
+    const finding = group.findings[0].finding;
+    const priority = { error: "우선 확인", warning: "확인 필요", info: "참고" }[finding.severity];
+    const original = { error: "오류", warning: "주의", info: "안내" }[finding.severity];
+    result.push(paragraph(`${label} · ${priority}`, "FindingTitle"));
+    result.push(
+      paragraph(
+        `원래 의견 ${group.findings.map((member) => member.number).join(", ")} · 원래 분류: ${original}`,
+        "SourceId",
+        "<w:keepNext/>",
+      ),
+    );
+    result.push(
+      reviewField(
+        "해당 본문",
+        group.findings
+          .map(
+            (member) =>
+              `${group.findings.length > 1 ? `의견 ${member.number}: ` : ""}${reviewLocation(plan, member.finding.sectionKey)}`,
+          )
+          .join("\n"),
+      ),
+    );
+    result.push(
+      reviewField(
+        "확인할 내용",
+        finding.action || "별도 조치가 기록되어 있지 않습니다. 아래 의견을 담당자와 확인해 주세요.",
+      ),
+    );
+    result.push(reviewField("확인 이유 · 원래 검토 의견", finding.message));
+    if (finding.category === "numeric-evidence")
+      result.push(
+        paragraph(
+          "수치 대조 안내: 인용 범위나 단위·표기 방식 때문에 표시될 수 있습니다. 원본과 산식을 확인하기 전에는 숫자 자체가 틀렸다고 단정하지 마세요.",
+          "Secondary",
+        ),
+      );
+    result.push(paragraph("확인할 자료", "ReviewLabel"));
+    if (finding.sourceIds.length) {
+      for (const id of finding.sourceIds)
+        result.push(paragraph(`${sourceName(record, id)} · 출처 ID: ${id}`, "ReviewText"));
+    } else {
+      const keys = new Set(group.findings.map((member) => member.finding.sectionKey));
+      let referenceNumber = 0;
+      const references = plan.content.sections.flatMap((section) =>
+        section.evidence.flatMap((reference) => {
+          referenceNumber += 1;
+          return keys.has(section.key)
+            ? [
+                `[${referenceNumber}] ${sourceName(record, reference.sourceId)} · ${reference.locator || "위치 미지정"}`,
+              ]
+            : [];
+        }),
+      );
+      if (references.length) {
+        result.push(
+          paragraph(
+            "검토 의견에 별도 자료가 지정되지 않아 해당 본문의 연결 근거를 안내합니다. 이 의견을 입증하는지는 원본과 대조해야 합니다. 인용·출처 ID는 부록 4를 확인하세요.",
+            "Secondary",
+          ),
+        );
+        for (const reference of references) result.push(paragraph(reference, "ReviewText"));
+      } else
+        result.push(
+          paragraph(
+            "연결된 자료가 지정되지 않았습니다. 위 ‘확인할 내용’에서 요청한 자료의 보유 여부와 원본을 담당자에게 확인해 주세요.",
+            "ReviewText",
+          ),
+        );
+    }
+  };
+  if (details.length) {
+    result.push(paragraph("개별 확인사항", "Heading2"));
+    const rank = { error: 0, warning: 1, info: 2 };
+    details
+      .toSorted(
+        (a, b) => rank[a.findings[0].finding.severity] - rank[b.findings[0].finding.severity],
+      )
+      .forEach((group, index) => renderGroup(group, `확인 ${index + 1}`));
+  }
+  if (common.size) {
+    result.push(paragraph("공통 확인 안내", "Heading2"));
+    result.push(
+      paragraph(
+        "같은 확인 이유와 조치가 반복된 의견은 한 번 표시하고, 해당 본문과 원래 의견 번호를 모두 남겼습니다.",
+        "Secondary",
+      ),
+    );
+    [...common.values()].forEach((group, index) => renderGroup(group, `공통 확인 ${index + 1}`));
+  }
+  if (scope.length) {
+    result.push(paragraph("검토 범위 안내", "Heading2"));
+    scope.forEach((group, index) => renderGroup(group, `범위 안내 ${index + 1}`));
+  }
+  return result.join("");
+}
+
 /** A print report of the selected saved version; export has no write or AI side effects. */
 export async function exportPlanDocx(record: StudioCase, plan: BusinessPlan, current: boolean) {
   const sectionTitles = ["사업 개요", ...plan.content.sections.map((section) => section.title)];
   const appendixTitles = [
-    "사전 검토 결과",
+    "대표·담당자 확인사항",
     "추가 준비 과제",
     "실사 예상 질문",
     "연결 근거",
@@ -192,19 +358,7 @@ export async function exportPlanDocx(record: StudioCase, plan: BusinessPlan, cur
       index === 0 || appendixSizes[index - 1] > 1200,
     );
   body.push(appendix(0));
-  if (!plan.review.length)
-    body.push(
-      paragraph("자동 검토에서 표시된 항목이 없습니다. 사실 확인과 최종 검토는 별도로 필요합니다."),
-    );
-  plan.review.forEach((finding, index) => {
-    const severity =
-      finding.severity === "error" ? "오류" : finding.severity === "warning" ? "주의" : "안내";
-    body.push(
-      paragraph(`${index + 1}  ${severity}`, "FindingTitle"),
-      prose(finding.message, "ReviewText"),
-    );
-    body.push(prose(`조치: ${finding.action}`, "ReviewText"));
-  });
+  body.push(reviewAppendix(record, plan));
   body.push(appendix(1));
   if (!plan.content.actionItems.length) {
     body.push(paragraph("등록된 추가 준비 과제가 없습니다."));
@@ -257,13 +411,16 @@ export async function exportPlanDocx(record: StudioCase, plan: BusinessPlan, cur
   });
   // Preserve exact source timestamps alongside the human-readable cover dates.
   body.push(paragraph("원고 기록", "Heading2"));
-  body.push(paragraph(`작성일 원본: ${plan.generatedAt}`, "Secondary"));
+  body.push(paragraph(`작성일 원본: ${plan.generatedAt}`, "Secondary", "<w:keepNext/>"));
   if (plan.confirmedAt && current)
-    body.push(paragraph(`사용자 검토 확인 원본: ${plan.confirmedAt}`, "Secondary"));
+    body.push(
+      paragraph(`사용자 검토 확인 원본: ${plan.confirmedAt}`, "Secondary", "<w:keepNext/>"),
+    );
   body.push(
     paragraph(
       "평가항목과 제출 양식은 신청 시점의 벤처기업확인기관 안내를 확인해 주세요.",
       "Secondary",
+      "<w:keepNext/>",
     ),
   );
   body.push(
@@ -293,6 +450,7 @@ export async function exportPlanDocx(record: StudioCase, plan: BusinessPlan, cur
     ${style("SourceId", 18, '<w:spacing w:after="200" w:line="280" w:lineRule="auto"/>', '<w:color w:val="526273"/>')}
     ${style("SectionNote", 20, `${keep}<w:spacing w:after="100"/>`, '<w:color w:val="6B4A20"/>')}
     ${style("FindingTitle", 23, `${keep}<w:spacing w:before="220" w:after="100"/>`, "<w:b/>")}
+    ${style("ReviewLabel", 21, `${keep}<w:spacing w:before="140" w:after="50"/>`, "<w:b/>")}
     ${style("ReviewText", 22, '<w:spacing w:after="100" w:line="320" w:lineRule="auto"/>')}
     ${style("EvidenceTitle", 22, `${keep}<w:spacing w:before="160" w:after="80"/>`, "<w:b/>")}
     ${style("Quote", 20, '<w:ind w:left="240"/><w:spacing w:after="80" w:line="320" w:lineRule="auto"/>')}

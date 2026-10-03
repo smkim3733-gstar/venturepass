@@ -255,3 +255,168 @@ describe("보고서용 다운로드 서식", () => {
     ).toContain("작성일: 과거 입력 시각");
   });
 });
+
+describe("모든 Word 원고의 대표·담당자 확인사항", () => {
+  async function appendix(
+    record: ReturnType<typeof fixture>["record"],
+    plan: ReturnType<typeof fixture>["plan"],
+  ) {
+    const buffer = await exportPlanDocx(record, plan, false);
+    const text = (await mammoth.extractRawText({ buffer })).value;
+    return text.slice(text.lastIndexOf("부록 1"), text.lastIndexOf("부록 2"));
+  }
+  it("구체 의견을 우선순위와 본문·조치·이유·원래 자료로 표시하고 원래 번호를 보존한다", async () => {
+    const { record, plan } = fixture();
+    plan.review.push({
+      ...plan.review[0],
+      id: "urgent",
+      severity: "error",
+      message: "사업 범위를 먼저 확정해야 합니다.",
+      action: "대상 제품과 사업을 확인하세요.",
+      sourceIds: ["profile-company", "missing-original"],
+    });
+    const text = await appendix(record, plan);
+    expect(text).toContain("대표·담당자 확인사항");
+    expect(text).toContain("확인 1 · 우선 확인");
+    expect(text).toContain("원래 의견 2 · 원래 분류: 오류");
+    expect(text).toContain("본문 02 기술 개발 계획");
+    expect(text.indexOf("대상 제품과 사업을 확인하세요.")).toBeLessThan(
+      text.indexOf("사업 범위를 먼저 확정해야 합니다."),
+    );
+    expect(text.indexOf("사업 범위를 먼저 확정해야 합니다.")).toBeLessThan(
+      text.indexOf("시험 결과를 확인해 주세요."),
+    );
+    expect(text).toContain("기업 기본정보 · 출처 ID: profile-company");
+    expect(text).toContain(
+      "삭제되었거나 현재 자료에서 찾을 수 없는 출처 · 출처 ID: missing-original",
+    );
+    expect(text).toContain("실제 오류가 확정되었거나 사람의 검토가 완료되었다는 뜻은 아닙니다.");
+    for (const label of ["해당 본문", "확인할 내용", "확인 이유 · 원래 검토 의견", "확인할 자료"])
+      expect(text).toContain(label);
+  });
+  it("동일한 확인 안내만 묶고 서로 다른 본문·원래 번호와 모든 개별 의견을 남긴다", async () => {
+    const { record, plan } = fixture();
+    plan.content.sections.push({
+      ...structuredClone(plan.content.sections[0]),
+      key: "team",
+      title: "운영 인력",
+    });
+    const common = {
+      ...plan.review[0],
+      category: "confirmation",
+      message: "추가 확인 또는 자료 보강이 필요한 항목입니다.",
+      action: "담당자에게 확인해 주세요.",
+    };
+    plan.review = [
+      common,
+      { ...common, id: "second", sectionKey: "team" },
+      {
+        ...common,
+        id: "detail-a",
+        category: "semantic",
+        message: "개별 의견은 내용이 같아도 보존합니다.",
+      },
+      {
+        ...common,
+        id: "detail-b",
+        category: "semantic",
+        message: "개별 의견은 내용이 같아도 보존합니다.",
+      },
+    ];
+    const before = JSON.stringify(record);
+    const text = await appendix(record, plan);
+    expect(text).toContain("공통 안내 1묶음(2건)");
+    expect(text.match(/추가 확인 또는 자료 보강이 필요한 항목입니다\./g)).toHaveLength(1);
+    expect(text.match(/개별 의견은 내용이 같아도 보존합니다\./g)).toHaveLength(2);
+    expect(text).toContain("의견 1: 본문 02 기술 개발 계획");
+    expect(text).toContain("의견 2: 본문 03 운영 인력");
+    expect(text).toContain("원래 의견 1, 2");
+    expect(JSON.stringify(record)).toBe(before);
+  });
+  it("안내 문구가 같아도 조치·중요도·자료 연결이 다르면 합치지 않는다", async () => {
+    const { record, plan } = fixture();
+    const common = { ...plan.review[0], category: "confirmation" };
+    plan.review = [
+      common,
+      { ...common, id: "action", action: "별도 계약서 확인" },
+      { ...common, id: "priority", severity: "error" },
+      { ...common, id: "source", sourceIds: ["profile"] },
+    ];
+    const text = await appendix(record, plan);
+    expect(text).toContain("공통 안내 4묶음(4건)");
+    expect(text).toContain("별도 계약서 확인");
+    expect(text).toContain("공통 확인 3 · 우선 확인");
+    for (let n = 1; n <= 4; n++) expect(text).toContain(`원래 의견 ${n} ·`);
+  });
+  it("수치 확인과 검토 범위를 구분하고 미지정·과거 항목·삭제 자료를 추측하지 않는다", async () => {
+    const { record, plan } = fixture();
+    plan.review = [
+      {
+        ...plan.review[0],
+        category: "numeric-evidence",
+        message: "인용과 대조할 수치: 3.14%, 1,000,000원",
+      },
+      {
+        ...plan.review[0],
+        id: "scope",
+        category: "review-scope",
+        severity: "info",
+        message: "검토 범위를 확인하세요.",
+        sectionKey: null,
+      },
+      { ...plan.review[0], id: "unknown", sectionKey: "old-section<xml>" },
+      { ...plan.review[0], id: "summary", sectionKey: "summary" },
+    ];
+    const text = await appendix(record, plan);
+    expect(text).toContain("숫자 자체가 틀렸다고 단정하지 마세요.");
+    expect(text).toContain("인용과 대조할 수치: 3.14%, 1,000,000원");
+    expect(text).toContain("이 의견을 입증하는지는 원본과 대조해야 합니다.");
+    expect(text).toContain("[1] 삭제되었거나 현재 자료에서 찾을 수 없는 출처 · 페이지 2");
+    expect(text).toContain("문서 전반 · 대상 항목이 지정되지 않았습니다.");
+    expect(text).toContain("현재 원고에서 찾을 수 없는 항목: old-section<xml>");
+    expect(text).toContain("본문 01 사업 개요");
+    expect(text).toContain("연결된 자료가 지정되지 않았습니다.");
+    expect(text.indexOf("범위 안내 1 · 참고")).toBeGreaterThan(text.indexOf("원래 의견 4 ·"));
+  });
+  it("동일 key의 복수 본문도 모두 안내하고 없는 기본 항목은 한국어 이름으로 표시한다", async () => {
+    const { record, plan } = fixture();
+    plan.content.sections.push({
+      ...structuredClone(plan.content.sections[0]),
+      title: "개발 단계",
+    });
+    plan.review.push({
+      ...plan.review[0],
+      id: "missing",
+      category: "missing-section",
+      sectionKey: "team",
+    });
+    const text = await appendix(record, plan);
+    expect(text).toContain("본문 02 기술 개발 계획 / 본문 03 개발 단계");
+    expect(text).toContain("현재 원고에서 찾을 수 없는 항목:");
+    expect(text).not.toContain("현재 원고에서 찾을 수 없는 항목: team");
+  });
+  it("회사·선택 버전과 무관하게 기존 Word 내려받기 경로에서 공통 서식을 적용한다", async () => {
+    const { record } = fixture();
+    record.profile.companyName = "다른 가상 회사";
+    getStore.mockReturnValue({ get: () => record, isPlanCurrent: () => true });
+    const before = JSON.stringify(record);
+    for (const plan of record.plans) {
+      const response = await GET(
+        new Request(
+          `http://127.0.0.1:3000/api/studio/cases/${record.id}/export?planId=${plan.id}&format=docx`,
+        ),
+        { params: Promise.resolve({ caseId: record.id }) },
+      );
+      expect(response.status).toBe(200);
+      const text = (
+        await mammoth.extractRawText({ buffer: Buffer.from(await response.arrayBuffer()) })
+      ).value;
+      expect(text).toContain(`저장 원고 v${plan.version}`);
+      expect(text).toContain("다른 가상 회사");
+      expect(text).toContain("대표·담당자 확인사항");
+      expect(text).toContain("해당 본문");
+      expect(text).not.toContain("사전 검토 결과");
+    }
+    expect(JSON.stringify(record)).toBe(before);
+  });
+});
