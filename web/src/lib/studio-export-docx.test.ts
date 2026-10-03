@@ -158,3 +158,100 @@ describe("읽기 쉬운 Word 원고", () => {
     expect(locked).not.toContain("format=docx");
   });
 });
+
+describe("보고서용 다운로드 서식", () => {
+  it("표지와 목차를 별도 쪽으로 두고 본문 근거 번호를 부록 인용에 연결한다", async () => {
+    const { record, plan } = fixture();
+    plan.content.sections.push({
+      key: "market",
+      title: "고객 검증",
+      content: "현재는 면담 계획입니다.",
+      needsConfirmation: false,
+      evidence: [
+        { sourceId: "profile-company", locator: "입력 항목", quote: "고객\t조건\n확인 예정" },
+      ],
+    });
+    const zip = await JSZip.loadAsync(await exportPlanDocx(record, plan, true));
+    const document = await zip.file("word/document.xml")!.async("string");
+    const tocAnchors = [...document.matchAll(/w:anchor="(section_\d+)"/g)].map((m) => m[1]);
+    const bookmarks = [...document.matchAll(/w:name="(section_\d+)"/g)].map((m) => m[1]);
+    expect(tocAnchors).toEqual(bookmarks);
+    expect(new Set(bookmarks).size).toBe(8);
+    expect(document.match(/<w:pageBreakBefore\/>/g)).toHaveLength(3);
+    expect(document).toContain("<w:titlePg/>");
+    expect(document).toContain("<w:tblHeader/>");
+    expect(document).toContain('<w:gridCol w:w="850"/>');
+    expect(document).not.toContain("w:trHeight");
+    const text = (
+      await mammoth.extractRawText({ buffer: await exportPlanDocx(record, plan, true) })
+    ).value;
+    expect(text).toContain("연결 근거: [1]");
+    expect(text).toContain("연결 근거: [2]");
+    expect(text.indexOf("현재는 면담 계획입니다.")).toBeLessThan(
+      text.indexOf("일부 조건에서 시험했습니다."),
+    );
+    expect(text).toContain("기업 기본정보");
+    expect(text.replace(/\s+/g, " ")).toContain("고객 조건 확인 예정");
+  });
+
+  it("입력된 #·XML·관계 문자열은 목차나 명령이 아닌 일반 원문으로 보존한다", async () => {
+    const { record, plan } = fixture();
+    plan.content.summary = "# 임의 제목\n## 목차 조작\n<w:sectPr/>\nDDE https://example.com";
+    plan.content.sections[0].evidence[0].quote = '<w:hyperlink r:id="evil">원문</w:hyperlink>';
+    const buffer = await exportPlanDocx(record, plan, true);
+    const zip = await JSZip.loadAsync(buffer);
+    const document = await zip.file("word/document.xml")!.async("string");
+    const text = (await mammoth.extractRawText({ buffer })).value;
+    expect(text).toContain("# 임의 제목");
+    expect(text).toContain("## 목차 조작");
+    expect(text).toContain('<w:hyperlink r:id="evil">원문</w:hyperlink>');
+    expect(document.match(/<w:bookmarkStart /g)).toHaveLength(7);
+    expect(document).not.toContain('r:id="evil"');
+    expect(document).not.toContain("<w:fldSimple");
+  });
+
+  it("긴 원고·과제·인용의 모든 문장과 수치를 보존하고 표를 고정 높이로 자르지 않는다", async () => {
+    const { record, plan } = fixture();
+    const sentences = Array.from(
+      { length: 80 },
+      (_, i) => `계획 ${i + 1}의 측정값은 3.14이며 금액은 1,000,000원입니다.`,
+    ).join(" ");
+    plan.content.sections[0].content = sentences;
+    plan.content.actionItems = ["조건을 확인합니다. ".repeat(220)];
+    plan.content.sections[0].evidence[0].quote = "긴 인용 원문을 보존합니다. ".repeat(80);
+    const before = JSON.stringify(record);
+    const buffer = await exportPlanDocx(record, plan, false);
+    const zip = await JSZip.loadAsync(buffer);
+    const document = await zip.file("word/document.xml")!.async("string");
+    const text = (await mammoth.extractRawText({ buffer })).value.replace(/\s+/g, " ");
+    expect(text).toContain(sentences);
+    expect(text).toContain(plan.content.actionItems[0].trim());
+    expect(text).toContain(plan.content.sections[0].evidence[0].quote.trim());
+    expect(document).not.toContain("<w:tbl>");
+    expect(text).toContain("과제 1");
+    expect(document).not.toContain("w:trHeight");
+    expect(document).not.toContain("<w:cantSplit/>");
+    expect(JSON.stringify(record)).toBe(before);
+    expect(await exportPlanDocx(record, plan, false)).toEqual(buffer);
+  });
+
+  it("문서 상태와 빈 목록을 구분하며 한국시간과 원래 기록 시각을 함께 보존한다", async () => {
+    const { record, plan } = fixture();
+    plan.content.sections = [];
+    plan.content.actionItems = [];
+    plan.content.interviewQuestions = [];
+    plan.review = [];
+    const buffer = await exportPlanDocx(record, plan, true);
+    const text = (await mammoth.extractRawText({ buffer })).value;
+    expect(text).toContain("2026.10.04 09:00 (한국시간)");
+    expect(text).toContain(`작성일 원본: ${plan.generatedAt}`);
+    expect(text).toContain(`사용자 검토 확인 원본: ${plan.confirmedAt}`);
+    expect(text).toContain("등록된 추가 준비 과제가 없습니다.");
+    expect(text).toContain("연결된 근거가 없습니다.");
+    expect(text).toContain("사실 확인과 최종 검토는 별도로 필요합니다.");
+    plan.generatedAt = "과거 입력 시각";
+    expect(
+      (await mammoth.extractRawText({ buffer: await exportPlanDocx(record, plan, false) })).value,
+    ).toContain("작성일: 과거 입력 시각");
+  });
+});
