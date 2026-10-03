@@ -218,6 +218,9 @@ describe("일반 작업 화면의 실제 상태별 렌더링", () => {
     expect(navigation?.match(/aria-current="step"/g)).toHaveLength(1);
     expect(buttonLabels(html)).toContain("자료 없이 회사 설명부터 시작");
     expect(html).not.toContain("신청 준비 완료");
+    expect(html).toContain("저장된 자료 0개");
+    expect(html).toContain("아직 저장된 자료가 없습니다");
+    expect(html).toContain("워드(DOCX)");
   });
 
   it("이전 원고가 있어도 새 분석이 선택 대기면 새 신청 주제를 보여 준다", () => {

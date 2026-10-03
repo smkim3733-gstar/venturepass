@@ -10,12 +10,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import {
-  caseSchema,
-  type SourceDocument,
-  type StudioCase,
-  type StudioStatus,
-} from "@/lib/studio-schema";
+import { type SourceDocument, type StudioCase, type StudioStatus } from "@/lib/studio-schema";
 import {
   deriveGuidedFlow,
   type GuidedDestination,
@@ -37,6 +32,7 @@ import { EvidenceList } from "./evidence";
 import { GuidedRepairSummary } from "./guided-repair-summary";
 import { guidedQuestions, type GuidedQuestion } from "./guided-questions";
 import { GuidedSourceReview } from "./guided-source-review";
+import { guidedUploadResult } from "./guided-upload-result";
 import { PreparedPackagesPanel } from "./prepared-packages-panel";
 import { GuidedPlanEvidence } from "./guided-plan-evidence";
 import { GuidedFollowupStatus } from "./guided-followup-status";
@@ -57,6 +53,20 @@ type Props = {
   mutate: (mutation: StudioMutation) => Promise<StudioCase | null>;
   onDetails: (destination: GuidedDestination, target?: GuidedWorkflowTarget) => void;
   onSettings: () => void;
+};
+
+type UploadItem = {
+  name: string;
+  state: "waiting" | "uploading" | "saved" | "failed" | "unknown" | "not-sent";
+  detail: string;
+};
+const uploadLabels: Record<UploadItem["state"], string> = {
+  waiting: "전송 대기",
+  uploading: "저장 중",
+  saved: "저장 완료",
+  failed: "저장 실패",
+  unknown: "저장 여부 확인 필요",
+  "not-sent": "전송하지 않음",
 };
 
 const steps: { id: GuidedStep; label: string }[] = [
@@ -87,6 +97,7 @@ export function GuidedWorkspace({
   const [descriptionTouched, setDescriptionTouched] = useState(false);
   const [error, setError] = useState("");
   const [unsettled, setUnsettled] = useState(false);
+  const [uploads, setUploads] = useState<UploadItem[]>([]);
   const [approval, setApproval] = useState<GuidedPreparationApproval | null>(null);
   const [restartRunId, setRestartRunId] = useState<string | null>(null);
   const [restartAcknowledged, setRestartAcknowledged] = useState(false);
@@ -206,14 +217,6 @@ export function GuidedWorkspace({
     // Drafts stay in this mounted component when users explore another stage.
     setError("");
   }
-  function accept(value: unknown, base: StudioCase) {
-    const parsed = caseSchema.safeParse(value);
-    if (!parsed.success || parsed.data.id !== base.id || parsed.data.revision < base.revision)
-      throw new Error("저장한 내용이 현재 회사와 일치하는지 확인하지 못했습니다.");
-    onCompany(parsed.data);
-    return parsed.data;
-  }
-
   async function readPreparation(base: StudioCase, showApproval: boolean) {
     const raw = await studioFetch<unknown>(`/api/studio/cases/${base.id}/guided-preparation`);
     const snapshot = guidedPreparationSnapshot(raw, base);
@@ -372,6 +375,8 @@ export function GuidedWorkspace({
     const files = Array.from(event.target.files ?? []);
     event.target.value = "";
     if (!files.length || inFlight.current || locked) return;
+    setStep("materials");
+    setUploads(files.map((file) => ({ name: file.name, state: "not-sent", detail: "" })));
     if (
       files.length + company.sources.length > 40 ||
       files.some((file) => !file.size || file.size > 12 * 1024 * 1024)
@@ -386,8 +391,14 @@ export function GuidedWorkspace({
     let current = company;
     let uploaded = 0;
     let uploadUncertain = false;
+    let activeUpload = 0;
+    setUploads(files.map((file) => ({ name: file.name, state: "waiting", detail: "" })));
+    const updateUpload = (index: number, change: Partial<UploadItem>) =>
+      setUploads((items) => items.map((item, i) => (i === index ? { ...item, ...change } : item)));
     try {
-      for (const file of files) {
+      for (const [index, file] of files.entries()) {
+        activeUpload = index;
+        updateUpload(index, { state: "uploading" });
         onBusyChange(`자료를 읽고 보관하는 중입니다 · ${uploaded + 1}/${files.length}`);
         const originalOnly = /\.(png|jpe?g|webp)$/i.test(file.name);
         const form = new FormData();
@@ -427,28 +438,39 @@ export function GuidedWorkspace({
             typeof body.error === "string" ? body.error : "자료 등록 결과를 확인하지 못했습니다.",
           );
         }
-        current = accept(raw, current);
+        const result = guidedUploadResult(raw, current, file.name);
+        if (!result) throw new Error("저장된 파일 정보를 확인하지 못했습니다.");
+        current = result.company;
+        onCompany(current);
         uploadUncertain = false;
         uploaded += 1;
+        updateUpload(index, {
+          state: "saved",
+          detail:
+            result.source.extraction === "pending"
+              ? "원본 보관 · 본문 확인 필요"
+              : "본문 추출 · 사실 확인은 별도",
+        });
       }
-      setStep(
-        current.sources.some((source) => source.extraction !== "pending" && source.text.trim())
-          ? "plan"
-          : "materials",
-      );
-      toast.success(`자료 ${uploaded}개를 보관했습니다.`);
-      if (
-        status?.aiConfigured &&
-        current.sources.some((source) => source.extraction !== "pending" && source.text.trim())
-      ) {
-        onBusyChange("AI가 사용할 자료 범위를 준비하는 중입니다");
-        await readPreparation(current, true);
-      }
+      toast.success(`자료 ${uploaded}개를 보관했습니다. 아래 목록에서 확인해 주세요.`);
     } catch (caught) {
+      if (mounted.current) {
+        const detail =
+          caught instanceof Error ? caught.message : "자료 등록 상태를 확인하지 못했습니다.";
+        setUploads((items) =>
+          items.map((item, index) =>
+            index === activeUpload
+              ? { ...item, state: uploadUncertain ? "unknown" : "failed", detail }
+              : item.state === "waiting"
+                ? { ...item, state: "not-sent" }
+                : item,
+          ),
+        );
+      }
       if (mounted.current && uploadUncertain) setUnsettled(true);
       if (mounted.current)
         setError(
-          `${uploaded ? `${uploaded}개 자료는 보관했습니다. ` : ""}${caught instanceof Error ? caught.message : "자료 등록 상태를 확인하지 못했습니다."} 남은 파일은 자동으로 다시 보내지 않습니다. 자료 목록을 확인해 주세요.`,
+          `선택 ${files.length}개 중 ${uploaded}개 저장을 확인했습니다. ${files[activeUpload].name}: ${caught instanceof Error ? caught.message : "자료 등록 상태를 확인하지 못했습니다."} 남은 파일은 전송하지 않았습니다. 아래 파일별 결과를 확인해 주세요.`,
         );
     } finally {
       inFlight.current = false;
@@ -615,6 +637,31 @@ export function GuidedWorkspace({
           {error}
         </div>
       )}
+      {uploads.length > 0 && step === "materials" && !sourceReview && !packagePlanId && (
+        <section className={styles.sheet} aria-label="이번 업로드 결과">
+          <h3 className={styles.subheading}>이번에 선택한 자료 {uploads.length}개</h3>
+          <p role="status" className={styles.helper}>
+            저장 완료 {uploads.filter((item) => item.state === "saved").length}개 · 저장 실패{" "}
+            {uploads.filter((item) => item.state === "failed").length}개 · 확인 필요{" "}
+            {uploads.filter((item) => item.state === "unknown").length}개 · 전송하지 않음{" "}
+            {uploads.filter((item) => item.state === "not-sent").length}개
+          </p>
+          <ul className={styles.files}>
+            {uploads.map((item, index) => (
+              <li className={styles.file} key={index}>
+                <span>
+                  {index + 1}. {item.name}
+                </span>
+                <strong>{uploadLabels[item.state]}</strong>
+                {item.detail && <p className={styles.uploadDetail}>{item.detail}</p>}
+              </li>
+            ))}
+          </ul>
+          <p className={styles.helper}>
+            이번 선택의 결과입니다. 새로고침 후에는 아래 저장된 자료 목록에서 확인할 수 있습니다.
+          </p>
+        </section>
+      )}
       {packagePlanId ? (
         <PreparedPackagesPanel
           company={company}
@@ -721,7 +768,8 @@ export function GuidedWorkspace({
                 <FolderUp aria-hidden="true" className={styles.uploadIcon} />
                 <h3 className={styles.subheading}>사업자등록증 · 회사소개서 · 재무자료 등</h3>
                 <p className={styles.helper}>
-                  여러 파일을 함께 선택할 수 있습니다. 파일당 12MB까지 지원합니다.
+                  PDF·워드(DOCX)·엑셀·이미지 등을 여러 개 선택할 수 있습니다. 파일당 12MB, 회사별
+                  40개까지 지원합니다. 이전 워드 형식(DOC)은 DOCX 또는 PDF로 저장해 주세요.
                 </p>
                 {
                   <PrimaryAction disabled={locked} onClick={() => fileInput.current?.click()}>
@@ -753,33 +801,49 @@ export function GuidedWorkspace({
               <p className={styles.helper}>
                 이 PC에 보관합니다. 외부 AI로 보낼 자료는 별도로 확인받습니다.
               </p>
-              {company.sources.length > 0 && (
-                <details
-                  className={styles.details}
-                  open={company.sources.some((source) => source.extraction === "pending")}
-                >
-                  <summary>올려 둔 자료 {company.sources.length}개</summary>
-                  <ul className={styles.files}>
-                    {company.sources.map((source) => (
-                      <li className={styles.file} key={source.id}>
-                        <span>{source.name}</span>
-                        <span className={styles.helper}>
-                          {source.extraction === "pending"
-                            ? "원본 보관 · 본문 확인 필요"
-                            : "본문 추출 · 사실 확인은 별도"}
-                        </span>
-                        <button
-                          type="button"
+              <section className={styles.sheet} aria-label="저장된 자료 목록">
+                <h3 className={styles.subheading}>저장된 자료 {company.sources.length}개</h3>
+                {!company.sources.length && (
+                  <p className={styles.helper}>
+                    아직 저장된 자료가 없습니다. 파일 선택만으로 저장되지는 않습니다.
+                  </p>
+                )}
+                <ul className={styles.files}>
+                  {company.sources.map((source) => (
+                    <li className={styles.file} key={source.id}>
+                      <span>{source.name}</span>
+                      <span className={styles.helper}>
+                        {source.extraction === "pending"
+                          ? "원본 보관 · 본문 확인 필요"
+                          : "본문 추출 · 사실 확인은 별도"}
+                      </span>
+                      {source.originalName && (
+                        <a
                           className={styles.link}
-                          disabled={locked}
-                          onClick={() => setSourceReview(source)}
+                          href={`/api/studio/cases/${company.id}/sources/${source.id}`}
+                          download
                         >
-                          본문 확인·고치기<span className="sr-only"> · {source.name}</span>
-                        </button>
-                      </li>
-                    ))}
-                  </ul>
-                </details>
+                          원본 내려받기<span className="sr-only"> · {source.name}</span>
+                        </a>
+                      )}
+                      <button
+                        type="button"
+                        className={styles.link}
+                        disabled={locked}
+                        onClick={() => setSourceReview(source)}
+                      >
+                        본문 확인·고치기<span className="sr-only"> · {source.name}</span>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              </section>
+              {(hasSourceText || hasDescription) && (
+                <div className={styles.actions}>
+                  <PrimaryAction disabled={locked} onClick={() => goTo("plan")}>
+                    자료 확인 후 다음 단계
+                  </PrimaryAction>
+                </div>
               )}
             </>
           )}

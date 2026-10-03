@@ -39,7 +39,12 @@ type Extraction = {
 
 export class SourceExtractionError extends Error {
   readonly status = 422;
-  readonly code = "SOURCE_EXTRACTION";
+  constructor(
+    message: string,
+    readonly code = "SOURCE_EXTRACTION",
+  ) {
+    super(message);
+  }
 }
 
 function fail(message: string): never {
@@ -220,8 +225,14 @@ export async function extractSource(
         if (info.total > 120) fail("PDF는 120페이지 이하로 나눠 올려 주세요.");
         const result = await parser.getText();
         const emptyPages = result.pages.filter((page) => page.text.trim().length < 10).length;
-        if (result.pages.every((page) => !page.text.trim()))
+        if (result.pages.every((page) => !page.text.trim())) {
+          if (!allowAi)
+            throw new SourceExtractionError(
+              "PDF에 읽을 수 있는 본문이 없습니다. 원본을 보관한 뒤 내용을 직접 확인해 주세요.",
+              "NO_TEXT",
+            );
           return await readWithAi(file, buffer, "application/pdf", allowAi);
+        }
         const warnings = emptyPages
           ? [
               `텍스트가 적거나 없는 페이지 ${emptyPages}개가 있습니다. 스캔·도표의 내용은 원본을 확인하고 필요한 내용을 추가해 주세요.`,
