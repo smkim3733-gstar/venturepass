@@ -211,6 +211,23 @@ async function docx(index) {
   );
   return zip.generateAsync({ type: "nodebuffer" });
 }
+async function dragFiles(files) {
+  return page.evaluateHandle(
+    (items) => {
+      const transfer = new DataTransfer();
+      for (const item of items) {
+        const bytes = Uint8Array.from(atob(item.base64), (character) => character.charCodeAt(0));
+        transfer.items.add(new File([bytes], item.name, { type: item.type }));
+      }
+      return transfer;
+    },
+    files.map((file) => ({
+      name: file.name,
+      type: file.mimeType,
+      base64: file.buffer.toString("base64"),
+    })),
+  );
+}
 const requests = [];
 let loseResponse = false;
 let releaseFirst;
@@ -282,16 +299,110 @@ try {
   const input = () => page.getByLabel("회사 자료 파일 선택", { exact: true });
   const receipt = () => page.getByRole("region", { name: "이번 업로드 결과", exact: true });
   const inventory = () => page.getByRole("region", { name: "저장된 자료 목록", exact: true });
-  await input().setInputFiles(files);
+  const dropZone = () => page.getByRole("region", { name: "자료 파일 끌어놓기", exact: true });
+  const transfer = await dragFiles(files);
+  const beforeDrag = JSON.stringify(await (await api("/api/studio/cases/" + caseId)).json());
+  const beforeUrl = page.url();
+  await dropZone().dispatchEvent("dragenter", { dataTransfer: transfer });
+  assert.equal(await dropZone().getAttribute("data-dragging"), "true");
+  await dropZone().getByRole("heading").dispatchEvent("dragenter", { dataTransfer: transfer });
+  await dropZone().getByRole("heading").dispatchEvent("dragleave", { dataTransfer: transfer });
+  assert.equal(
+    await dropZone().getAttribute("data-dragging"),
+    "true",
+    "Nested child must not clear highlight",
+  );
+  await dropZone().dispatchEvent("dragleave", { dataTransfer: transfer });
+  assert.equal(await dropZone().getAttribute("data-dragging"), "false");
+  const outsideCanceled = await page.evaluate((dataTransfer) => {
+    const event = new DragEvent("drop", { dataTransfer, bubbles: true, cancelable: true });
+    document.body.dispatchEvent(event);
+    return event.defaultPrevented;
+  }, transfer);
+  assert.equal(outsideCanceled, true);
+  assert.equal(page.url(), beforeUrl);
+  assert.equal(requests.length, 0);
+  const textDrag = await page.evaluateHandle(() => {
+    const data = new DataTransfer();
+    data.setData("text/uri-list", "https://example.invalid/do-not-upload");
+    return data;
+  });
+  await dropZone().dispatchEvent("drop", { dataTransfer: textDrag });
+  await textDrag.dispose();
+  const folder = await dragFiles([files[0]]);
+  await folder.evaluate((dataTransfer) => {
+    // Native DataTransferItem wrappers may be recreated on access. Model a folder
+    // only for the synchronous drop event, then restore the browser method.
+    const original = DataTransferItem.prototype.webkitGetAsEntry;
+    DataTransferItem.prototype.webkitGetAsEntry = () => ({ isDirectory: true });
+    try {
+      document
+        .querySelector('[aria-label="자료 파일 끌어놓기"]')
+        .dispatchEvent(new DragEvent("drop", { dataTransfer, bubbles: true, cancelable: true }));
+    } finally {
+      DataTransferItem.prototype.webkitGetAsEntry = original;
+    }
+  });
+  await folder.dispose();
+  assert.ok((await dropZone().innerText()).includes("폴더는 열어서"));
+  await input().setInputFiles([]);
+  assert.ok((await dropZone().innerText()).includes("파일을 이곳에 끌어다 놓으세요"));
+  assert.equal(await receipt().count(), 0);
+  assert.equal(requests.length, 0);
+  assert.equal(JSON.stringify(await (await api("/api/studio/cases/" + caseId)).json()), beforeDrag);
+  record(
+    "drag hover survives nested children; outside files, URLs and folders do not navigate or store data",
+  );
+  const oversized = await page.evaluateHandle(() => {
+    const data = new DataTransfer();
+    data.items.add(
+      new File([new Uint8Array(12 * 1024 * 1024 + 1)], "초과크기.pdf", { type: "application/pdf" }),
+    );
+    return data;
+  });
+  await dropZone().dispatchEvent("drop", { dataTransfer: oversized });
+  await oversized.dispose();
+  await page.getByRole("alert").filter({ hasText: "파일당 12MB" }).waitFor();
+  assert.equal(requests.length, 0);
+  assert.match(await receipt().getByRole("status").innerText(), /전송하지 않음 1개/);
+  record("oversized dropped file uses the existing preflight and sends nothing");
+  await dropZone().dispatchEvent("dragenter", { dataTransfer: transfer });
+  await dropZone().dispatchEvent("dragover", { dataTransfer: transfer });
+  await page.screenshot({ path: path.join(output, "drag-hover.png"), fullPage: true });
+  await dropZone().dispatchEvent("drop", { dataTransfer: transfer });
+  await transfer.dispose();
   await receipt().getByRole("heading", { name: "이번에 선택한 자료 16개" }).waitFor();
   assert.equal(await receipt().getByRole("listitem").count(), 16);
   assert.ok((await receipt().innerText()).includes("저장 중"));
   assert.ok((await receipt().innerText()).includes("전송 대기"));
+  assert.equal(await dropZone().count(), 0, "Existing busy view hides upload controls");
+  const extraDrop = await dragFiles([
+    {
+      name: "중복전송차단.txt",
+      mimeType: "text/plain",
+      buffer: Buffer.from("Must not be uploaded"),
+    },
+  ]);
+  const busyCanceled = await page.evaluate((dataTransfer) => {
+    const event = new DragEvent("drop", { dataTransfer, bubbles: true, cancelable: true });
+    document.body.dispatchEvent(event);
+    return event.defaultPrevented;
+  }, extraDrop);
+  await extraDrop.dispose();
+  assert.equal(busyCanceled, true);
+  assert.equal(page.url(), beforeUrl);
+  assert.equal(await receipt().getByRole("listitem").count(), 16);
+  assert.equal(requests.length, 1);
+  record(
+    "a second drop while a real upload is pending preserves the first batch and sends nothing",
+  );
   releaseFirst();
   await page
     .getByRole("heading", { name: "저장된 자료 16개", exact: true })
     .waitFor({ timeout: 45000 });
   assert.match(await receipt().getByRole("status").innerText(), /저장 완료 16개 · 저장 실패 0개/);
+  assert.equal(await dropZone().getAttribute("data-disabled"), "false");
+  assert.ok((await dropZone().innerText()).includes("파일을 이곳에 끌어다 놓으세요"));
   assert.equal(requests.length, 17, "16 files + exactly one known NO_TEXT original-only fallback");
   assert.equal(await inventory().getByRole("listitem").count(), 12);
   await inventory().getByRole("button", { name: "자료 더 보기 (4개 남음)", exact: true }).click();
@@ -318,7 +429,7 @@ try {
     assert.deepEqual(original, file.buffer);
   }
   record(
-    "16 mixed PDFs/DOCX saved with exact originals and separate pending-body status; stays on results",
+    "16 dragged PDFs/DOCX saved with exact originals and separate pending-body status; stays on results",
   );
   const downloadPromise = page.waitForEvent("download");
   await inventory()
@@ -398,12 +509,22 @@ try {
     await receipt().getByRole("status").innerText(),
     /저장 완료 0개 · 저장 실패 0개 · 확인 필요 1개 · 전송하지 않음 1개/,
   );
+  const unsettledDrop = await dragFiles([files[1]]);
+  const unsettledCanceled = await page.evaluate((dataTransfer) => {
+    const event = new DragEvent("drop", { dataTransfer, bubbles: true, cancelable: true });
+    document.body.dispatchEvent(event);
+    return event.defaultPrevented;
+  }, unsettledDrop);
+  await unsettledDrop.dispose();
+  assert.equal(unsettledCanceled, true);
+  assert.equal(page.url(), beforeUrl);
+  assert.equal(requests.length, beforeUnknown + 1);
   await page.getByRole("button", { name: "저장 상태 확인", exact: true }).click();
   await page.getByRole("heading", { name: "저장된 자료 18개", exact: true }).waitFor();
   assert.ok((await inventory().innerText()).includes("응답유실.pdf"));
   assert.equal(requests.length, beforeUnknown + 1, "No uncertain upload retry");
   record(
-    "response lost after actual storage is uncertain, then read-only reconciliation shows the original without retry",
+    "unsettled view blocks dropped files; read-only reconciliation recovers the stored original without retry",
   );
   await input().setInputFiles([
     { name: "위장.pdf", mimeType: "application/pdf", buffer: Buffer.from("not a PDF") },
@@ -423,9 +544,11 @@ try {
   await page.getByRole("alert").filter({ hasText: "과거형식.doc" }).waitFor();
   assert.match(await receipt().getByRole("status").innerText(), /저장 완료 0개 · 저장 실패 1개/);
   const beforeEmpty = requests.length;
-  await input().setInputFiles([
+  const emptyDrop = await dragFiles([
     { name: "빈파일.pdf", mimeType: "application/pdf", buffer: Buffer.alloc(0) },
   ]);
+  await dropZone().dispatchEvent("drop", { dataTransfer: emptyDrop });
+  await emptyDrop.dispose();
   await page.getByRole("alert").filter({ hasText: "내용이 있는 파일" }).waitFor();
   assert.match(await receipt().getByRole("status").innerText(), /전송하지 않음 1개/);
   assert.equal(requests.length, beforeEmpty);

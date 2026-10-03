@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, type ChangeEvent } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ArrowRight, FolderUp, LoaderCircle } from "lucide-react";
 import { toast } from "sonner";
 import {
@@ -32,6 +32,7 @@ import { EvidenceList } from "./evidence";
 import { GuidedRepairSummary } from "./guided-repair-summary";
 import { guidedQuestions, type GuidedQuestion } from "./guided-questions";
 import { GuidedSourceReview } from "./guided-source-review";
+import { GuidedFileDropZone, useFileDropNavigationGuard } from "./guided-file-drop-zone";
 import { guidedUploadResult } from "./guided-upload-result";
 import {
   AttachmentCard,
@@ -95,6 +96,7 @@ export function GuidedWorkspace({
   onDetails,
   onSettings,
 }: Props) {
+  useFileDropNavigationGuard();
   const [currentApproval, setCurrentApproval] = useState<GuidedPreparationApproval | null>(null);
   const today = useLocalDay();
   const flow = deriveGuidedFlow(company, { guidedApproval: currentApproval ?? undefined, today });
@@ -378,9 +380,7 @@ export function GuidedWorkspace({
     }
   }
 
-  async function uploadFiles(event: ChangeEvent<HTMLInputElement>) {
-    const files = Array.from(event.target.files ?? []);
-    event.target.value = "";
+  async function uploadFiles(files: File[]) {
     if (!files.length || inFlight.current || locked) return;
     setStep("materials");
     setUploads(
@@ -772,12 +772,15 @@ export function GuidedWorkspace({
             </>
           ) : (
             <>
-              <GuidedMaterials company={company} locked={locked} onReview={setSourceReview} />
               {title(
                 company.sources.length ? "필요한 자료만 추가해 주세요" : "회사 자료만 올려 주세요",
                 "가진 자료부터 보관하고, AI가 사업계획서를 준비할 수 있도록 내용을 정리합니다.",
               )}
-              <section className={`${styles.sheet} ${styles.upload}`}>
+              <GuidedFileDropZone
+                className={`${styles.sheet} ${styles.upload}`}
+                disabled={locked}
+                onFiles={(files) => void uploadFiles(files)}
+              >
                 <FolderUp aria-hidden="true" className={styles.uploadIcon} />
                 <h3 className={styles.subheading}>사업자등록증 · 회사소개서 · 재무자료 등</h3>
                 <p className={styles.helper}>
@@ -796,10 +799,15 @@ export function GuidedWorkspace({
                   className="sr-only"
                   aria-label="회사 자료 파일 선택"
                   accept=".pdf,.docx,.xlsx,.csv,.txt,.md,.png,.jpg,.jpeg,.webp"
-                  onChange={(event) => void uploadFiles(event)}
+                  onChange={(event) => {
+                    const files = Array.from(event.currentTarget.files ?? []);
+                    event.currentTarget.value = "";
+                    void uploadFiles(files);
+                  }}
                   disabled={locked}
                 />
-              </section>
+              </GuidedFileDropZone>
+              <GuidedMaterials company={company} locked={locked} onReview={setSourceReview} />
               <div className={styles.support}>
                 <button
                   type="button"
