@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { BadgeCheck, Copy, Download, FileCheck2, Save, Sparkles } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -10,6 +10,7 @@ import { Textarea } from "@/components/ui/textarea";
 import type { PlanContent, StudioCase } from "@/lib/studio-schema";
 import { currentCandidateSelection } from "@/lib/studio-candidate-selection-types";
 import { cn } from "@/lib/utils";
+import type { PlanLanguageSuggestion } from "@/lib/studio-plan-editorial";
 import {
   EmptyPanel,
   ModeBadge,
@@ -95,6 +96,8 @@ export function PlanEditor({
   const [sectionKey, setSectionKey] = useState(
     initialTarget ? initialTarget.sectionKey : plan?.content.sections[0]?.key || "",
   );
+  const pendingLanguageFocus = useRef<PlanLanguageSuggestion | null>(null);
+  const [languageFocusRequest, setLanguageFocusRequest] = useState(0);
   const [reviewDecisionDirty, setReviewDecisionDirty] = useState(false);
   const [numericDirty, setNumericDirty] = useState(false);
   const [claimDirty, setClaimDirty] = useState(false);
@@ -111,6 +114,27 @@ export function PlanEditor({
       if (parent instanceof HTMLDetailsElement) parent.open = true;
     target.scrollIntoView({ block: "start" });
   }, [initialTarget]);
+  useEffect(() => {
+    const target = pendingLanguageFocus.current;
+    pendingLanguageFocus.current = null;
+    if (!target) return;
+    const field = document.getElementById(target.fieldId);
+    if (
+      !(field instanceof HTMLInputElement || field instanceof HTMLTextAreaElement) ||
+      field.disabled
+    )
+      return;
+    for (let parent = field.parentElement; parent; parent = parent.parentElement)
+      if (parent instanceof HTMLDetailsElement) parent.open = true;
+    field.focus({ preventScroll: true });
+    field.scrollIntoView({ block: "center" });
+  }, [languageFocusRequest, sectionKey]);
+  function locateLanguageSuggestion(target: PlanLanguageSuggestion) {
+    if (supportingEditDirty) return;
+    pendingLanguageFocus.current = target;
+    if (target.sectionKey !== null) setSectionKey(target.sectionKey);
+    setLanguageFocusRequest((previous) => previous + 1);
+  }
   const section = content?.sections.find((item) => item.key === sectionKey);
   function selectVersion(id: string) {
     if (supportingEditDirty) {
@@ -121,18 +145,19 @@ export function PlanEditor({
     const matches = company.plans.filter((item) => item.id === id);
     const selected = matches.length === 1 ? matches[0] : undefined;
     if (!selected) return;
+    pendingLanguageFocus.current = null;
     setPlanId(id);
     setContent(structuredClone(selected.content));
     setSectionKey(selected.content.sections[0]?.key || "");
   }
-  function changeSection(value: string) {
+  function changeSection(value: string, field: "title" | "content" = "content") {
     if (supportingEditDirty) return;
     setContent((current) =>
       current
         ? {
             ...current,
             sections: current.sections.map((item) =>
-              item.key === sectionKey ? { ...item, content: value, needsConfirmation: true } : item,
+              item.key === sectionKey ? { ...item, [field]: value, needsConfirmation: true } : item,
             ),
           }
         : current,
@@ -405,6 +430,16 @@ export function PlanEditor({
                           본문 복사
                         </Button>
                       </div>
+                      <div className="mb-3 space-y-2">
+                        <Label htmlFor="plan-section-title">항목 제목</Label>
+                        <Input
+                          id="plan-section-title"
+                          disabled={supportingEditDirty}
+                          value={section.title}
+                          maxLength={200}
+                          onChange={(event) => changeSection(event.target.value, "title")}
+                        />
+                      </div>
                       <Textarea
                         id="plan-section"
                         disabled={supportingEditDirty}
@@ -441,12 +476,45 @@ export function PlanEditor({
                 </div>
               </div>
               <div className="grid gap-4 xl:grid-cols-2">
-                <ListBox title="보강할 자료와 실행 과제" items={content.actionItems} />
-                <ListBox title="실사 예상 질문" items={content.interviewQuestions} />
+                <ListBox
+                  title="보강할 자료와 실행 과제"
+                  items={content.actionItems}
+                  idPrefix="plan-action-item"
+                  itemLabel="보강 과제"
+                  disabled={supportingEditDirty}
+                  onChange={(index, value) =>
+                    setContent({
+                      ...content,
+                      actionItems: content.actionItems.map((item, i) =>
+                        i === index ? value : item,
+                      ),
+                    })
+                  }
+                />
+                <ListBox
+                  title="실사 준비 질문"
+                  items={content.interviewQuestions}
+                  idPrefix="plan-interview-question"
+                  itemLabel="실사 준비 질문"
+                  disabled={supportingEditDirty}
+                  onChange={(index, value) =>
+                    setContent({
+                      ...content,
+                      interviewQuestions: content.interviewQuestions.map((item, i) =>
+                        i === index ? value : item,
+                      ),
+                    })
+                  }
+                />
               </div>
             </div>
             <aside className="min-w-0">
-              <PlanLanguagePanel content={content} onSection={setSectionKey} />
+              <PlanLanguagePanel
+                content={content}
+                onSection={setSectionKey}
+                onLocate={locateLanguageSuggestion}
+                editingDisabled={supportingEditDirty}
+              />
               <div className="mt-4">
                 <PlanReviewPanel plan={plan} onSection={setSectionKey} />
               </div>
@@ -517,7 +585,21 @@ export function PlanEditor({
     </div>
   );
 }
-function ListBox({ title, items }: { title: string; items: string[] }) {
+function ListBox({
+  title,
+  items,
+  idPrefix,
+  itemLabel,
+  disabled,
+  onChange,
+}: {
+  title: string;
+  items: string[];
+  idPrefix: string;
+  itemLabel: string;
+  disabled: boolean;
+  onChange: (index: number, value: string) => void;
+}) {
   return (
     <details className="rounded-xl border bg-white p-4">
       <summary className="cursor-pointer text-sm font-semibold">
@@ -525,7 +607,19 @@ function ListBox({ title, items }: { title: string; items: string[] }) {
       </summary>
       <ol className="mt-3 list-outside list-decimal space-y-2 pl-5 text-xs leading-6 text-muted-foreground">
         {items.map((item, index) => (
-          <li key={index}>{item}</li>
+          <li key={index}>
+            <Label htmlFor={`${idPrefix}-${index}`} className="sr-only">
+              {itemLabel} {index + 1}
+            </Label>
+            <Textarea
+              id={`${idPrefix}-${index}`}
+              disabled={disabled}
+              value={item}
+              maxLength={3000}
+              className="min-h-24 bg-white text-xs leading-6"
+              onChange={(event) => onChange(index, event.target.value)}
+            />
+          </li>
         ))}
       </ol>
     </details>

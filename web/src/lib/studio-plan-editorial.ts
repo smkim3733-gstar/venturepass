@@ -15,6 +15,7 @@ const statusLabels: Readonly<Record<string, string>> = {
 export type PlanLanguageSuggestion = {
   location: string;
   sectionKey: string | null;
+  fieldId: string;
   term: string;
   suggestion: string;
   count: number;
@@ -23,24 +24,36 @@ export type PlanLanguageSuggestion = {
 /** Advice about editable prose only. Never rewrites evidence, stored plans or approval bytes. */
 export function planLanguageSuggestions(content: PlanContent): PlanLanguageSuggestion[] {
   const fields = [
-    { location: "사업계획서 제목", sectionKey: null, text: content.title },
-    { location: "핵심 요약", sectionKey: null, text: content.summary },
+    { location: "사업계획서 제목", sectionKey: null, fieldId: "plan-title", text: content.title },
+    { location: "핵심 요약", sectionKey: null, fieldId: "plan-summary", text: content.summary },
     ...content.sections.flatMap((section) => [
-      { location: `${section.title} · 제목`, sectionKey: section.key, text: section.title },
-      { location: section.title, sectionKey: section.key, text: section.content },
+      {
+        location: `${section.title} · 제목`,
+        sectionKey: section.key,
+        fieldId: "plan-section-title",
+        text: section.title,
+      },
+      {
+        location: section.title,
+        sectionKey: section.key,
+        fieldId: "plan-section",
+        text: section.content,
+      },
     ]),
     ...content.actionItems.map((text, index) => ({
       location: `보강 과제 ${index + 1}`,
       sectionKey: null,
+      fieldId: `plan-action-item-${index}`,
       text,
     })),
     ...content.interviewQuestions.map((text, index) => ({
       location: `실사 준비 질문 ${index + 1}`,
       sectionKey: null,
+      fieldId: `plan-interview-question-${index}`,
       text,
     })),
   ];
-  return fields.flatMap(({ location, sectionKey, text }) => {
+  return fields.flatMap(({ location, sectionKey, fieldId, text }) => {
     const counts = new Map<string, number>();
     const terms =
       /(?<![a-zA-Z0-9_-])(?:documented|reported|planned|unverified|classification|current|evidence-needed|future-proposal|unknown)(?![a-zA-Z0-9_-])/gi;
@@ -51,6 +64,7 @@ export function planLanguageSuggestions(content: PlanContent): PlanLanguageSugge
     return [...counts].map(([term, count]) => ({
       location,
       sectionKey,
+      fieldId,
       term,
       suggestion: statusLabels[term],
       count,

@@ -47,6 +47,26 @@ describe("editorial panels", () => {
     corrected.sections[0].content = "담당자 설명";
     expect(render(corrected)).toContain("점검 대상 영어 표현이 없습니다.");
   });
+  it("offers field navigation for summary and body while locking it during supporting edits", () => {
+    const value = {
+      ...content,
+      actionItems: ["planned 비용"],
+      interviewQuestions: ["unknown 권리"],
+    };
+    const before = JSON.stringify(value);
+    const render = (editingDisabled: boolean) =>
+      renderToStaticMarkup(
+        createElement(PlanLanguagePanel, {
+          content: value,
+          onSection: () => {},
+          onLocate: () => {},
+          editingDisabled,
+        }),
+      );
+    expect(render(false).match(/편집 위치로 이동/g)).toHaveLength(4);
+    expect(render(true).match(/disabled=""/g)).toHaveLength(4);
+    expect(JSON.stringify(value)).toBe(before);
+  });
   it("shows one card for duplicates but preserves their original opinion numbers", () => {
     const plan: BusinessPlan = {
       id: "00000000-0000-4000-8000-000000000001",

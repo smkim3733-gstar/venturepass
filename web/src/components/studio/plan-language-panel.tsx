@@ -1,15 +1,19 @@
 "use client";
 
 import { Badge } from "@/components/ui/badge";
-import { planLanguageSuggestions } from "@/lib/studio-plan-editorial";
+import { planLanguageSuggestions, type PlanLanguageSuggestion } from "@/lib/studio-plan-editorial";
 import type { PlanContent } from "@/lib/studio-schema";
 
 export function PlanLanguagePanel({
   content,
   onSection,
+  onLocate,
+  editingDisabled = false,
 }: {
   content: PlanContent;
   onSection: (key: string) => void;
+  onLocate?: (suggestion: PlanLanguageSuggestion) => void;
+  editingDisabled?: boolean;
 }) {
   const suggestions = planLanguageSuggestions(content);
   return (
@@ -34,14 +38,25 @@ export function PlanLanguagePanel({
                 <code>{item.term}</code> · {item.count}곳
               </p>
               <p className="text-muted-foreground">표현 예: {item.suggestion}</p>
-              {item.sectionKey !== null && (
+              {onLocate ? (
                 <button
                   type="button"
-                  className="mt-1 font-semibold text-primary hover:underline"
-                  onClick={() => onSection(item.sectionKey!)}
+                  disabled={editingDisabled}
+                  className="mt-1 font-semibold text-primary hover:underline disabled:opacity-50"
+                  onClick={() => onLocate(item)}
                 >
-                  해당 항목 보기 →
+                  편집 위치로 이동 →
                 </button>
+              ) : (
+                item.sectionKey !== null && (
+                  <button
+                    type="button"
+                    className="mt-1 font-semibold text-primary hover:underline"
+                    onClick={() => onSection(item.sectionKey!)}
+                  >
+                    해당 항목 보기 →
+                  </button>
+                )
               )}
             </li>
           ))}

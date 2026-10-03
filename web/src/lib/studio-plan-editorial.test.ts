@@ -41,6 +41,17 @@ describe("local Korean prose advice", () => {
     plan.interviewQuestions = ["unverified 근거는?"];
     const result = planLanguageSuggestions(plan);
     expect(result).toHaveLength(9);
+    expect(result.map(({ term, fieldId, sectionKey }) => ({ term, fieldId, sectionKey }))).toEqual([
+      { term: "future-proposal", fieldId: "plan-title", sectionKey: null },
+      { term: "classification", fieldId: "plan-summary", sectionKey: null },
+      { term: "current", fieldId: "plan-summary", sectionKey: null },
+      { term: "unknown", fieldId: "plan-section-title", sectionKey: "solution" },
+      { term: "documented", fieldId: "plan-section", sectionKey: "solution" },
+      { term: "reported", fieldId: "plan-section", sectionKey: "solution" },
+      { term: "planned", fieldId: "plan-section", sectionKey: "solution" },
+      { term: "evidence-needed", fieldId: "plan-action-item-0", sectionKey: null },
+      { term: "unverified", fieldId: "plan-interview-question-0", sectionKey: null },
+    ]);
     expect(result.find((item) => item.term === "reported")).toMatchObject({
       location: "unknown",
       sectionKey: "solution",

@@ -312,17 +312,31 @@ describe("검토 의견 처리 API / 합성 SQLite", () => {
   });
   it("새 원고 버전은 과거 해결 판단을 상속하지 않는다", async () => {
     await save(request({ ...decision(), status: "resolved" }));
-    const original = company.plans[0];
+    const original = structuredClone(company.plans[0]);
+    const edited = {
+      ...original.content,
+      summary: "문서 기재와 담당자 설명을 구분한 새 버전",
+      actionItems: ["향후 계획의 비용 점검"],
+      interviewQuestions: ["근거가 확인되지 않은 권리는 무엇인가요?"],
+      sections: original.content.sections.map((section) => ({
+        ...section,
+        title: "확인할 항목",
+        needsConfirmation: true,
+      })),
+    };
     const response = await patch({
       action: "save-plan",
       revision: company.revision,
       planId: original.id,
-      content: { ...original.content, summary: "새 버전" },
+      content: edited,
     });
     expect(response.status).toBe(200);
     company = await response.json();
     expect(company.plans).toHaveLength(2);
     expect(company.plans[1].confirmedAt).toBeNull();
+    expect(company.plans[0]).toEqual(original);
+    expect(company.plans[1].content).toEqual(edited);
+    expect(company.plans[1].mode).toBe("manual");
     expect(company.planReviewDecisions.every((item) => item.planId === original.id)).toBe(true);
   });
   it.each(["review-first", "numeric-first"] as const)(
