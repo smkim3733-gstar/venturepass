@@ -16,7 +16,7 @@ import { join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { syncBuiltinESMExports } from "node:module";
 import { DatabaseSync } from "node:sqlite";
-import { readSafe, safePath, sha } from "./local-data-files.mjs";
+import { nativePaths, readSafe, safePath, sha } from "./local-data-files.mjs";
 import { inspectDatabase, openReadOnly } from "./local-data-store.mjs";
 import { verifyLocalData } from "./local-data.mjs";
 
@@ -78,6 +78,42 @@ test("hardlinked source and directory junctions are rejected before reading", (t
   symlinkSync(actual, alias, "junction");
   assert.throws(() => safePath(join(alias, "data")), { code: "UNSAFE_PATH" });
 });
+test(
+  "Windows native path inspection accepts Unicode filenames without interpreting their text",
+  { skip: process.platform !== "win32" },
+  (t) => {
+    const root = fixture(t);
+    const directory = join(root, "한글 자료 é 🧾 ' $() [검토]");
+    mkdirSync(directory);
+    const file = join(directory, "원본.txt");
+    const bytes = Buffer.from("합성 원문");
+    writeFileSync(file, bytes);
+    assert.doesNotThrow(() => nativePaths([directory, file]));
+    assert.deepEqual(readFileSync(file), bytes);
+    assert.throws(() => nativePaths([join(directory, "없는 파일")]), { code: "UNSAFE_PATH" });
+  },
+);
+
+test(
+  "Windows native path inspection still rejects a Unicode junction ancestor",
+  { skip: process.platform !== "win32" },
+  (t) => {
+    const root = fixture(t);
+    const actual = join(root, "실제 자료");
+    const alias = join(root, "연결 자료");
+    mkdirSync(actual);
+    const bytes = Buffer.from("합성 원문");
+    writeFileSync(join(actual, "원본.txt"), bytes);
+    symlinkSync(actual, alias, "junction");
+    try {
+      assert.throws(() => nativePaths([join(alias, "원본.txt")]), { code: "UNSAFE_PATH" });
+      assert.deepEqual(readFileSync(join(actual, "원본.txt")), bytes);
+    } finally {
+      fs.unlinkSync(alias);
+    }
+  },
+);
+
 test("same-sized writes during a read invalidate the observation", (t) => {
   const root = fixture(t);
   const source = join(root, "source");

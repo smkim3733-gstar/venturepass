@@ -215,13 +215,13 @@ function cli(args, temporaryRoot, forbidden, ok = true, originals = 1) {
 }
 
 test(
-  "synthetic child CLI: live WAL snapshot, readonly verification, new-directory restore, and refusal boundaries",
+  "synthetic child CLI: Unicode paths, live WAL snapshot, readonly verification, new-directory restore, and refusal boundaries",
   { timeout: 300_000 },
   async (t) => {
     const temporaryRoot = mkdtempSync(path.join(tmpdir(), "venture-local-data-audit-"));
-    const source = path.join(temporaryRoot, "source");
-    const backup = path.join(temporaryRoot, "backup");
-    const restored = path.join(temporaryRoot, "restored");
+    const source = path.join(temporaryRoot, "자료 원본");
+    const backup = path.join(temporaryRoot, "백업 보관");
+    const restored = path.join(temporaryRoot, "복원 후보");
     const data = fixture(source);
     const forbidden = [
       temporaryRoot,
@@ -617,9 +617,9 @@ test(
   { timeout: 180_000 },
   () => {
     const temporaryRoot = mkdtempSync(path.join(tmpdir(), "venture-local-data-audit-"));
-    const source = path.join(temporaryRoot, "cold-source");
-    const backup = path.join(temporaryRoot, "cold-backup");
-    const restored = path.join(temporaryRoot, "cold-restored");
+    const source = path.join(temporaryRoot, "종료한 자료");
+    const backup = path.join(temporaryRoot, "종료한 백업");
+    const restored = path.join(temporaryRoot, "종료한 복원");
     const data = fixture(source);
     const expectedRows = snapshot(data.database);
     data.database.close();

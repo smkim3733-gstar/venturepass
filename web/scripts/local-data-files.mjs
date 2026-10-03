@@ -72,8 +72,9 @@ export function safePath(target, kind = "file") {
 export function nativePaths(paths) {
   if (process.platform !== "win32") return;
   const unique = [...new Set(paths.flatMap(ancestors))];
+  // Node writes UTF-8 stdin; Windows PowerShell otherwise uses the local console code page.
   const command =
-    "$ErrorActionPreference='Stop'; $p=ConvertFrom-Json ([Console]::In.ReadToEnd()); foreach($v in $p){if(([IO.File]::GetAttributes($v) -band [IO.FileAttributes]::ReparsePoint)-ne 0){exit 31}}";
+    "$ErrorActionPreference='Stop'; [Console]::InputEncoding=[System.Text.UTF8Encoding]::new($false); $p=ConvertFrom-Json ([Console]::In.ReadToEnd()); foreach($v in $p){if(([IO.File]::GetAttributes($v) -band [IO.FileAttributes]::ReparsePoint)-ne 0){exit 31}}";
   const system = process.env.SystemRoot || "C:\\Windows";
   if (!path.win32.isAbsolute(system)) fail("UNSAFE_PATH");
   try {
