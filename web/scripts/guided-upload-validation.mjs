@@ -293,6 +293,8 @@ try {
     .waitFor({ timeout: 45000 });
   assert.match(await receipt().getByRole("status").innerText(), /저장 완료 16개 · 저장 실패 0개/);
   assert.equal(requests.length, 17, "16 files + exactly one known NO_TEXT original-only fallback");
+  assert.equal(await inventory().getByRole("listitem").count(), 12);
+  await inventory().getByRole("button", { name: "자료 더 보기 (4개 남음)", exact: true }).click();
   assert.equal(await inventory().getByRole("listitem").count(), 16);
   assert.equal(await page.getByRole("dialog").count(), 0);
   assert.equal(
@@ -327,8 +329,38 @@ try {
   await page.screenshot({ path: path.join(output, "sixteen-saved.png"), fullPage: true });
   await reopen();
   assert.equal(await receipt().count(), 0);
-  assert.equal(await inventory().getByRole("listitem").count(), 16);
+  assert.equal(await inventory().getByRole("listitem").count(), 12);
   record("original download and inventory survive a browser reload");
+  const beforeBrowse = JSON.stringify(await (await api("/api/studio/cases/" + caseId)).json());
+  await inventory().getByRole("searchbox", { name: "파일명·본문 검색" }).fill("합성-워드-3");
+  assert.equal(await inventory().getByRole("listitem").count(), 1);
+  assert.ok((await inventory().innerText()).includes("합성 워드 시험 3"));
+  await inventory()
+    .getByRole("searchbox", { name: "파일명·본문 검색" })
+    .fill("Synthetic PDF original 5");
+  assert.equal(await inventory().getByRole("listitem").count(), 1);
+  assert.ok((await inventory().innerText()).includes("합성-PDF-5.pdf"));
+  await inventory().getByRole("searchbox", { name: "파일명·본문 검색" }).fill("");
+  await inventory().getByRole("combobox", { name: "자료 상태 필터" }).selectOption("pending");
+  assert.equal(await inventory().getByRole("listitem").count(), 1);
+  assert.ok((await inventory().innerText()).includes("합성-PDF-1.pdf"));
+  await inventory()
+    .getByRole("button", { name: "자료 열기 · 합성-PDF-1.pdf", exact: true })
+    .click();
+  await page.getByRole("button", { name: "닫기", exact: true }).click();
+  await inventory().getByRole("searchbox", { name: "파일명·본문 검색" }).fill("없는 파일");
+  assert.ok((await inventory().innerText()).includes("조건에 맞는 자료가 없습니다"));
+  await inventory().getByRole("searchbox", { name: "파일명·본문 검색" }).fill("");
+  assert.equal(
+    JSON.stringify(await (await api("/api/studio/cases/" + caseId)).json()),
+    beforeBrowse,
+  );
+  assert.equal(requests.length, 17);
+  await inventory().getByRole("combobox", { name: "자료 상태 필터" }).selectOption("all");
+  await page.screenshot({ path: path.join(output, "attachment-cards.png"), fullPage: true });
+  record(
+    "attachment cards search by filename/body, filter pending text, and open review without changing data or AI scope",
+  );
   await input().setInputFiles([
     {
       name: "추가정상.pdf",
@@ -348,7 +380,7 @@ try {
     /저장 완료 1개 · 저장 실패 1개 · 확인 필요 0개 · 전송하지 않음 1개/,
   );
   assert.equal(requests.length, 19);
-  assert.equal(await inventory().getByRole("listitem").count(), 17);
+  assert.equal(await inventory().getByRole("listitem").count(), 12);
   await page.screenshot({ path: path.join(output, "partial-failure.png"), fullPage: true });
   record("partial success retains saved files and names the failed and never-sent files");
   const beforeUnknown = requests.length;
@@ -383,7 +415,7 @@ try {
     beforeUnknown + 2,
     "Damaged PDF cannot fall back to original storage",
   );
-  assert.equal(await inventory().getByRole("listitem").count(), 18);
+  assert.equal(await inventory().getByRole("listitem").count(), 12);
   record("damaged PDF remains a failure, not NO_TEXT original fallback");
   await input().setInputFiles([
     { name: "과거형식.doc", mimeType: "application/msword", buffer: Buffer.from("old word") },

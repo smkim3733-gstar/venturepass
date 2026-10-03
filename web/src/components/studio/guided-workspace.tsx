@@ -33,6 +33,12 @@ import { GuidedRepairSummary } from "./guided-repair-summary";
 import { guidedQuestions, type GuidedQuestion } from "./guided-questions";
 import { GuidedSourceReview } from "./guided-source-review";
 import { guidedUploadResult } from "./guided-upload-result";
+import {
+  AttachmentCard,
+  GuidedMaterials,
+  attachmentGridClass,
+  attachmentSize,
+} from "./guided-materials";
 import { PreparedPackagesPanel } from "./prepared-packages-panel";
 import { GuidedPlanEvidence } from "./guided-plan-evidence";
 import { GuidedFollowupStatus } from "./guided-followup-status";
@@ -57,6 +63,7 @@ type Props = {
 
 type UploadItem = {
   name: string;
+  size: number;
   state: "waiting" | "uploading" | "saved" | "failed" | "unknown" | "not-sent";
   detail: string;
 };
@@ -376,7 +383,9 @@ export function GuidedWorkspace({
     event.target.value = "";
     if (!files.length || inFlight.current || locked) return;
     setStep("materials");
-    setUploads(files.map((file) => ({ name: file.name, state: "not-sent", detail: "" })));
+    setUploads(
+      files.map((file) => ({ name: file.name, size: file.size, state: "not-sent", detail: "" })),
+    );
     if (
       files.length + company.sources.length > 40 ||
       files.some((file) => !file.size || file.size > 12 * 1024 * 1024)
@@ -392,7 +401,9 @@ export function GuidedWorkspace({
     let uploaded = 0;
     let uploadUncertain = false;
     let activeUpload = 0;
-    setUploads(files.map((file) => ({ name: file.name, state: "waiting", detail: "" })));
+    setUploads(
+      files.map((file) => ({ name: file.name, size: file.size, state: "waiting", detail: "" })),
+    );
     const updateUpload = (index: number, change: Partial<UploadItem>) =>
       setUploads((items) => items.map((item, i) => (i === index ? { ...item, ...change } : item)));
     try {
@@ -646,15 +657,16 @@ export function GuidedWorkspace({
             {uploads.filter((item) => item.state === "unknown").length}개 · 전송하지 않음{" "}
             {uploads.filter((item) => item.state === "not-sent").length}개
           </p>
-          <ul className={styles.files}>
+          <ul className={attachmentGridClass}>
             {uploads.map((item, index) => (
-              <li className={styles.file} key={index}>
-                <span>
-                  {index + 1}. {item.name}
-                </span>
-                <strong>{uploadLabels[item.state]}</strong>
-                {item.detail && <p className={styles.uploadDetail}>{item.detail}</p>}
-              </li>
+              <AttachmentCard
+                key={index}
+                name={item.name}
+                state={item.state}
+                label={uploadLabels[item.state]}
+                detail={item.detail}
+                meta={attachmentSize(item.size)}
+              />
             ))}
           </ul>
           <p className={styles.helper}>
@@ -760,6 +772,7 @@ export function GuidedWorkspace({
             </>
           ) : (
             <>
+              <GuidedMaterials company={company} locked={locked} onReview={setSourceReview} />
               {title(
                 company.sources.length ? "필요한 자료만 추가해 주세요" : "회사 자료만 올려 주세요",
                 "가진 자료부터 보관하고, AI가 사업계획서를 준비할 수 있도록 내용을 정리합니다.",
@@ -801,43 +814,7 @@ export function GuidedWorkspace({
               <p className={styles.helper}>
                 이 PC에 보관합니다. 외부 AI로 보낼 자료는 별도로 확인받습니다.
               </p>
-              <section className={styles.sheet} aria-label="저장된 자료 목록">
-                <h3 className={styles.subheading}>저장된 자료 {company.sources.length}개</h3>
-                {!company.sources.length && (
-                  <p className={styles.helper}>
-                    아직 저장된 자료가 없습니다. 파일 선택만으로 저장되지는 않습니다.
-                  </p>
-                )}
-                <ul className={styles.files}>
-                  {company.sources.map((source) => (
-                    <li className={styles.file} key={source.id}>
-                      <span>{source.name}</span>
-                      <span className={styles.helper}>
-                        {source.extraction === "pending"
-                          ? "원본 보관 · 본문 확인 필요"
-                          : "본문 추출 · 사실 확인은 별도"}
-                      </span>
-                      {source.originalName && (
-                        <a
-                          className={styles.link}
-                          href={`/api/studio/cases/${company.id}/sources/${source.id}`}
-                          download
-                        >
-                          원본 내려받기<span className="sr-only"> · {source.name}</span>
-                        </a>
-                      )}
-                      <button
-                        type="button"
-                        className={styles.link}
-                        disabled={locked}
-                        onClick={() => setSourceReview(source)}
-                      >
-                        본문 확인·고치기<span className="sr-only"> · {source.name}</span>
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-              </section>
+
               {(hasSourceText || hasDescription) && (
                 <div className={styles.actions}>
                   <PrimaryAction disabled={locked} onClick={() => goTo("plan")}>
