@@ -5,49 +5,26 @@ import { STUDIO_AI_INPUT_CHARACTER_LIMIT } from "./studio-ai-input";
 import { compareTextExact } from "./studio-plan-diff";
 import { sectionDefinitions, type StudioCase } from "./studio-schema";
 import {
-  answerSuggestionAiSelectionSchema,
-  answerSuggestionBindingSchema,
-  answerSuggestionInputSchema,
-} from "./studio-answer-suggestion-types";
+  planSupplementInputSchema,
+  planSupplementBindingSchema,
+  planSupplementDraftSchema,
+  type PlanSupplementInput,
+  type PlanSupplementBinding,
+} from "./studio-plan-supplement-types";
+export {
+  planSupplementInputSchema,
+  planSupplementBindingSchema,
+  planSupplementDraftSchema,
+  type PlanSupplementInput,
+  type PlanSupplementBinding,
+  type PlanSupplementDraft,
+} from "./studio-plan-supplement-types";
 import {
   answerSuggestionSha as sha,
   buildAnswerSuggestionContext,
   validateAnswerExcerptSelections,
 } from "./studio-answer-suggestion";
 
-const hash = z.string().regex(/^[a-f0-9]{64}$/);
-export const planSupplementInputSchema = answerSuggestionInputSchema
-  .extend({
-    sectionKey: z.enum(sectionDefinitions.map((section) => section.key)),
-    baseContentSha256: hash,
-  })
-  .strict()
-  .refine((input) => input.target.kind === "visit-question", {
-    message: "보관한 원고의 질문을 선택해 주세요.",
-  });
-export type PlanSupplementInput = z.infer<typeof planSupplementInputSchema>;
-export const planSupplementBindingSchema = z
-  .object({
-    format: z.literal("one-section-supplement-v1"),
-    answer: answerSuggestionBindingSchema,
-    basePlanSha256: hash,
-    sectionKey: z.enum(sectionDefinitions.map((section) => section.key)),
-    payloadSha256: hash,
-    inputSha256: hash,
-  })
-  .strict();
-export type PlanSupplementBinding = z.infer<typeof planSupplementBindingSchema>;
-export const planSupplementDraftSchema = z
-  .object({
-    content: z
-      .string()
-      .min(1)
-      .max(18000)
-      .refine((text) => Boolean(text.trim())),
-    addedEvidence: answerSuggestionAiSelectionSchema.shape.selections.min(1),
-  })
-  .strict();
-export type PlanSupplementDraft = z.infer<typeof planSupplementDraftSchema>;
 function fail(code: string): never {
   throw new StudioError(
     "기준 원고·질문과 선택 자료를 다시 확인해 주세요. 기존 원고는 변경하지 않았습니다.",

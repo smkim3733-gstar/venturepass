@@ -1,3 +1,17 @@
+import {
+  planSupplementExecutionCommandSchema,
+  planSupplementCaptureSchema,
+  type PlanSupplementCapture,
+  type PlanSupplementExecutionCommand,
+} from "./studio-plan-supplement-execution-types";
+import {
+  auditPlanSupplementExecutions,
+  buildPlanSupplementExecutionApproval,
+  currentPlanSupplementPayload,
+  replayPlanSupplementExecution,
+  supplementDigest,
+  supplementExecutionError,
+} from "./studio-plan-supplement-execution-state";
 import { MAX_COMPANY_SOURCES } from "./studio-source-limits";
 import { createHash, randomUUID } from "node:crypto";
 import { packageLimits } from "./studio-package-types";
@@ -1958,6 +1972,143 @@ export class StudioStore {
       return true;
     });
   }
+  /** Internal server writer. A replay is returned before model/CAS checks and never receives an owner. */
+  beginPlanSupplementExecution(
+    id: string,
+    raw: PlanSupplementExecutionCommand,
+    currentModel: () => string,
+  ) {
+    const command = planSupplementExecutionCommandSchema.parse(raw);
+    let createdId: string | null = null;
+    const company = this.update(
+      id,
+      command.input.revision,
+      (record) => {
+        auditPlanSupplementExecutions(record);
+        const runs = record.planSupplementExecutions ?? [];
+        if (runs.length >= 30) supplementExecutionError("SUPPLEMENT_HISTORY_LIMIT");
+        if (runs.some((run) => run.capture === null || run.capture.kind === "unobserved"))
+          supplementExecutionError("SUPPLEMENT_UNRESOLVED_REQUEST");
+        const approval = buildPlanSupplementExecutionApproval(
+          record,
+          command.input,
+          currentModel(),
+        );
+        if (supplementDigest(approval) !== supplementDigest(command.approval))
+          supplementExecutionError("SUPPLEMENT_APPROVAL_CHANGED");
+        createdId = randomUUID();
+        (record.planSupplementExecutions ??= []).push({
+          id: createdId,
+          command: structuredClone(command),
+          commandSha256: supplementDigest(command),
+          reservationRevision: record.revision + 1,
+          createdAt: new Date().toISOString(),
+          capture: null,
+          captureSha256: null,
+          finishedRevision: null,
+          finishedAt: null,
+        });
+        return false;
+      },
+      (record) => Boolean(replayPlanSupplementExecution(record, command)),
+    );
+    const record = replayPlanSupplementExecution(company, command)!;
+    // Mint only after update's new successful COMMIT returned. A lost commit response has no new owner.
+    if (!createdId) return { company, record, owner: null };
+    const ownedId = createdId,
+      ownedDigest = record.commandSha256;
+    let attempted = false,
+      entered = false,
+      persisted = false,
+      closed = false;
+    let retained: PlanSupplementCapture | null = null;
+    const assertOpen = () => {
+      if (closed) supplementExecutionError("SUPPLEMENT_OWNER_CLOSED");
+    };
+    const owner = Object.freeze({
+      /** The SDK adapter must call this inside its fetch hook, not before an await in SDK preparation. */
+      withCurrentWriter: (start: (exactPayload: string) => void) => {
+        assertOpen();
+        if (attempted || retained) supplementExecutionError("SUPPLEMENT_OWNER_USED");
+        attempted = true;
+        assertVentureCompanyWritable(id);
+        this.db.exec("BEGIN IMMEDIATE");
+        try {
+          const current = caseSchema.parse(JSON.parse(this.row(id).body));
+          const saved = replayPlanSupplementExecution(current, command);
+          if (!saved || saved.id !== ownedId || saved.commandSha256 !== ownedDigest)
+            supplementExecutionError("SUPPLEMENT_OWNER_CHANGED");
+          const payload = currentPlanSupplementPayload(current, saved, currentModel());
+          assertVentureCompanyWritable(id);
+          entered = true;
+          start(payload);
+          this.db.exec("COMMIT");
+        } catch (error) {
+          // A COMMIT failure after start cannot revoke a network promise/capture held by the adapter.
+          if (this.db.isTransaction) this.db.exec("ROLLBACK");
+          throw error;
+        }
+      },
+      /** Retain before attempting any write; caller mutation and a failed write cannot replace it. */
+      retain: (rawCapture: PlanSupplementCapture) => {
+        assertOpen();
+        const capture = planSupplementCaptureSchema.parse(rawCapture);
+        if ((capture.kind === "not-sent") === entered)
+          supplementExecutionError("SUPPLEMENT_CAPTURE_DELIVERY");
+        if (retained && supplementDigest(retained) !== supplementDigest(capture))
+          supplementExecutionError("SUPPLEMENT_CAPTURE_CHANGED");
+        retained ??= capture;
+      },
+      persist: () => {
+        assertOpen();
+        if (!retained) supplementExecutionError("SUPPLEMENT_CAPTURE_MISSING");
+        const capture = structuredClone(retained),
+          captureHash = supplementDigest(capture);
+        const current = this.get(id);
+        const saved = this.update(
+          id,
+          current.revision,
+          (value) => {
+            const run = replayPlanSupplementExecution(value, command);
+            if (
+              !run ||
+              run.id !== ownedId ||
+              run.commandSha256 !== ownedDigest ||
+              run.capture !== null
+            )
+              supplementExecutionError("SUPPLEMENT_OWNER_CHANGED");
+            const target = value.planSupplementExecutions!.find((item) => item.id === ownedId)!;
+            // History only. Preserve late responses even if materials/manuscript changed; do not adopt them.
+            target.capture = capture;
+            target.captureSha256 = captureHash;
+            target.finishedRevision = value.revision + 1;
+            target.finishedAt = new Date().toISOString();
+            return false;
+          },
+          (value) => {
+            const run = replayPlanSupplementExecution(value, command);
+            if (!run || run.id !== ownedId || run.commandSha256 !== ownedDigest)
+              supplementExecutionError("SUPPLEMENT_OWNER_CHANGED");
+            if (run.capture === null) return false;
+            if (run.captureSha256 !== captureHash)
+              supplementExecutionError("SUPPLEMENT_CAPTURE_CHANGED");
+            return true;
+          },
+        );
+        persisted = true;
+        return { company: saved, record: replayPlanSupplementExecution(saved, command)! };
+      },
+      status: () => ({ attempted, entered, retained: retained !== null, persisted, closed }),
+      close: () => {
+        if (!persisted) return false;
+        closed = true;
+        retained = null;
+        return true;
+      },
+    });
+    return { company, record, owner };
+  }
+
   /** Consent, request identity and each generated artifact share the company's CAS transaction. */
   beginGuidedPreparation(id: string, raw: GuidedPreparationRequest, model: string) {
     const input = guidedPreparationRequestSchema.parse(raw),
