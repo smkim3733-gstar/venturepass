@@ -6,7 +6,7 @@ import { planSupplementAdoptionApiSchema } from "@/lib/studio-plan-supplement-ad
 import {
   auditPlanSupplementAdoptions,
   preparePlanSupplementAdoption,
-  replayPlanSupplementAdoption,
+  inspectPlanSupplementAdoption,
 } from "@/lib/studio-plan-supplement-adoption";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -52,11 +52,7 @@ export function POST(request: Request, context: Context) {
       );
     if (command.action === "inspect-adoption") {
       const company = store.get(id);
-      return jsonResponse({
-        receipt: replayPlanSupplementAdoption(company, command.command),
-        databaseChanged: false,
-        transmissionAllowed: false,
-      });
+      return jsonResponse(inspectPlanSupplementAdoption(company, command.command));
     }
     return jsonResponse(store.adoptPlanSupplement(id, command, reviewPlan));
   });

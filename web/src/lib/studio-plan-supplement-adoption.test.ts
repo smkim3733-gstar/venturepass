@@ -13,6 +13,7 @@ import {
 } from "./studio-plan-supplement-execution-state";
 import {
   auditPlanSupplementAdoptions,
+  inspectPlanSupplementAdoption,
   preparePlanSupplementAdoption,
   replayPlanSupplementAdoption,
 } from "./studio-plan-supplement-adoption";
@@ -542,5 +543,158 @@ describe("보관 수정안의 명시 새 버전 채택/원래 요청 복구", ()
       expect.objectContaining({ code: "SUPPLEMENT_ADOPTION_HISTORY_INVALID" }),
     );
     expect(body()).toBe(before);
+  });
+});
+
+describe("원래 채택 명령의 읽기 종료 근거", () => {
+  it("같은 revision의 영수증 부재는 미확인이며 실행·쓰기·새 권한을 만들지 않는다", async () => {
+    const before = body();
+    const response = await post({ action: "inspect-adoption", command });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      state: "unconfirmed",
+      canClose: false,
+      command,
+      revision: command.revision,
+      receipt: null,
+      databaseChanged: false,
+      transmissionAllowed: false,
+    });
+    expect(body()).toBe(before);
+  });
+  it.each(["manual", "source"])(
+    "늦은 %s 변경의 CAS 거절 뒤 원래 요청만 종료 가능하며 재열어도 읽기뿐이다",
+    async (kind) => {
+      if (kind === "manual") manual();
+      else {
+        const c = read();
+        state.store!.mutate(
+          c.id,
+          { action: "delete-source", revision: c.revision, sourceId: c.sources[0].id },
+          () => [],
+        );
+      }
+      expect(() => adopt()).toThrow();
+      const before = body();
+      state.store!.close();
+      state.store = new StudioStore(directory);
+      const response = await post({ action: "inspect-adoption", command });
+      expect(response.status).toBe(200);
+      const value = await response.json();
+      expect(value).toMatchObject({
+        state: "not-adopted-stale",
+        canClose: true,
+        command,
+        receipt: null,
+      });
+      expect(value.revision).toBeGreaterThan(command.revision);
+      expect(value.commandSha256).toBe(supplementDigest(command));
+      expect(body()).toBe(before);
+      value.command.proposalSha256 = "0".repeat(64);
+      expect(body()).toBe(before);
+    },
+  );
+  it("동일 nonce의 기존 영수증은 현재 revision보다 먼저 복구하고 변경 명령은 거절한다", async () => {
+    const first = adopt();
+    manual();
+    const before = body();
+    const value = await (await post({ action: "inspect-adoption", command })).json();
+    expect(value).toMatchObject({ state: "adopted", canClose: false, receipt: first.receipt });
+    expect(
+      (
+        await post({
+          action: "inspect-adoption",
+          command: { ...command, proposalSha256: "0".repeat(64) },
+        })
+      ).status,
+    ).not.toBe(200);
+    expect(body()).toBe(before);
+  });
+  it("다른 nonce로 이미 저장한 버전을 미채택으로 오인하지 않고 정확한 이전 명령만 구분한다", () => {
+    const other = { ...command, clientRequestId: randomUUID() };
+    const first = adopt(other);
+    const before = body();
+    expect(inspectPlanSupplementAdoption(read(), command)).toMatchObject({
+      state: "not-adopted-stale",
+      receipt: null,
+    });
+    expect(inspectPlanSupplementAdoption(read(), other)).toMatchObject({
+      state: "adopted",
+      receipt: first.receipt,
+    });
+    expect(body()).toBe(before);
+  });
+  it.each([
+    "missing-run",
+    "missing-base",
+    "base-content",
+    "execution-hash",
+    "capture-hash",
+    "request-revision",
+    "execution-nonce",
+    "earlier-revision",
+  ])("원래 신원 또는 단조 revision 근거가 없는 %s는 종료 권한이 아니다", (kind) => {
+    manual();
+    const c = read(),
+      cmd = structuredClone(command);
+    if (kind === "missing-run") delete c.planSupplementExecutions;
+    if (kind === "missing-base") c.plans = c.plans.slice(1);
+    if (kind === "base-content") c.plans[0].content.summary += "changed";
+    if (kind === "execution-hash") cmd.executionCommandSha256 = "0".repeat(64);
+    if (kind === "capture-hash") cmd.captureSha256 = "0".repeat(64);
+    if (kind === "request-revision") cmd.revision++;
+    if (kind === "execution-nonce")
+      cmd.clientRequestId = c.planSupplementExecutions![0].command.clientRequestId;
+    if (kind === "earlier-revision") c.revision = command.revision - 1;
+    let canClose = false;
+    try {
+      canClose = inspectPlanSupplementAdoption(c, cmd).canClose;
+    } catch (error) {
+      expect(error).toBeInstanceOf(Error);
+    }
+    expect(canClose).toBe(false);
+  });
+  it("현재 nonce가 없어도 보관 이력 손상이 있으면 미채택을 추정하지 않는다", async () => {
+    adopt({ ...command, clientRequestId: randomUUID() });
+    edit((c) => {
+      c.planSupplementAdoptions![0].planIdentitySha256 = "0".repeat(64);
+    });
+    const before = body();
+    expect((await post({ action: "inspect-adoption", command })).status).not.toBe(200);
+    expect(body()).toBe(before);
+  });
+});
+
+it("저장 원고와 일치하는 응답의 영수증 소실은 미채택으로 추정하지 않는다", async () => {
+  adopt();
+  edit((c) => {
+    delete c.planSupplementAdoptions;
+  });
+  const before = body();
+  const response = await post({ action: "inspect-adoption", command });
+  expect(response.status).toBe(200);
+  expect(await response.json()).toMatchObject({
+    state: "unconfirmed",
+    canClose: false,
+    receipt: null,
+  });
+  expect(body()).toBe(before);
+});
+it("수동 저장이 같은 수정안과 일치해도 영수증 없이 미채택으로 확정하지 않는다", () => {
+  const c = read(),
+    prepared = preparePlanSupplementAdoption(c, c.revision, runId);
+  state.store!.mutate(
+    c.id,
+    {
+      action: "save-plan",
+      revision: c.revision,
+      planId: c.plans.at(-1)!.id,
+      content: prepared.proposal.content,
+    },
+    () => [],
+  );
+  expect(inspectPlanSupplementAdoption(read(), command)).toMatchObject({
+    state: "unconfirmed",
+    canClose: false,
   });
 });

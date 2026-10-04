@@ -8,6 +8,7 @@ import {
 import { planSupplementResult, readPlanSupplementResponse } from "./studio-plan-supplement-result";
 import {
   planSupplementAdoptionCommandSchema,
+  planSupplementAdoptionInspectionSchema,
   planSupplementAdoptionReceiptSchema,
   planSupplementAdoptionSelectionSchema,
   type PlanSupplementAdoptionCommand,
@@ -169,4 +170,74 @@ export function assertPlanSupplementAdoption(
   )
     supplementAdoptionError("SUPPLEMENT_ADOPTION_NONCE_USED");
   return prepared.proposal;
+}
+
+/** Read one authoritative company row. A missing receipt alone never establishes safe closure. */
+export function inspectPlanSupplementAdoption(
+  company: StudioCase,
+  raw: PlanSupplementAdoptionCommand,
+) {
+  const command = planSupplementAdoptionCommandSchema.parse(raw);
+  // Complete history audit and original nonce lookup precede any current revision inference.
+  const receipt = replayPlanSupplementAdoption(company, command);
+  const run = company.planSupplementExecutions?.find((item) => item.id === command.executionId);
+  const target = run?.command.input.target;
+  const base =
+    target?.kind === "visit-question"
+      ? company.plans.find((item) => item.id === target.planId)
+      : undefined;
+  const originalContext =
+    !!run &&
+    run.capture?.kind === "response" &&
+    command.executionCommandSha256 === run.commandSha256 &&
+    command.captureSha256 === run.captureSha256 &&
+    command.revision === run.finishedRevision &&
+    run.finishedRevision === run.reservationRevision + 1 &&
+    target?.kind === "visit-question" &&
+    !!base &&
+    base.version === target.planVersion &&
+    supplementDigest(base.content) === run.command.input.baseContentSha256 &&
+    !company.planSupplementExecutions?.some(
+      (item) => item.command.clientRequestId === command.clientRequestId,
+    );
+  // A matching saved manuscript without its audited receipt may mean the receipt was lost.
+  // Keep that case uncertain, including a coincidentally identical manual version.
+  let unattributedPlan = false;
+  if (!receipt && originalContext && run?.capture?.kind === "response" && base) {
+    try {
+      const { draft } = readPlanSupplementResponse(run.capture.rawJson);
+      unattributedPlan = company.plans.some(
+        (plan) =>
+          plan.version === base.version + 1 &&
+          supplementDigest({
+            binding: run.command.approval.binding,
+            draft,
+            content: plan.content,
+          }) === command.proposalSha256 &&
+          !company.planSupplementAdoptions?.some((item) => item.planId === plan.id),
+      );
+    } catch {
+      unattributedPlan = true;
+    }
+  }
+  // With the original capture retained and a strictly advanced CAS revision, this exact
+  // command cannot create a plan later. An already committed command must have its receipt.
+  // This does not prove that another nonce was not adopted, or repair a lost/restored database.
+  const state = receipt
+    ? "adopted"
+    : originalContext && !unattributedPlan && company.revision > command.revision
+      ? "not-adopted-stale"
+      : "unconfirmed";
+  return planSupplementAdoptionInspectionSchema.parse({
+    format: "supplement-adoption-inspection-v1",
+    caseId: company.id,
+    revision: company.revision,
+    command,
+    commandSha256: supplementDigest(command),
+    state,
+    receipt,
+    canClose: state === "not-adopted-stale",
+    databaseChanged: false,
+    transmissionAllowed: false,
+  });
 }

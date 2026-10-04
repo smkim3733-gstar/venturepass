@@ -11,7 +11,10 @@ import { StudioStore } from "@/lib/studio-storage";
 import { preparePlanSupplement } from "@/lib/studio-plan-supplement";
 import { buildPlanSupplementExecutionApproval } from "@/lib/studio-plan-supplement-execution-state";
 import { planSupplementResult } from "@/lib/studio-plan-supplement-result";
-import { preparePlanSupplementAdoption } from "@/lib/studio-plan-supplement-adoption";
+import {
+  preparePlanSupplementAdoption,
+  inspectPlanSupplementAdoption,
+} from "@/lib/studio-plan-supplement-adoption";
 import { planSupplementExecutionCommandSchema } from "@/lib/studio-plan-supplement-execution-types";
 import { planSupplementAdoptionCommandSchema } from "@/lib/studio-plan-supplement-adoption-types";
 import {
@@ -116,6 +119,11 @@ const transport: SupplementTransport = async (_path, raw) => {
       started.owner.persist();
       started.owner.close();
     }
+  } else if ((raw as { action: string }).action === "inspect-adoption") {
+    return inspectPlanSupplementAdoption(
+      read(),
+      planSupplementAdoptionCommandSchema.parse((raw as { command: unknown }).command),
+    );
   } else
     store.adoptPlanSupplement(f.value.id, planSupplementAdoptionCommandSchema.parse(raw), () => []);
   if (failure === "after") throw Error("response lost");
@@ -338,4 +346,127 @@ it("renders a read-first screen without automatic consent or a writable comparis
   expect(html).not.toContain("비교한 수정안을 새 버전으로 저장");
   expect(fetch).not.toHaveBeenCalled();
   expect(sends).toHaveLength(0);
+});
+
+async function pendingAdoption(stale = true) {
+  await journal().execute(command());
+  const c = read();
+  const cmd = planSupplementAdoptionCommandSchema.parse({
+    ...preparePlanSupplementAdoption(c, c.revision, c.planSupplementExecutions![0].id).selection,
+    action: "adopt-section-supplement",
+    clientRequestId: randomUUID(),
+    confirmed: true,
+  });
+  failure = "before";
+  await expect(journal().execute(cmd)).rejects.toThrow("lost before server");
+  failure = "";
+  if (stale) saveManual();
+  return cmd;
+}
+function saveManual() {
+  const c = read();
+  store.mutate(
+    c.id,
+    {
+      action: "save-plan",
+      revision: c.revision,
+      planId: c.plans.at(-1)!.id,
+      content: { ...c.plans.at(-1)!.content, summary: `직접 수정 ${c.revision}` },
+    },
+    () => [],
+  );
+}
+it("only explicitly closes a proven stale adoption; read/reopen and proof do not clear or write", async () => {
+  const cmd = await pendingAdoption();
+  const before = JSON.stringify(read());
+  store.close();
+  store = new StudioStore(directory);
+  await journal().read();
+  expect(await journal().pending()).toEqual(cmd);
+  const { inspection } = await journal().inspectClosure(cmd);
+  expect(inspection?.canClose).toBe(true);
+  expect(await journal().pending()).toEqual(cmd);
+  expect(() => journal().closeUnadopted(inspection!, false)).toThrow();
+  const result = await journal().closeUnadopted(inspection!, true);
+  expect(result.outcome).toBe("closed-without-adoption");
+  expect(await journal().pending()).toBeNull();
+  expect(JSON.stringify(read())).toBe(before);
+  expect(sends.map((s) => (s as { action: string }).action)).toEqual([
+    "propose-section",
+    "adopt-section-supplement",
+    "inspect-adoption",
+    "inspect-adoption",
+  ]);
+});
+it("same-revision uncertainty cannot be closed; only the original explicit command may store", async () => {
+  const cmd = await pendingAdoption(false);
+  const { inspection } = await journal().inspectClosure(cmd);
+  expect(inspection?.state).toBe("unconfirmed");
+  expect(() => journal().closeUnadopted(inspection!, true)).toThrow();
+  expect(await journal().pending()).toEqual(cmd);
+  await journal().execute(cmd, true);
+  expect(read().planSupplementAdoptions).toHaveLength(1);
+  expect(await journal().pending()).toBeNull();
+});
+it("a displayed closure proof is invalidated by a later edit and must be explicitly refreshed", async () => {
+  const cmd = await pendingAdoption();
+  const first = (await journal().inspectClosure(cmd)).inspection!;
+  saveManual();
+  await expect(journal().closeUnadopted(first, true)).rejects.toThrow();
+  expect(await journal().pending()).toEqual(cmd);
+  const fresh = (await journal().inspectClosure(cmd)).inspection!;
+  await journal().closeUnadopted(fresh, true);
+  expect(read().plans).toHaveLength(3);
+});
+it.each([
+  "read-failed",
+  "inspect-failed",
+  "wrong-command",
+  "wrong-revision",
+  "wrong-hash",
+  "extra-field",
+  "remove-failed",
+  "lock",
+])("preserves the original pending command on failed or changed closure %s", async (kind) => {
+  const cmd = await pendingAdoption();
+  const proof = (await journal().inspectClosure(cmd)).inspection!;
+  const before = JSON.stringify(read());
+  const custom: SupplementTransport = async (path, raw) => {
+    if (kind === "read-failed" && !raw) throw Error("read failed");
+    const value = await transport(path, raw);
+    if ((raw as { action?: string } | undefined)?.action === "inspect-adoption") {
+      if (kind === "inspect-failed") throw Error("inspection failed");
+      const result = structuredClone(value) as typeof proof;
+      if (kind === "wrong-command") result.command.clientRequestId = randomUUID();
+      if (kind === "wrong-revision") result.revision++;
+      if (kind === "wrong-hash") result.commandSha256 = "0".repeat(64);
+      if (kind === "extra-field") Object.assign(result, { reset: true });
+      return result;
+    }
+    return value;
+  };
+  if (kind === "lock") locked = true;
+  const customStorage =
+    kind === "remove-failed"
+      ? {
+          ...storage,
+          removeItem: () => {
+            throw Error("denied");
+          },
+        }
+      : storage;
+  await expect(journal(custom, customStorage).closeUnadopted(proof, true)).rejects.toThrow();
+  locked = false;
+  expect(await journal().pending()).toEqual(cmd);
+  expect(JSON.stringify(read())).toBe(before);
+});
+it("an original saved receipt is recovered as adopted instead of offering stale closure", async () => {
+  const cmd = await pendingAdoption(false);
+  store.adoptPlanSupplement(f.value.id, cmd, () => []);
+  saveManual();
+  const before = JSON.stringify(read());
+  const result = await journal().inspectClosure(cmd);
+  expect(result.inspection).toBeNull();
+  expect(await journal().pending()).toBeNull();
+  expect(JSON.stringify(read())).toBe(before);
 });

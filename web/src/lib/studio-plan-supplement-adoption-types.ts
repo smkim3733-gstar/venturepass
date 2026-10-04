@@ -44,3 +44,30 @@ export const planSupplementAdoptionApiSchema = z.discriminatedUnion("action", [
     .strict(),
   planSupplementAdoptionCommandSchema,
 ]);
+
+// A local read disposition. It grants no write or transmission rights.
+export const planSupplementAdoptionInspectionSchema = z
+  .object({
+    format: z.literal("supplement-adoption-inspection-v1"),
+    caseId: z.string().uuid(),
+    revision,
+    command: planSupplementAdoptionCommandSchema,
+    commandSha256: hash,
+    state: z.enum(["adopted", "not-adopted-stale", "unconfirmed"]),
+    receipt: planSupplementAdoptionReceiptSchema.nullable(),
+    canClose: z.boolean(),
+    databaseChanged: z.literal(false),
+    transmissionAllowed: z.literal(false),
+  })
+  .strict()
+  .refine(
+    (value) =>
+      value.caseId === value.command.caseId &&
+      (value.state === "adopted"
+        ? value.receipt !== null && !value.canClose
+        : value.receipt === null && value.canClose === (value.state === "not-adopted-stale")) &&
+      (value.canClose ? value.revision > value.command.revision : true),
+  );
+export type PlanSupplementAdoptionInspection = z.infer<
+  typeof planSupplementAdoptionInspectionSchema
+>;

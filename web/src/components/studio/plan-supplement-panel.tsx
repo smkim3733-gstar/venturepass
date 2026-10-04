@@ -2,7 +2,10 @@
 import { useEffect, useRef, useState } from "react";
 import { sectionDefinitions, type StudioCase } from "@/lib/studio-schema";
 import { planSupplementExecutionCommandSchema } from "@/lib/studio-plan-supplement-execution-types";
-import { planSupplementAdoptionCommandSchema } from "@/lib/studio-plan-supplement-adoption-types";
+import {
+  planSupplementAdoptionCommandSchema,
+  type PlanSupplementAdoptionInspection,
+} from "@/lib/studio-plan-supplement-adoption-types";
 import type { PlanSupplementInput } from "@/lib/studio-plan-supplement-types";
 import {
   SupplementRequestJournal,
@@ -41,6 +44,8 @@ export function PlanSupplementPanel({
     value: SupplementPreview;
     input: PlanSupplementInput;
   } | null>(null);
+  const [closure, setClosure] = useState<PlanSupplementAdoptionInspection | null>(null);
+  const [closeConsent, setCloseConsent] = useState(false);
   const [comparison, setComparison] = useState<SupplementComparison | null>(null);
   const [consent, setConsent] = useState(false),
     [adoptConsent, setAdoptConsent] = useState(false);
@@ -116,6 +121,8 @@ export function PlanSupplementPanel({
     setComparison(null);
     setConsent(false);
     setAdoptConsent(false);
+    setClosure(null);
+    setCloseConsent(false);
     setNotice("");
   }
   async function task(
@@ -158,6 +165,7 @@ export function PlanSupplementPanel({
     onCompany(value.company);
   }
   function read() {
+    if (flight.current) return;
     invalidate();
     void task("저장 상태 확인 중", async (port) => {
       await accept(await port.read());
@@ -224,6 +232,85 @@ export function PlanSupplementPanel({
           >
             원래 요청으로 이어가기
           </button>
+          {pending.action === "adopt-section-supplement" && (
+            <section className="mt-4" aria-label="이전 채택 요청 종료 확인">
+              <button
+                type="button"
+                className={styles.link}
+                disabled={!!working}
+                onClick={() => {
+                  if (flight.current) return;
+                  invalidate();
+                  const token = epoch.current;
+                  void task("이전 요청 종료 가능 여부 확인 중", async (port) => {
+                    const result = await port.inspectClosure(pending);
+                    if (!mounted.current || epoch.current !== token) return;
+                    await accept(result.status);
+                    setClosure(result.inspection);
+                    if (!result.inspection)
+                      setNotice("원래 요청으로 저장한 새 버전을 확인했습니다.");
+                  });
+                }}
+              >
+                이 요청의 종료 가능 여부 확인
+              </button>
+              {closure && !closure.canClose && (
+                <p className={styles.helper}>
+                  이 요청이 저장되지 않았다고 확정할 수 없습니다. 요청 기록을 유지합니다. 저장
+                  상태를 확인하거나 원래 요청으로 이어가세요.
+                </p>
+              )}
+              {closure?.canClose && (
+                <div className="mt-3 rounded border p-3">
+                  <p>
+                    이 요청으로 저장된 버전은 없습니다. 자료 또는 원고가 바뀌어 이 요청의 이전
+                    기준으로는 저장할 수 없습니다.
+                  </p>
+                  <p className={styles.helper}>
+                    종료하면 이 브라우저의 대기 요청만 닫습니다. 서버의 수정안·응답·원고와 다른
+                    요청으로 저장한 버전은 그대로 보관합니다. 새 AI 요청이나 원고 저장은 실행하지
+                    않습니다.
+                  </p>
+                  <label className="my-3 flex items-start gap-2">
+                    <input
+                      type="checkbox"
+                      checked={closeConsent}
+                      disabled={!!working}
+                      onChange={(event) => setCloseConsent(event.target.checked)}
+                    />
+                    저장되지 않은 이 요청의 대기를 종료하겠습니다.
+                  </label>
+                  <button
+                    type="button"
+                    className={styles.link}
+                    disabled={!!working || !closeConsent}
+                    onClick={() => {
+                      if (flight.current) return;
+                      const expected = closure;
+                      setCloseConsent(false);
+                      void task(
+                        "이전 요청 종료 전 다시 확인 중",
+                        async (port) => {
+                          const result = await port.closeUnadopted(expected, true);
+                          if (!mounted.current) return;
+                          await accept(result.status);
+                          invalidate();
+                          setNotice(
+                            result.outcome === "adopted"
+                              ? "원래 요청으로 저장한 새 버전을 확인했습니다."
+                              : "저장되지 않은 이전 요청의 대기를 종료했습니다. 보관한 원고와 수정안은 그대로입니다.",
+                          );
+                        },
+                        true,
+                      );
+                    }}
+                  >
+                    저장되지 않은 이전 요청 종료
+                  </button>
+                </div>
+              )}
+            </section>
+          )}
         </div>
       )}
       {status?.retainedCapture && !status.active && (

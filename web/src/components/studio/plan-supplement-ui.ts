@@ -11,6 +11,8 @@ import {
 } from "@/lib/studio-plan-supplement-execution-types";
 import {
   planSupplementAdoptionCommandSchema,
+  planSupplementAdoptionInspectionSchema,
+  type PlanSupplementAdoptionInspection,
   planSupplementAdoptionSelectionSchema,
   type PlanSupplementAdoptionCommand,
 } from "@/lib/studio-plan-supplement-adoption-types";
@@ -196,6 +198,53 @@ export async function validateSupplementComparison(
   return structuredClone(value);
 }
 
+export async function validateSupplementInspection(
+  raw: unknown,
+  status: SupplementStatus,
+  command: PlanSupplementAdoptionCommand,
+) {
+  const value = planSupplementAdoptionInspectionSchema.parse(raw);
+  const company = status.company;
+  if (
+    value.caseId !== company.id ||
+    value.revision !== company.revision ||
+    !equal(value.command, command) ||
+    value.commandSha256 !== (await sha(JSON.stringify(command)))
+  )
+    fail();
+  const receipt =
+    company.planSupplementAdoptions?.find(
+      (item) => item.command.clientRequestId === command.clientRequestId,
+    ) ?? null;
+  if (!equal(value.receipt, receipt) || (receipt && !equal(receipt.command, command))) fail();
+  if (value.canClose) {
+    const run = company.planSupplementExecutions?.find((item) => item.id === command.executionId);
+    const target = run?.command.input.target;
+    const base =
+      target?.kind === "visit-question"
+        ? company.plans.find((item) => item.id === target.planId)
+        : undefined;
+    if (
+      receipt ||
+      !run ||
+      run.capture?.kind !== "response" ||
+      command.executionCommandSha256 !== run.commandSha256 ||
+      command.captureSha256 !== run.captureSha256 ||
+      command.revision !== run.finishedRevision ||
+      run.finishedRevision !== run.reservationRevision + 1 ||
+      target?.kind !== "visit-question" ||
+      !base ||
+      base.version !== target.planVersion ||
+      (await sha(JSON.stringify(base.content))) !== run.command.input.baseContentSha256 ||
+      company.planSupplementExecutions?.some(
+        (item) => item.command.clientRequestId === command.clientRequestId,
+      )
+    )
+      fail();
+  }
+  return value;
+}
+
 const commandSchema = z.union([
   planSupplementExecutionCommandSchema,
   planSupplementAdoptionCommandSchema,
@@ -345,6 +394,38 @@ export class SupplementRequestJournal {
         throw error;
       }
       return this.inspect();
+    });
+  }
+  /** Explicit local read; mounting still uses GET only. No automatic closure. */
+  inspectClosure(raw: PlanSupplementAdoptionCommand) {
+    const command = planSupplementAdoptionCommandSchema.parse(structuredClone(raw));
+    return this.lock(this.key, async () => {
+      if (!equal(await this.pending(), command)) fail();
+      const status = await this.inspect();
+      if (!(await this.pending())) return { status, inspection: null };
+      const inspection = await validateSupplementInspection(
+        await this.transport("adoption", { action: "inspect-adoption", command }),
+        status,
+        command,
+      );
+      return { status, inspection };
+    });
+  }
+  closeUnadopted(raw: PlanSupplementAdoptionInspection, confirmed: boolean) {
+    const expected = planSupplementAdoptionInspectionSchema.parse(structuredClone(raw));
+    if (!confirmed || !expected.canClose || expected.caseId !== this.caseId) fail();
+    return this.lock(this.key, async () => {
+      if (!equal(await this.pending(), expected.command)) fail();
+      const status = await this.inspect();
+      if (!(await this.pending())) return { status, outcome: "adopted" as const };
+      const inspection = await validateSupplementInspection(
+        await this.transport("adoption", { action: "inspect-adoption", command: expected.command }),
+        status,
+        expected.command,
+      );
+      if (!inspection.canClose || !equal(inspection, expected)) fail();
+      await this.remove(expected.command);
+      return { status, outcome: "closed-without-adoption" as const };
     });
   }
   recover(raw: PlanSupplementExecutionCommand) {
