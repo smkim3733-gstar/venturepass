@@ -31,8 +31,11 @@ export type GuidedFlowOptions = {
   today?: string;
   busy?: boolean;
   busyMessage?: string;
-  /** Fresh GET approval only; older revisions cannot prove the current input scope. */
-  guidedApproval?: Pick<GuidedPreparationApproval, "caseId" | "revision" | "inputFingerprint">;
+  /** Fresh same-scope approval only; older revisions cannot prove the current input scope. */
+  guidedApproval?: Pick<
+    GuidedPreparationApproval,
+    "caseId" | "revision" | "inputFingerprint" | "sourceScope"
+  >;
 };
 
 function latestPlan(company: StudioCase): BusinessPlan | null {
@@ -67,14 +70,18 @@ function guidedInputState(
   if (guided.approval.caseId !== company.id) return "changed";
   const current = options.guidedApproval;
   if (current?.caseId === company.id && current.revision === company.revision) {
+    if (current.sourceScope !== guided.approval.sourceScope) return "unverified";
     return current.inputFingerprint === guided.approval.inputFingerprint ? "current" : "changed";
   }
   // Names/IDs and timestamps can prove a change, but cannot prove the profile or text is unchanged.
-  const sources = company.sources.filter((source) => source.extraction !== "pending");
+  const allSources = company.sources.filter((source) => source.extraction !== "pending");
+  const sources = guided.approval.sourceScope
+    ? allSources.filter((source) => guided.approval.sourceIds.includes(source.id))
+    : allSources;
   if (
     sources.length !== guided.approval.sourceIds.length ||
     sources.some((source) => !guided.approval.sourceIds.includes(source.id)) ||
-    sources.some((source) => Date.parse(source.updatedAt) > Date.parse(guided.updatedAt))
+    allSources.some((source) => Date.parse(source.updatedAt) > Date.parse(guided.updatedAt))
   )
     return "changed";
   return "unverified";

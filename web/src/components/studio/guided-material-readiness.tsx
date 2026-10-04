@@ -10,10 +10,12 @@ export function GuidedMaterialReadiness({
   company,
   locked,
   onReviewSources,
+  onSelectSources,
 }: {
   company: StudioCase;
   locked: boolean;
   onReviewSources: () => void;
+  onSelectSources?: () => void;
 }) {
   const state = materialReadiness(company);
   return (
@@ -59,11 +61,17 @@ export function GuidedMaterialReadiness({
           본문 판독·채택 확인
         </button>
       )}
+      {onSelectSources && (
+        <button type="button" disabled={locked} onClick={onSelectSources}>
+          AI에 사용할 자료 선택
+        </button>
+      )}
       <details className={styles.details}>
         <summary>AI 입력 범위와 용량 확인</summary>
         <p>
-          현재 첫 분석에는 저장된 회사 정보와 판독 대기 상태가 아닌 자료 {state.included}개의
-          본문·기본 정보가 포함됩니다. 판독 대기 자료 {state.excluded}개의 내용은 제외됩니다.
+          전체 자료를 선택하면 첫 분석에는 저장된 회사 정보와 판독 대기 상태가 아닌 자료{" "}
+          {state.included}개의 본문·기본 정보가 포함됩니다. 판독 대기 자료 {state.excluded}개의
+          내용은 제외됩니다.
           {state.includedEmpty > 0 &&
             ` 이 중 본문이 빈 ${state.includedEmpty}개는 기본 정보만 포함됩니다.`}
         </p>
@@ -100,7 +108,8 @@ export function GuidedMaterialReadiness({
           ))}
         </ul>
         <p className={styles.note}>
-          검색·필터는 이 입력 범위를 바꾸지 않습니다. 실제 전송은 별도 승인 단계에서 확인합니다.
+          검색·필터는 이 입력 범위를 바꾸지 않습니다. 위 용량은 전체 자료 기준이며, 사용할 자료를
+          고른 뒤 선택 범위와 용량을 다시 확인하고 전송에 동의합니다.
         </p>
       </details>
       {state.equalBodyGroups.length > 0 && (

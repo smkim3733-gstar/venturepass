@@ -22,17 +22,19 @@ import {
   type GuidedPreparationRequest,
 } from "@/lib/studio-guided-preparation-types";
 import { candidateSelectionAcknowledged, candidateSelectionRequest } from "./candidate-selection";
-import {
-  guidedPreparationResponse,
-  guidedPreparationSnapshot,
-  guidedRequestRejected,
-} from "./guided-preparation-ui";
+import { guidedPreparationResponse, guidedRequestRejected } from "./guided-preparation-ui";
 import { EvidenceList } from "./evidence";
 import { GuidedRepairSummary } from "./guided-repair-summary";
 import { guidedQuestions, type GuidedQuestion } from "./guided-questions";
 import { GuidedSourceReview } from "./guided-source-review";
 import { useFileDropNavigationGuard } from "./guided-file-drop-zone";
 import { GuidedMaterials } from "./guided-materials";
+import { GuidedEvidenceSelection } from "./guided-evidence-selection";
+import {
+  initialEvidenceSelection,
+  loadCurrentPreparation,
+  type SelectedEvidenceSnapshot,
+} from "./guided-evidence-selection-state";
 import { GuidedMaterialReadiness } from "./guided-material-readiness";
 import { GuidedBulkUpload } from "./guided-bulk-upload";
 import { PreparedPackagesPanel } from "./prepared-packages-panel";
@@ -87,6 +89,11 @@ export function GuidedWorkspace({
   const [error, setError] = useState("");
   const [unsettled, setUnsettled] = useState(false);
   const [bulkUploading, setBulkUploading] = useState(false);
+  const [evidenceSelection, setEvidenceSelection] = useState<{
+    company: StudioCase;
+    sourceIds: string[];
+  } | null>(null);
+  const [approvalCharacters, setApprovalCharacters] = useState<number | null>(null);
   const [approval, setApproval] = useState<GuidedPreparationApproval | null>(null);
   const [restartRunId, setRestartRunId] = useState<string | null>(null);
   const [restartAcknowledged, setRestartAcknowledged] = useState(false);
@@ -132,14 +139,10 @@ export function GuidedWorkspace({
   useEffect(() => {
     let active = true;
     // Read only: opening a company never starts AI work or transmits its documents.
-    studioFetch<unknown>(`/api/studio/cases/${company.id}/guided-preparation`)
-      .then((raw) => {
-        const snapshot = guidedPreparationSnapshot(raw, {
-          id: company.id,
-          revision: company.revision,
-        });
-        if (active && snapshot?.company.revision === company.revision)
-          setCurrentApproval(snapshot.approval);
+    loadCurrentPreparation({ id: company.id, revision: company.revision }, studioFetch)
+      .then((snapshot) => {
+        if (active && snapshot.company.revision === company.revision)
+          setCurrentApproval(snapshot.currentApproval);
       })
       .catch(() => {});
     return () => {
@@ -205,13 +208,11 @@ export function GuidedWorkspace({
     // Drafts stay in this mounted component when users explore another stage.
     setError("");
   }
-  async function readPreparation(base: StudioCase, showApproval: boolean) {
-    const raw = await studioFetch<unknown>(`/api/studio/cases/${base.id}/guided-preparation`);
-    const snapshot = guidedPreparationSnapshot(raw, base);
-    if (!snapshot) throw new Error("최신 준비 상태를 확인하지 못했습니다.");
+  async function readPreparation(base: StudioCase) {
+    const snapshot = await loadCurrentPreparation(base, studioFetch);
     if (!mounted.current) return null;
     onCompany(snapshot.company);
-    setCurrentApproval(snapshot.approval);
+    setCurrentApproval(snapshot.currentApproval);
     setCheckedInactive(!snapshot.active);
     if (snapshot.active) {
       setUnsettled(true);
@@ -236,10 +237,26 @@ export function GuidedWorkspace({
       pendingRequest.current = null;
     }
     setUnsettled(false);
+    if (snapshot.company.guidedPreparationRuns?.at(-1)?.status === "running")
+      setError("준비가 중간에 멈춘 기록이 있습니다. 자동으로 다시 보내지 않습니다.");
+    return snapshot;
+  }
+  function offerPreparation(snapshot: SelectedEvidenceSnapshot) {
+    if (
+      snapshot.company.id !== company.id ||
+      snapshot.company.revision !== company.revision ||
+      snapshot.overInputLimit ||
+      snapshot.active ||
+      locked ||
+      pendingRequest.current
+    ) {
+      setError("자료 또는 실행 상태가 바뀌었습니다. 최신 범위를 다시 확인해 주세요.");
+      return;
+    }
+    setEvidenceSelection(null);
     const previous = (snapshot.company.guidedPreparationRuns ?? []).at(-1);
     const sameScope = previous?.approval.inputFingerprint === snapshot.approval.inputFingerprint;
     if (
-      showApproval &&
       sameScope &&
       previous &&
       ["awaiting_choice", "awaiting_materials"].includes(previous.status)
@@ -252,7 +269,7 @@ export function GuidedWorkspace({
       );
       return snapshot;
     }
-    if (showApproval && snapshot.aiConfigured) {
+    if (snapshot.aiConfigured) {
       const restart =
         previous &&
         ["running", "failed", "awaiting_review"].includes(previous.status) &&
@@ -270,16 +287,16 @@ export function GuidedWorkspace({
       }
       setRestartRunId(restart ? previous.id : null);
       setRestartAcknowledged(false);
+      setApprovalCharacters(snapshot.inputCharacters);
       setApproval(snapshot.approval);
     } else if (previous?.status === "running") {
       setError(
         "준비가 중간에 멈춘 기록이 있습니다. 이전 기록을 확인하기 전에는 자동으로 다시 보내지 않습니다.",
       );
-    } else if (showApproval)
+    } else
       setError(
         "AI 서비스 연결이 필요합니다. 자료는 보관되어 있으며, 연결 후 이어서 작성할 수 있습니다.",
       );
-    return snapshot;
   }
   async function preparePreview(base = company) {
     if (inFlight.current || busy || blocked || unsettled) return;
@@ -287,7 +304,13 @@ export function GuidedWorkspace({
     onBusyChange("AI가 사용할 자료를 확인하는 중입니다");
     setError("");
     try {
-      await readPreparation(base, true);
+      const snapshot = await readPreparation(base);
+      if (!snapshot || snapshot.active || pendingRequest.current) return;
+      setApproval(null);
+      setEvidenceSelection({
+        company: snapshot.company,
+        sourceIds: initialEvidenceSelection(snapshot.company),
+      });
     } catch {
       if (mounted.current)
         setError("준비 상태를 불러오지 못했습니다. 자료를 다시 전송하지 않았습니다.");
@@ -302,7 +325,14 @@ export function GuidedWorkspace({
     onBusyChange("저장된 결과를 확인하는 중입니다");
     setError("");
     try {
-      await readPreparation(company, false);
+      const snapshot = await readPreparation(company);
+      if (
+        snapshot &&
+        !snapshot.active &&
+        !pendingRequest.current &&
+        snapshot.company.guidedPreparationRuns?.at(-1)?.status !== "running"
+      )
+        setStep("plan");
     } catch {
       if (mounted.current)
         setError("저장 상태를 확인하지 못했습니다. 작업을 반복하지 않고 이전 자료를 보존합니다.");
@@ -637,6 +667,7 @@ export function GuidedWorkspace({
                 company={company}
                 locked={locked}
                 onReviewSources={() => onDetails("sources")}
+                onSelectSources={() => void preparePreview()}
               />
               <GuidedMaterials
                 company={company}
@@ -1292,6 +1323,17 @@ export function GuidedWorkspace({
           </div>
         </>
       )}
+      {evidenceSelection && (
+        <GuidedEvidenceSelection
+          key={`${evidenceSelection.company.id}:${evidenceSelection.company.revision}`}
+          company={evidenceSelection.company}
+          sourceIds={evidenceSelection.sourceIds}
+          currentRevision={company.revision}
+          locked={locked}
+          onClose={() => setEvidenceSelection(null)}
+          onConfirm={offerPreparation}
+        />
+      )}
       <Dialog
         open={approval !== null}
         onOpenChange={(open) => {
@@ -1335,6 +1377,31 @@ export function GuidedWorkspace({
                   </dd>
                 </div>
               </dl>
+              {approvalCharacters !== null && (
+                <p className={styles.helper}>
+                  선택한 첫 분석 입력 {approvalCharacters.toLocaleString("ko-KR")} / 240,000자 ·
+                  후속 초안·검토 입력과 토큰 한도는 별도입니다.
+                </p>
+              )}
+              <button
+                type="button"
+                className={styles.link}
+                disabled={locked}
+                onClick={() => {
+                  setEvidenceSelection({
+                    company,
+                    sourceIds: approval.sourceIds.filter((id) =>
+                      company.sources.some(
+                        (source) => source.id === id && source.extraction !== "pending",
+                      ),
+                    ),
+                  });
+                  setApproval(null);
+                  setRestartAcknowledged(false);
+                }}
+              >
+                자료 선택 바꾸기
+              </button>
               <details className={styles.details}>
                 <summary>전송할 자료 {approval.sourceNames.length}개 확인</summary>
                 <ul className={styles.files}>
