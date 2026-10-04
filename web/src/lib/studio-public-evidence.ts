@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { isPublicDiscoveryPage } from "./studio-public-research";
 import { caseSchema, sectionDefinitions, sourceSchema, type StudioCase } from "./studio-schema";
 import { MAX_COMPANY_SOURCES, occupiedSourceSlots } from "./studio-source-limits";
 const line = (max: number) =>
@@ -11,14 +12,19 @@ const date = z.union([z.literal(""), z.iso.date()]);
 export const publicEvidenceDraftSchema = z
   .object({
     title: line(120).refine(Boolean, "자료 제목을 입력해 주세요."),
-    url: line(2048).refine((value) => {
-      try {
-        const u = new URL(value);
-        return u.protocol === "https:" && !u.username && !u.password && !!u.hostname;
-      } catch {
-        return false;
-      }
-    }, "로그인 정보가 없는 공개 HTTPS 원문 주소를 입력해 주세요."),
+    url: line(2048)
+      .refine((value) => {
+        try {
+          const u = new URL(value);
+          return u.protocol === "https:" && !u.username && !u.password && !!u.hostname;
+        } catch {
+          return false;
+        }
+      }, "로그인 정보가 없는 공개 HTTPS 원문 주소를 입력해 주세요.")
+      .refine(
+        (value) => !isPublicDiscoveryPage(value),
+        "검색 결과 주소 대신 개별 통계표·보고서의 원문 주소를 입력해 주세요.",
+      ),
     publisher: line(120),
     publishedOn: date,
     period: line(300),

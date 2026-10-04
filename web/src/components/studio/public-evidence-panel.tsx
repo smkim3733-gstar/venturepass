@@ -11,6 +11,8 @@ import {
 } from "@/lib/studio-public-evidence";
 import { jsonBody, studioFetch, useDirty } from "./shared";
 import styles from "./guided-workspace.module.css";
+import { PublicResearchLinks } from "./public-research-links";
+import { isPublicDiscoveryPage } from "@/lib/studio-public-research";
 export function PublicEvidencePanel({
   company,
   blocked,
@@ -213,6 +215,7 @@ export function PublicEvidencePanel({
         </div>
       ) : (
         <>
+          <PublicResearchLinks disabled={working || blocked || !!pending || changed} />
           {changed && (
             <p role="alert">
               회사 자료가 바뀌어 저장을 멈췄습니다. 입력을 복사한 뒤 최신 자료에서 다시 확인해
@@ -225,6 +228,11 @@ export function PublicEvidencePanel({
           >
             {textField("title", "공개 자료 제목")}
             {textField("url", "원문 URL (HTTPS)", "url")}
+            {isPublicDiscoveryPage(draft.url) && (
+              <p role="alert">
+                검색 결과 주소 대신 개별 통계표·보고서의 원문 주소를 입력해 주세요.
+              </p>
+            )}
             <label className={styles.label}>
               원문 발췌
               <textarea
@@ -242,6 +250,7 @@ export function PublicEvidencePanel({
             <label className={styles.label}>
               보완할 항목
               <select
+                aria-label="보완할 항목"
                 className={inputClass}
                 value={draft.sectionKey}
                 onChange={(e) =>
@@ -316,8 +325,9 @@ export function PublicEvidencePanel({
             </button>
           )}
           <p className={styles.helper}>
-            주소 자동 조회·검색은 하지 않습니다. 자료 추가 시 기존 분석·주제 선택과 원고 확인 상태가
-            해제됩니다. 원고 본문과 과거 실행은 보존합니다. 미저장 입력은 현재 창에서만 유지됩니다.
+            주소 자동 조회·검색은 하지 않습니다. 선택한 공개 검색은 새 창에서만 열립니다. 자료 추가
+            시 기존 분석·주제 선택과 원고 확인 상태가 해제됩니다. 원고 본문과 과거 실행은
+            보존합니다. 미저장 입력은 현재 창에서만 유지됩니다.
           </p>
         </>
       )}

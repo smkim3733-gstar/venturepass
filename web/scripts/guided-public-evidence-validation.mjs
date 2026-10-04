@@ -326,7 +326,7 @@ try {
     await publicPanel()
       .getByLabel("원문을 읽은 날짜 (담당자 기록)", { exact: true })
       .fill("2026-10-05");
-    await publicPanel().getByRole("combobox").selectOption("development");
+    await publicPanel().getByLabel("보완할 항목", { exact: true }).selectOption("development");
   }
   await openPublic();
   assert.equal(
