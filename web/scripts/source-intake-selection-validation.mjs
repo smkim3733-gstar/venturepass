@@ -202,6 +202,8 @@ const name = "합성 중단·재선택 검증";
 let caseId;
 const writes = [];
 let loseSecondResponse = true;
+let loseThirdBeforeStore = true;
+let loseCreateBeforeStore = false;
 const files = [
   { name: "first.pdf", mimeType: "application/pdf", buffer: pdf("First synthetic original") },
   {
@@ -217,10 +219,8 @@ async function details() {
   await page.getByRole("tab", { name: /자료함/ }).click();
   await panel().getByRole("button", { name: "저장 상태 확인", exact: true }).waitFor();
   await page.waitForFunction(() => {
-    const field = document.querySelector(
-      '[aria-label="복수파일 접수·판독 재개"] input[type="file"]',
-    );
-    return field && !field.matches(":disabled");
+    const button = document.querySelector('[aria-label="복수파일 접수·판독 재개"] button');
+    return button && !button.matches(":disabled");
   });
 }
 async function snapshot() {
@@ -243,7 +243,26 @@ try {
   await context.route("**/source-intakes**", async (route) => {
     const request = route.request();
     if (!["POST", "PUT"].includes(request.method())) return route.fallback();
-    writes.push({ method: request.method(), url: request.url() });
+    const nonce =
+      request.method() === "POST"
+        ? request.postDataJSON().clientRequestId
+        : /name="clientRequestId"\r\n\r\n([^\r\n]+)/.exec(
+            request.postDataBuffer().toString("utf8"),
+          )?.[1];
+    assert.ok(nonce);
+    writes.push({ method: request.method(), url: request.url(), nonce });
+    if (request.method() === "POST" && loseCreateBeforeStore) {
+      loseCreateBeforeStore = false;
+      return route.abort("failed");
+    }
+    if (
+      request.method() === "PUT" &&
+      writes.filter((w) => w.method === "PUT").length === 3 &&
+      loseThirdBeforeStore
+    ) {
+      loseThirdBeforeStore = false;
+      return route.abort("failed");
+    }
     if (request.method() === "POST") assert.equal(request.postDataJSON().action, "create");
     if (
       request.method() === "PUT" &&
@@ -286,17 +305,14 @@ try {
     assert.equal(item.declared.sha256, digest(files[i].buffer));
   assert.equal(writes.filter((w) => w.method === "PUT").length, 2);
   record("UI hashes PDF/DOCX before declaration; lost second response stops third transfer");
-  await panel().getByRole("button", { name: "같은 요청으로 결과 확인", exact: true }).click();
-  await panel().getByText("저장 상태를 확인했습니다.", { exact: false }).count();
-  await page.waitForFunction(
-    () =>
-      !Array.from(document.querySelectorAll("button")).some(
-        (button) => button.textContent === "같은 요청으로 결과 확인",
-      ),
+  const journalKey = () => `venturepass:intake-upload-outbox:v1:${caseId}`;
+  const pendingReply = await page.evaluate(
+    (key) => JSON.parse(localStorage.getItem(key)),
+    journalKey(),
   );
-  assert.equal(writes.filter((w) => w.method === "PUT").length, 2);
-  assert.deepEqual(await snapshot(), interrupted);
-  record("original receipt reconciles lost response with GET and zero new PUT");
+  assert.equal(pendingReply.request.input.clientRequestId, writes.at(-1).nonce);
+  assert.equal(pendingReply.request.file.name, files[1].name);
+  assert.ok(!JSON.stringify(pendingReply).includes("arrayBuffer"));
   page.on("dialog", (dialog) => dialog.accept());
   await page.goto("about:blank");
   await stop();
@@ -304,6 +320,9 @@ try {
   await page.goto(origin + "/studio", { waitUntil: "networkidle" });
   await page.getByRole("button").filter({ hasText: name }).first().click();
   await details();
+  assert.equal(await page.evaluate((key) => localStorage.getItem(key), journalKey()), null);
+  assert.equal(writes.filter((w) => w.method === "PUT").length, 2);
+  record("reload restores the original pending nonce and acknowledges saved reply with GET only");
   assert.match(
     await panel().getByLabel("접수 원본 보관 요약").innerText(),
     /원본 보관 2개.*다시 선택·접수 1개.*상태 확인 0개/,
@@ -324,12 +343,43 @@ try {
   assert.deepEqual(await snapshot(), interrupted);
   record("same-name equal-size different PDF is rejected in browser before any PUT");
   await reselect.setInputFiles(files[2]);
+  await panel().getByRole("button", { name: "이 원본 접수", exact: true }).click();
+  await panel().getByLabel("이전 요청의 원래 파일 다시 선택", { exact: true }).waitFor();
+  await page.waitForFunction(
+    () =>
+      !document.querySelector('[aria-label="복수파일 접수·판독 재개"] button').matches(":disabled"),
+  );
+  const beforeReselect = await page.evaluate((key) => localStorage.getItem(key), journalKey());
+  const originalNonce = JSON.parse(beforeReselect).request.input.clientRequestId;
+  assert.deepEqual(await snapshot(), interrupted);
+  const beforeReload = writes.length;
+  await page.reload({ waitUntil: "networkidle" });
+  await page.getByRole("button").filter({ hasText: name }).first().click();
+  await details();
+  assert.equal(writes.length, beforeReload);
+  assert.equal(
+    await page.evaluate((key) => localStorage.getItem(key), journalKey()),
+    beforeReselect,
+  );
+  const pendingFile = panel().getByLabel("이전 요청의 원래 파일 다시 선택", { exact: true });
+  await pendingFile.setInputFiles(mismatch);
+  await panel().getByRole("button", { name: "같은 요청으로 결과 확인", exact: true }).click();
+  await panel().getByText("원래 파일을 다시 선택해 주세요.", { exact: false }).waitFor();
+  assert.equal(writes.length, beforeReload);
+  assert.equal(
+    await page.evaluate((key) => localStorage.getItem(key), journalKey()),
+    beforeReselect,
+  );
+  record("no-write interruption survives reload; wrong reselected bytes send zero PUT");
+  await pendingFile.setInputFiles(files[2]);
   const complete = page.waitForResponse(
     (response) =>
       response.request().method() === "PUT" && response.url().includes("/source-intakes/"),
   );
-  await panel().getByRole("button", { name: "이 원본 접수", exact: true }).click();
+  await panel().getByRole("button", { name: "같은 요청으로 결과 확인", exact: true }).click();
   assert.equal((await complete).status(), 200);
+  assert.equal(writes.at(-1).nonce, originalNonce);
+  record("explicit reselection resumes the exact original upload nonce after GET");
   await panel().getByLabel("접수 원본 보관 요약").filter({ hasText: "원본 보관 3개" }).waitFor();
   const final = await snapshot();
   assert.equal(final.sources.length, 3);
@@ -347,6 +397,57 @@ try {
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth > innerWidth);
   assert.equal(overflow, false);
   await page.screenshot({ path: path.join(output, "reselection-mobile.png"), fullPage: true });
+  const firstCaseId = caseId;
+  const secondName = "합성 선언 요청 새로고침 검증";
+  await page.goto(origin + "/studio", { waitUntil: "networkidle" });
+  await page.getByRole("button", { name: "기업 추가", exact: true }).click();
+  await page.locator("#new-company-name").fill(secondName);
+  caseId = (
+    await mutation(() =>
+      page.getByRole("button", { name: "기업 작업공간 만들기", exact: true }).click(),
+    )
+  ).id;
+  await details();
+  loseCreateBeforeStore = true;
+  await panel()
+    .getByLabel("여러 원본 파일 선택 (외부 AI 미전송)", { exact: true })
+    .setInputFiles(files[0]);
+  await panel()
+    .getByRole("button", { name: "지원 가능한 1개 원본 순차 접수", exact: true })
+    .click();
+  await panel().getByLabel("저장 확인 중인 접수 목록").waitFor();
+  await page.waitForFunction(
+    () =>
+      !document.querySelector('[aria-label="복수파일 접수·판독 재개"] button').matches(":disabled"),
+  );
+  const pendingCreate = await page.evaluate((key) => localStorage.getItem(key), journalKey());
+  assert.equal((await snapshot()).sourceIntakes.length, 0);
+  const beforeCreateReload = writes.length;
+  await page.reload({ waitUntil: "networkidle" });
+  await page.getByRole("button").filter({ hasText: secondName }).first().click();
+  await details();
+  assert.equal(writes.length, beforeCreateReload);
+  assert.equal(
+    await page.evaluate((key) => localStorage.getItem(key), journalKey()),
+    pendingCreate,
+  );
+  await panel()
+    .getByLabel("저장 확인 중인 접수 목록")
+    .getByText(files[0].name, { exact: false })
+    .waitFor();
+  await panel().getByRole("button", { name: "같은 요청으로 결과 확인", exact: true }).click();
+  await panel().getByText("파일 다시 선택 필요", { exact: true }).waitFor();
+  assert.equal(writes.length, beforeCreateReload + 1);
+  assert.equal(writes.at(-1).nonce, JSON.parse(pendingCreate).request.command.clientRequestId);
+  const declarationOnly = await snapshot();
+  assert.equal(declarationOnly.sources.length, 0);
+  assert.equal(declarationOnly.sourceIntakes.length, 1);
+  assert.equal(declarationOnly.sourceIntakes[0].declared.sha256, digest(files[0].buffer));
+  assert.equal(await page.evaluate((key) => localStorage.getItem(key), journalKey()), null);
+  record(
+    "unobserved create survives reload with full file list; explicit same-nonce replay never invents lost File bytes",
+  );
+  caseId = firstCaseId;
   assert.equal(externalRequests.length, 0);
   assert.deepEqual(errors, []);
   assert.ok(!logs.join("").includes("ACCEPTANCE_EXTERNAL_FETCH_BLOCKED"));

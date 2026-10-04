@@ -20,9 +20,15 @@ export type IntakePending =
       file: File;
       sha256?: string;
     };
-export const intakeNonce = (request: IntakePending) =>
+/** Metadata is sufficient for lookup; transmission still requires a real File. */
+export type IntakeRequestIdentity =
+  | Extract<IntakePending, { kind: "command" }>
+  | (Omit<Extract<IntakePending, { kind: "original" }>, "file"> & {
+      file: Pick<File, "name" | "size" | "type">;
+    });
+export const intakeNonce = (request: IntakeRequestIdentity) =>
   request.kind === "command" ? request.command.clientRequestId : request.input.clientRequestId;
-export const intakeRevision = (request: IntakePending) =>
+export const intakeRevision = (request: IntakeRequestIdentity) =>
   request.kind === "command" ? request.command.revision : request.input.revision;
 export function intakeFileError(file: Pick<File, "name" | "size">): string {
   if (!sourceIntakeNameSchema.safeParse(file.name).success)
@@ -48,7 +54,7 @@ export function intakeBatchError(files: IntakeFile[]): string {
 export function intakeRequestAcknowledged(
   company: StudioCase,
   companyId: string,
-  request: IntakePending,
+  request: IntakeRequestIdentity,
 ): boolean {
   if (company.id !== companyId || company.revision < intakeRevision(request)) return false;
   const action = request.kind === "command" ? request.command.action : "original";
@@ -226,7 +232,7 @@ export function intakeCanResume(item: SourceIntakeItem) {
   return ["storing_original", "extracting_local", "requesting_external"].includes(item.phase);
 }
 /** External uncertainty checks never repeat POST, even with the same client nonce. */
-export function intakeReplayIsReadOnly(request: IntakePending) {
+export function intakeReplayIsReadOnly(request: IntakeRequestIdentity) {
   return request.kind === "command" && request.command.action === "run-external";
 }
 export function intakeCanUpload(item: SourceIntakeItem) {
@@ -238,7 +244,7 @@ export function intakeCanCancel(item: SourceIntakeItem) {
 export function intakePendingState(
   company: StudioCase,
   companyId: string,
-  request: IntakePending,
+  request: IntakeRequestIdentity,
   rejected: boolean,
   activeItemIds: string[],
 ): "acknowledged" | "rejected" | "unknown" {

@@ -48,10 +48,18 @@ import {
   intakeReplayIsReadOnly,
   sendIntakeRequest,
   validateIntakeResponse,
-  validateIntakeStatus,
   type IntakeFile,
   type IntakePending,
+  type IntakeRequestIdentity,
 } from "./source-intakes-ui";
+
+import {
+  browserIntakeUploadOutbox,
+  IntakeUploadOutboxError,
+  isIntakeUpload,
+  restoreIntakeUploadFile,
+  type IntakeUploadOutbox,
+} from "./source-intake-upload-outbox";
 
 export type IntakeReviewDraft = {
   itemId: string;
@@ -246,7 +254,8 @@ function SourceIntakesPanelInner({
     [loaded, setLoaded] = useState(false),
     [requesting, setRequesting] = useState(false),
     [checkRequired, setCheckRequired] = useState(false),
-    [hasPending, setHasPending] = useState(false);
+    [pendingView, setPendingView] = useState<IntakeRequestIdentity | null>(null);
+  const hasPending = pendingView !== null;
   const [error, setError] = useState(""),
     [errorCode, setErrorCode] = useState(""),
     [message, setMessage] = useState(""),
@@ -255,7 +264,9 @@ function SourceIntakesPanelInner({
     callbacks = useRef({ onCompany, onBusyChange }),
     mounted = useRef(false),
     inFlight = useRef(false);
-  const pending = useRef<IntakePending | null>(null),
+  const pending = useRef<IntakeRequestIdentity | null>(null),
+    pendingFile = useRef<File | null>(null),
+    outbox = useRef<IntakeUploadOutbox | null>(null),
     rejected = useRef(false),
     readEpoch = useRef(0);
   const companyId = company.id,
@@ -283,14 +294,22 @@ function SourceIntakesPanelInner({
   const readStatus = useCallback(async () => {
     const baseline = current.current;
     const epoch = ++readEpoch.current;
-    const response = await fetch(endpoint, { cache: "no-store" });
-    const raw: unknown = await response.json().catch(() => null);
+    outbox.current ??= browserIntakeUploadOutbox(companyId);
+    const snapshot = await outbox.current.inspect(
+      Math.max(baseline.revision, current.current.revision),
+    );
     if (!mounted.current || current.current.id !== companyId || epoch !== readEpoch.current)
       return null;
-    const snapshot = response.ok
-      ? validateIntakeStatus(raw, companyId, Math.max(baseline.revision, current.current.revision))
-      : null;
-    if (!snapshot) throw new Error("저장된 접수 상태를 확인하지 못했습니다. 다시 조회해 주세요.");
+    if (snapshot.journal) {
+      if (
+        !pending.current ||
+        intakeNonce(pending.current) !== intakeNonce(snapshot.journal.request)
+      )
+        pendingFile.current = null;
+      pending.current = snapshot.journal.request;
+      rejected.current = false;
+      setPendingView(snapshot.journal.request);
+    }
     setActive(snapshot.activeItemIds);
     setLoaded(true);
     let unresolved = false;
@@ -313,22 +332,26 @@ function SourceIntakesPanelInner({
         }
         pending.current = null;
         rejected.current = false;
-        setHasPending(false);
+        setPendingView(null);
       } else unresolved = true;
     }
     setCheckRequired(unresolved || snapshot.activeItemIds.length > 0);
     apply(snapshot.company);
     return { ...snapshot, unresolved };
-  }, [apply, companyId, endpoint]);
+  }, [apply, companyId]);
   useEffect(() => {
     mounted.current = true;
     inFlight.current = true;
     callbacks.current.onBusyChange("저장된 파일 접수 상태를 불러오는 중입니다");
     const epoch = readEpoch.current + 1;
     void readStatus()
-      .catch(() => {
+      .catch((caught) => {
         if (mounted.current && readEpoch.current === epoch) {
-          setError("저장된 접수 상태를 불러오지 못했습니다. ‘저장 상태 확인’을 눌러 주세요.");
+          setError(
+            caught instanceof IntakeUploadOutboxError
+              ? caught.message
+              : "저장된 접수 상태를 불러오지 못했습니다. ‘저장 상태 확인’을 눌러 주세요.",
+          );
           setCheckRequired(true);
         }
       })
@@ -369,15 +392,22 @@ function SourceIntakesPanelInner({
   }
   async function perform(request: IntakePending) {
     pending.current = request;
+    pendingFile.current = request.kind === "original" ? request.file : null;
     rejected.current = false;
-    setHasPending(true);
+    setPendingView(request);
     try {
-      const raw = await sendIntakeRequest(endpoint, request);
+      outbox.current ??= browserIntakeUploadOutbox(companyId);
+      const next = isIntakeUpload(request)
+        ? await outbox.current.send(request)
+        : await outbox.current.guard(async () => {
+            const raw = await sendIntakeRequest(endpoint, request);
+            return validateIntakeResponse(raw, companyId, request, current.current.revision);
+          });
       if (!mounted.current || current.current.id !== companyId) return null;
-      const next = validateIntakeResponse(raw, companyId, request, current.current.revision);
-      if (!next) throw new Error("접수 결과의 기업·버전·요청 기록이 일치하지 않습니다.");
+      if (!next || next.revision < current.current.revision)
+        throw new Error("접수 결과의 기업·버전·요청 기록이 일치하지 않습니다.");
       pending.current = null;
-      setHasPending(false);
+      setPendingView(null);
       setCheckRequired(false);
       const itemId =
         request.kind === "original"
@@ -398,7 +428,9 @@ function SourceIntakesPanelInner({
         setCheckRequired(true);
         const code = caught instanceof IntakeHttpError ? caught.code : "INTAKE_RESULT_UNKNOWN";
         setErrorCode(code);
-        setError(intakeErrorMessage(code));
+        setError(
+          caught instanceof IntakeUploadOutboxError ? caught.message : intakeErrorMessage(code),
+        );
         if (request.kind === "original")
           setItemErrors((previous) => ({ ...previous, [request.itemId]: code }));
         else if (request.command.action !== "create") {
@@ -421,9 +453,13 @@ function SourceIntakesPanelInner({
           "이 요청의 저장 기록을 아직 확인하지 못했습니다. 기존 요청으로 결과를 확인할 수 있습니다.",
         );
       else setMessage("저장 상태를 확인했습니다. 완료한 단계를 자동으로 다시 실행하지 않습니다.");
-    } catch {
+    } catch (caught) {
       if (mounted.current)
-        setError("저장된 접수 상태를 확인하지 못했습니다. 새 요청은 보내지 않았습니다.");
+        setError(
+          caught instanceof IntakeUploadOutboxError
+            ? caught.message
+            : "저장된 접수 상태를 확인하지 못했습니다. 새 요청은 보내지 않았습니다.",
+        );
     } finally {
       unlock();
     }
@@ -443,8 +479,23 @@ function SourceIntakesPanelInner({
         );
         return;
       }
-      await perform(pending.current);
-    } catch {
+      const request = pending.current;
+      if (request.kind === "original") {
+        if (!pendingFile.current || !request.sha256) {
+          setError(
+            "이전 요청의 원래 파일을 아래에서 다시 선택해 주세요. 요청 번호는 그대로 유지합니다.",
+          );
+          return;
+        }
+        await perform(
+          await restoreIntakeUploadFile(
+            { ...request, sha256: request.sha256 },
+            pendingFile.current,
+          ),
+        );
+      } else await perform(request);
+    } catch (caught) {
+      if (mounted.current && caught instanceof IntakeUploadOutboxError) setError(caught.message);
       /* The unchanged request stays available for explicit status checks. */
     } finally {
       unlock();
@@ -809,8 +860,10 @@ function SourceIntakesPanelInner({
       </Notice>
       <p className="text-xs leading-6">
         최대 10개·파일당 12MiB·합계 24MiB. 화면을 닫으면 선택한 파일은 다시 선택해야 합니다. 서버에
-        보관한 원본과 판독 결과는 저장 상태에서 이어갑니다. 탭 종료 뒤 무인 처리를 보장하지
-        않습니다.
+        보관한 원본과 판독 결과는 저장 상태에서 이어갑니다. 접수 요청 번호·파일 이름·크기·내용
+        해시는 이 브라우저에 전송 전에 보관합니다. 파일 본문은 브라우저 보관 기록에 넣지 않습니다.
+        브라우저 기록 삭제·다른 주소나 브라우저에서는 이 요청 보관을 복구할 수 없습니다. 탭 종료 뒤
+        무인 처리를 보장하지 않습니다.
       </p>
       <p aria-label="접수 원본 보관 요약" className="text-sm">
         원본 보관 {recovery.stored}개 · 다시 선택·접수 {recovery.awaiting}개 · 상태 확인{" "}
@@ -836,6 +889,42 @@ function SourceIntakesPanelInner({
           </Button>
         )}
       </div>
+      {hasPending && pendingView?.kind === "original" && (
+        <div className="space-y-2 rounded-xl border p-3">
+          <p className="break-all text-sm">저장 확인 중인 파일: {pendingView.file.name}</p>
+          <p className="text-xs">
+            새로고침 뒤에는 원래 파일을 다시 선택합니다. 저장 상태 확인은 파일 전송 없이 먼저
+            진행됩니다.
+          </p>
+          <Label htmlFor={`${prefix}-pending-file`}>이전 요청의 원래 파일 다시 선택</Label>
+          <Input
+            id={`${prefix}-pending-file`}
+            type="file"
+            disabled={blocked || !loaded || active.length > 0}
+            onChange={(event) => {
+              pendingFile.current = event.target.files?.[0] ?? null;
+              setMessage(
+                pendingFile.current
+                  ? "재선택한 파일은 ‘같은 요청으로 결과 확인’을 누를 때 내용까지 대조합니다."
+                  : "",
+              );
+            }}
+          />
+        </div>
+      )}
+      {hasPending && pendingView?.kind === "command" && pendingView.command.action === "create" && (
+        <div
+          aria-label="저장 확인 중인 접수 목록"
+          className="space-y-1 rounded-xl border p-3 text-sm"
+        >
+          <p>원래 요청 번호로 확인할 파일 {pendingView.command.files.length}개</p>
+          {pendingView.command.files.map((file) => (
+            <p className="break-all" key={file.clientFileId}>
+              {file.originalName} · {file.sizeBytes.toLocaleString()} bytes
+            </p>
+          ))}
+        </div>
+      )}
       {!loaded && (
         <p role="status" className="text-sm">
           저장 상태 확인 전에는 접수·판독을 시작하지 않습니다.
