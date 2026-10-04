@@ -1,3 +1,8 @@
+import {
+  publicEvidenceExportEntries,
+  PUBLIC_EVIDENCE_EXPORT_TITLE,
+  PUBLIC_EVIDENCE_EXPORT_NOTICE,
+} from "./studio-public-evidence-export";
 import type { BusinessPlan, StudioCase } from "./studio-schema";
 
 export function exportPlanMarkdown(
@@ -6,6 +11,8 @@ export function exportPlanMarkdown(
   current: boolean,
   options?: { sourceListIds?: readonly string[] },
 ) {
+  const publicEvidence = publicEvidenceExportEntries(record, plan, options);
+  let referenceNumber = 0;
   const lines = [
     `# ${plan.content.title}`,
     "",
@@ -30,12 +37,13 @@ export function exportPlanMarkdown(
     if (section.evidence.length) {
       lines.push("### 연결 근거", "");
       for (const reference of section.evidence) {
+        referenceNumber += 1;
         const source = record.sources.find((entry) => entry.id === reference.sourceId);
         const name = reference.sourceId.startsWith("profile")
           ? "기업 기본정보"
           : (source?.name ?? "삭제되었거나 현재 자료에서 찾을 수 없는 출처");
         lines.push(
-          `- ${name} · ${reference.locator || "위치 미지정"} · 출처 ID: ${reference.sourceId}`,
+          `- ${publicEvidence.length ? `[${referenceNumber}] ` : ""}${name} · ${reference.locator || "위치 미지정"} · 출처 ID: ${reference.sourceId}`,
           `  - 인용: ${reference.quote.replaceAll("\n", " ")}`,
         );
       }
@@ -64,6 +72,20 @@ export function exportPlanMarkdown(
     if (options?.sourceListIds && !options.sourceListIds.includes(source.id)) continue;
     lines.push(`- ${source.name} · ID: ${source.id} · 최종 수정: ${source.updatedAt}`);
     for (const warning of source.warnings) lines.push(`  - 추출 확인사항: ${warning}`);
+  }
+  if (publicEvidence.length) {
+    lines.push("", `## ${PUBLIC_EVIDENCE_EXPORT_TITLE}`, "", PUBLIC_EVIDENCE_EXPORT_NOTICE, "");
+    for (const entry of publicEvidence) {
+      // New user-controlled metadata is plain text, not active Markdown or HTML.
+      const plain = (s: string) =>
+        s
+          .replaceAll("&", "&amp;")
+          .replaceAll("<", "&lt;")
+          .replaceAll(">", "&gt;")
+          .replace(/([\\`*_{}\[\]()#+.!|~-])/g, "\\$1");
+      lines.push(`### ${plain(entry.title)}`, "");
+      for (const line of entry.lines) lines.push(plain(line), "");
+    }
   }
   lines.push(
     "",

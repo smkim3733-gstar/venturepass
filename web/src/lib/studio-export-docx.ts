@@ -1,3 +1,8 @@
+import {
+  publicEvidenceExportEntries,
+  PUBLIC_EVIDENCE_EXPORT_TITLE,
+  PUBLIC_EVIDENCE_EXPORT_NOTICE,
+} from "./studio-public-evidence-export";
 import JSZip from "jszip";
 import {
   sectionDefinitions,
@@ -272,6 +277,7 @@ function reviewAppendix(record: StudioCase, plan: BusinessPlan) {
 
 /** A print report of the selected saved version; export has no write or AI side effects. */
 export async function exportPlanDocx(record: StudioCase, plan: BusinessPlan, current: boolean) {
+  const publicEvidence = publicEvidenceExportEntries(record, plan);
   const sectionTitles = ["사업 개요", ...plan.content.sections.map((section) => section.title)];
   const appendixTitles = [
     "대표·담당자 확인사항",
@@ -279,6 +285,7 @@ export async function exportPlanDocx(record: StudioCase, plan: BusinessPlan, cur
     "실사 예상 질문",
     "연결 근거",
     "입력자료 목록",
+    ...(publicEvidence.length ? [PUBLIC_EVIDENCE_EXPORT_TITLE] : []),
   ];
   const titles = [
     ...sectionTitles.map((title, index) => `${String(index + 1).padStart(2, "0")}  ${title}`),
@@ -409,6 +416,14 @@ export async function exportPlanDocx(record: StudioCase, plan: BusinessPlan, cur
     for (const warning of source.warnings)
       body.push(paragraph(`추출 확인사항: ${warning}`, "Secondary"));
   });
+  if (publicEvidence.length) {
+    body.push(heading(titles[sectionTitles.length + 5], sectionTitles.length + 5, true));
+    body.push(paragraph(PUBLIC_EVIDENCE_EXPORT_NOTICE, "Secondary"));
+    for (const entry of publicEvidence) {
+      body.push(paragraph(entry.title, "EvidenceTitle"));
+      for (const line of entry.lines) body.push(paragraph(line, "ReviewText"));
+    }
+  }
   // Preserve exact source timestamps alongside the human-readable cover dates.
   body.push(paragraph("원고 기록", "Heading2"));
   body.push(paragraph(`작성일 원본: ${plan.generatedAt}`, "Secondary", "<w:keepNext/>"));
