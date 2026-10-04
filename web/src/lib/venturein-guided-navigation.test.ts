@@ -262,7 +262,10 @@ it("SSR displays local identity and mismatch only; creates no command, link or r
     expect(html).toContain("합성 안내 기업");
     expect(html).toContain("s***");
     expect(html).toContain("실행하지 않았습니다");
-    expect(html).not.toMatch(/<button|<a |<input|<script/);
+    expect(html).not.toMatch(/<a |<input|<script/);
+    expect(html.match(/<button\b/g)).toHaveLength(1);
+    expect(html).toContain('type="button"');
+    expect(html).toContain("모든 단계 펼치기");
     f.target.workflowRevision++;
     const changed = renderToStaticMarkup(createElement(VentureinGuidedEntry, { ...f, root }));
     expect(changed).toContain('role="alert"');

@@ -1,10 +1,11 @@
 "use client";
 
-import { ArrowRight, History, RefreshCw } from "lucide-react";
+import { History, RefreshCw } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import type { VentureExecutionRecord } from "@/lib/venturein-execution-schema";
 import type { VentureWorkflowStatus } from "@/lib/venturein-workflow";
+import { VentureinDisclosure } from "./venturein-disclosure";
 import { formatDate, Notice } from "./shared";
 
 const steps = [
@@ -52,16 +53,14 @@ export function VentureinJourneyPanel({
     .slice(0, 12);
 
   return (
-    <section
-      data-venture-section="journey"
-      tabIndex={-1}
-      aria-label="신청 화면별 진행 상태"
-      className="space-y-4 rounded-2xl border p-5"
+    <VentureinDisclosure
+      section="journey"
+      label="신청 화면별 진행 상태"
+      title="신청 화면별 진행 상태"
+      badge={
+        <Badge variant="outline">{steps.find((step) => step.phase === journey.phase)?.label}</Badge>
+      }
     >
-      <div className="flex flex-wrap items-center gap-2">
-        <ArrowRight className="size-4 text-primary" />
-        <h3 className="font-bold">신청 화면별 진행 상태</h3>
-      </div>
       <ol className="grid grid-cols-2 gap-2 text-xs sm:grid-cols-4 lg:grid-cols-7">
         {steps.map((step, index) => (
           <li
@@ -150,6 +149,6 @@ export function VentureinJourneyPanel({
         선택 항목의 화면 확인 이력입니다. 전체 필수 항목이나 약관·동의가 완료됐다는 뜻이 아닙니다.
         기관의 저장·접수·심사 완료를 증명하지 않습니다.
       </p>
-    </section>
+    </VentureinDisclosure>
   );
 }

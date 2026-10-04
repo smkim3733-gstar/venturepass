@@ -5,6 +5,8 @@ import type { VentureConnectionStatus } from "@/lib/venturein-schema";
 import type { VentureWorkflowStatus } from "@/lib/venturein-workflow";
 import type { VentureOverview } from "@/lib/venturein-overview-types";
 import { resolveVentureGuidedNavigation } from "@/lib/venturein-guided-navigation";
+import { Button } from "@/components/ui/button";
+import { showVentureDisclosureStep, expandVentureDisclosures } from "./venturein-disclosure";
 import { formatDate } from "./shared";
 
 export function VentureinGuidedEntry({
@@ -27,7 +29,7 @@ export function VentureinGuidedEntry({
   useEffect(() => {
     if (focused.current) return;
     const destination = section
-      ? root.current?.querySelector<HTMLElement>(`[data-venture-section="${section}"]`)
+      ? root.current && showVentureDisclosureStep(root.current, section)
       : notice.current;
     if (!destination) return;
     focused.current = true;
@@ -41,6 +43,18 @@ export function VentureinGuidedEntry({
       aria-label="간단 화면에서 이어가기"
       className="rounded-xl border bg-muted/30 p-4 text-sm leading-6"
     >
+      <p className="mb-2 text-xs text-muted-foreground">
+        이전 안내와 일치하면 필요한 단계부터 펼칩니다. 단계를 접어도 입력값·검토안은 유지되며
+        저장하거나 전송하지 않습니다.
+      </p>
+      <Button
+        type="button"
+        variant="outline"
+        className="mb-3"
+        onClick={() => expandVentureDisclosures(root.current)}
+      >
+        모든 단계 펼치기
+      </Button>
       {result.valid ? (
         <>
           <p className="font-semibold">이어서 확인할 부분: {result.label}</p>

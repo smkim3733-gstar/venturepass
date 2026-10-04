@@ -1,5 +1,7 @@
 "use client";
 
+import { VentureinDisclosure } from "./venturein-disclosure";
+
 import { useEffect, useRef, useState } from "react";
 import { CheckCircle2, FileCheck, RefreshCw, Send } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -806,13 +808,27 @@ export function VentureinExecutionPanel({
   }
 
   return (
-    <section
-      data-venture-section="execution"
-      tabIndex={-1}
-      aria-label="승인 후 공식 화면 입력·첨부"
-      className="min-w-0 space-y-4 border-t pt-4"
+    <VentureinDisclosure
+      section="execution"
+      label="승인 후 공식 화면 입력·첨부"
+      title="검토·입력·첨부와 이전 결과"
+      badge={
+        <span className="text-xs font-normal">
+          {busy
+            ? busy
+            : error
+              ? "요청 오류 확인 필요"
+              : uncertain ||
+                  outcomeUnknown ||
+                  execution?.status === "running" ||
+                  execution?.status === "stopped"
+                ? "이전 결과 확인 필요"
+                : execution
+                  ? "저장된 실행 기록 있음 · 기관 접수 확인 별도"
+                  : "실행 기록 없음"}
+        </span>
+      }
     >
-      <h4 className="font-semibold">검토 후 공식 화면에 입력·첨부</h4>
       <p className="text-xs leading-6 text-muted-foreground">
         준비본 선택·대조 → 선택 항목 검토 → 전송 승인 → 입력·첨부 1회 실행 순서로 진행합니다. 실행
         직전 공식 화면과 로그인 상태, 승인한 원본 파일을 다시 확인합니다. 전체 제출 준비와 동의
@@ -1033,6 +1049,6 @@ export function VentureinExecutionPanel({
         busy={!!busy}
         describeSource={describeSource}
       />
-    </section>
+    </VentureinDisclosure>
   );
 }

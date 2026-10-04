@@ -1,21 +1,13 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import {
-  ArrowUpRight,
-  KeyRound,
-  LockKeyhole,
-  Play,
-  RefreshCw,
-  Save,
-  Square,
-  Trash2,
-} from "lucide-react";
+import { ArrowUpRight, Play, RefreshCw, Save, Square, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
+import { VentureinDisclosure } from "./venturein-disclosure";
 import { VentureinWorkflowPanel } from "./venturein-workflow-panel";
 import {
   ventureinUrls,
@@ -225,21 +217,20 @@ export function VentureinPanel({
         )
       ) : (
         <fieldset disabled={!!busy} className="mt-5 min-w-0 space-y-5">
-          <section
-            data-venture-section="account"
-            tabIndex={-1}
-            aria-label="벤처인 계정 저장"
-            className="rounded-2xl border p-5"
-          >
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <h3 className="flex items-center gap-2 font-bold">
-                <LockKeyhole className="size-4 text-primary" />
-                기업별 로그인 계정
-              </h3>
+          <VentureinDisclosure
+            section="account"
+            label="벤처인 계정 저장"
+            title="고객사 로그인 계정"
+            badge={
               <Badge variant="outline">
-                {connection.account.saved ? "암호화 저장됨" : "계정 미등록"}
+                {loginId || password
+                  ? "미저장 입력 있음"
+                  : connection.account.saved
+                    ? "암호화 저장됨"
+                    : "계정 미등록"}
               </Badge>
-            </div>
+            }
+          >
             {connection.account.saved && (
               <p className="mt-3 break-all text-sm leading-6">
                 저장 아이디: <strong>{connection.account.maskedLoginId}</strong>
@@ -313,20 +304,13 @@ export function VentureinPanel({
                 )}
               </div>
             </form>
-          </section>
-          <section
-            data-venture-section="login"
-            tabIndex={-1}
-            aria-label="벤처인 로그인 연결"
-            className="rounded-2xl border p-5"
+          </VentureinDisclosure>
+          <VentureinDisclosure
+            section="login"
+            label="벤처인 로그인 연결"
+            title="로그인 연결"
+            badge={<Badge variant="outline">{sessionLabels[connection.session.state]}</Badge>}
           >
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <h3 className="flex items-center gap-2 font-bold">
-                <KeyRound className="size-4 text-primary" />
-                로그인 연결
-              </h3>
-              <Badge variant="outline">{sessionLabels[connection.session.state]}</Badge>
-            </div>
             <p
               role={connection.session.state === "login_failed" ? "alert" : "status"}
               className={
@@ -446,7 +430,7 @@ export function VentureinPanel({
                 </a>
               </Button>
             </div>
-          </section>
+          </VentureinDisclosure>
           <VentureinWorkflowPanel
             guidedTarget={guidedTarget}
             navigationRoot={root}

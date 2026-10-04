@@ -20,6 +20,7 @@ import { Loading, Notice, formatDate, jsonBody, selectClass, studioFetch } from 
 import { VentureinExecutionPanel } from "./venturein-execution-panel";
 import { VentureinJourneyPanel } from "./venturein-journey-panel";
 
+import { VentureinDisclosure } from "./venturein-disclosure";
 import { VentureinGuidedEntry } from "./venturein-guided-entry";
 import type { VentureOverview } from "@/lib/venturein-overview-types";
 
@@ -56,23 +57,27 @@ function Step({
   children: ReactNode;
 }) {
   return (
-    <section
-      data-venture-section={
-        number === 1 ? "company" : number === 2 ? "mapping" : number === 4 ? "review" : undefined
+    <VentureinDisclosure
+      section={
+        number === 1
+          ? "company"
+          : number === 2
+            ? "mapping"
+            : number === 3
+              ? "attachments"
+              : "review"
       }
-      tabIndex={-1}
-      aria-label={title}
-      className="min-w-0 rounded-2xl border p-5"
-    >
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <h3 className="font-bold">
+      label={title}
+      title={
+        <>
           <span className="mr-2 text-primary">{number}.</span>
           {title}
-        </h3>
-        {badge}
-      </div>
-      <div className="mt-4 space-y-4">{children}</div>
-    </section>
+        </>
+      }
+      badge={badge}
+    >
+      {children}
+    </VentureinDisclosure>
   );
 }
 
@@ -456,6 +461,12 @@ export function VentureinWorkflowPanel({
         </div>
       )}
       {busy && <Loading text={busy} />}
+      {dirty && (
+        <Notice tone="warning">
+          저장하지 않은 항목·첨부 연결이 있습니다. 접힌 단계의 입력도 유지됩니다. 연결을 확인한 뒤
+          기존 저장 버튼으로 저장해 주세요.
+        </Notice>
+      )}
       {!workflow ? (
         !requestError && !error && <Loading text="제출 준비를 불러오고 있습니다" />
       ) : (
@@ -986,62 +997,62 @@ export function VentureinWorkflowPanel({
                   </div>
                 </details>
               )}
-            <VentureinExecutionPanel
-              key={company.id}
-              caseId={company.id}
-              endpoint={endpoint}
-              workflow={workflow}
-              companyRevision={company.revision}
-              accountRevision={connection.account.revision}
-              sessionStartedAt={connection.session.startedAt}
-              bindingKey={[
-                company.id,
-                company.revision,
-                connection.account.revision,
-                connection.session.startedAt,
-                connection.session.state,
-                workflow.revision,
-                screen?.id,
-                dirty,
-                draftStale,
-                workflow.report.inputReadiness?.ready ?? "unknown",
-                executionBlocked,
-                executionReviewVersion,
-              ].join(":")}
-              blockedReason={
-                dirty
-                  ? "먼저 연결 변경을 저장하고 선택 입력 준비를 확인해 주세요."
-                  : executionBlocked
-                    ? "계정의 미저장 변경이나 진행 중인 작업을 먼저 처리해 주세요."
-                    : busy
-                      ? "진행 중인 작업이 끝난 뒤 검토안을 준비할 수 있습니다."
-                      : !connected
-                        ? "벤처인 로그인 연결을 먼저 완료해 주세요."
-                        : !snapshotCurrent || draftStale
-                          ? "현재 연결과 다른 화면 기록입니다. 공식 화면을 다시 읽고 항목을 확인해 주세요."
-                          : !workflow.report.inputReadiness
-                            ? "선택 입력 준비 정보가 없습니다. 점검 결과 새로고침으로 최신 상태를 확인해 주세요."
-                            : workflow.report.inputReadiness.ready !== true
-                              ? "위 선택 항목 입력 전 보완사항을 해결한 뒤 검토안을 준비할 수 있습니다."
-                              : ""
-              }
-              canRefresh={!dirty && !busy && !executionBlocked}
-              describeSource={(source) =>
-                sourceOptions.find(
-                  (option) =>
-                    option.value ===
-                    (source.kind === "profile"
-                      ? `profile:${source.property}`
-                      : `section:${source.sectionKey}`),
-                )?.label ?? "연결 근거 확인 필요"
-              }
-              onBusyChange={(value) => {
-                if (value) ++requestRef.current;
-                setExecutionBusy(value);
-              }}
-              onWorkflowChange={(value) => acceptStatus(value, ++requestRef.current)}
-            />
           </Step>
+          <VentureinExecutionPanel
+            key={company.id}
+            caseId={company.id}
+            endpoint={endpoint}
+            workflow={workflow}
+            companyRevision={company.revision}
+            accountRevision={connection.account.revision}
+            sessionStartedAt={connection.session.startedAt}
+            bindingKey={[
+              company.id,
+              company.revision,
+              connection.account.revision,
+              connection.session.startedAt,
+              connection.session.state,
+              workflow.revision,
+              screen?.id,
+              dirty,
+              draftStale,
+              workflow.report.inputReadiness?.ready ?? "unknown",
+              executionBlocked,
+              executionReviewVersion,
+            ].join(":")}
+            blockedReason={
+              dirty
+                ? "먼저 연결 변경을 저장하고 선택 입력 준비를 확인해 주세요."
+                : executionBlocked
+                  ? "계정의 미저장 변경이나 진행 중인 작업을 먼저 처리해 주세요."
+                  : busy
+                    ? "진행 중인 작업이 끝난 뒤 검토안을 준비할 수 있습니다."
+                    : !connected
+                      ? "벤처인 로그인 연결을 먼저 완료해 주세요."
+                      : !snapshotCurrent || draftStale
+                        ? "현재 연결과 다른 화면 기록입니다. 공식 화면을 다시 읽고 항목을 확인해 주세요."
+                        : !workflow.report.inputReadiness
+                          ? "선택 입력 준비 정보가 없습니다. 점검 결과 새로고침으로 최신 상태를 확인해 주세요."
+                          : workflow.report.inputReadiness.ready !== true
+                            ? "위 선택 항목 입력 전 보완사항을 해결한 뒤 검토안을 준비할 수 있습니다."
+                            : ""
+            }
+            canRefresh={!dirty && !busy && !executionBlocked}
+            describeSource={(source) =>
+              sourceOptions.find(
+                (option) =>
+                  option.value ===
+                  (source.kind === "profile"
+                    ? `profile:${source.property}`
+                    : `section:${source.sectionKey}`),
+              )?.label ?? "연결 근거 확인 필요"
+            }
+            onBusyChange={(value) => {
+              if (value) ++requestRef.current;
+              setExecutionBusy(value);
+            }}
+            onWorkflowChange={(value) => acceptStatus(value, ++requestRef.current)}
+          />
         </fieldset>
       )}
     </div>
