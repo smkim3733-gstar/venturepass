@@ -4,6 +4,7 @@ import { criteriaContextReasonLabels } from "@/lib/studio-criteria-version-types
 import type { BusinessPlan, Candidate, StudioCase } from "@/lib/studio-schema";
 import { criteriaApplicationUiContext } from "./criteria-versions-ui";
 import { EvidenceList } from "./evidence";
+import { PublicEvidenceReferences } from "./public-evidence-references";
 import styles from "./guided-workspace.module.css";
 
 type Reference = Candidate["evidence"][number];
@@ -188,6 +189,7 @@ export function GuidedPlanEvidence({ company, plan }: { company: StudioCase; pla
           </details>
         );
       })}
+      <PublicEvidenceReferences company={company} plan={plan} />
       <details className={styles.details}>
         <summary>신청별 기준 기록</summary>
         <p className={styles.helper}>

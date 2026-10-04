@@ -1,4 +1,5 @@
 "use client";
+import { PublicEvidenceReferences } from "./public-evidence-references";
 
 import { useEffect, useRef, useState } from "react";
 import { Download } from "lucide-react";
@@ -277,6 +278,7 @@ export function PackagePanel({
         사유는 묶음의 안내·목록에서 확인해 주세요. 기관 전송·접수나 내부 검토 완료 기록은 생성하지
         않습니다.
       </p>
+      <PublicEvidenceReferences company={company} plan={plan} />
       <details className="rounded-xl border p-4">
         <summary className="cursor-pointer text-sm font-semibold">
           포함할 원본 직접 선택 · {selected.length}/{packageLimits.files}개
