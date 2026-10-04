@@ -55,6 +55,8 @@ import type { GuidedWorkflowTarget } from "@/lib/studio-guided-followup";
 import { jsonBody, studioFetch, useDirty, type StudioMutation } from "./shared";
 import styles from "./guided-workspace.module.css";
 
+import type { VentureOverview } from "@/lib/venturein-overview-types";
+
 type Props = {
   company: StudioCase;
   status: StudioStatus | null;
@@ -65,7 +67,11 @@ type Props = {
   onUnsettledChange: (value: boolean) => void;
   setDirty: (value: boolean) => void;
   mutate: (mutation: StudioMutation) => Promise<StudioCase | null>;
-  onDetails: (destination: GuidedDestination, target?: GuidedWorkflowTarget) => void;
+  onDetails: (
+    destination: GuidedDestination,
+    target?: GuidedWorkflowTarget,
+    ventureTarget?: VentureOverview,
+  ) => void;
   onSettings: () => void;
 };
 
@@ -1431,7 +1437,7 @@ export function GuidedWorkspace({
                 key={`venture-overview:${company.id}:${company.revision}`}
                 company={company}
                 disabled={locked}
-                onOpen={() => onDetails("venturein")}
+                onOpen={(target) => onDetails("venturein", undefined, target)}
               />
             ) : (
               <section className={`${styles.sheet} ${styles.topic}`}>

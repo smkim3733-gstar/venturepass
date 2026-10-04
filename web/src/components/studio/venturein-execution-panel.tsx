@@ -806,7 +806,12 @@ export function VentureinExecutionPanel({
   }
 
   return (
-    <section aria-label="승인 후 공식 화면 입력·첨부" className="min-w-0 space-y-4 border-t pt-4">
+    <section
+      data-venture-section="execution"
+      tabIndex={-1}
+      aria-label="승인 후 공식 화면 입력·첨부"
+      className="min-w-0 space-y-4 border-t pt-4"
+    >
       <h4 className="font-semibold">검토 후 공식 화면에 입력·첨부</h4>
       <p className="text-xs leading-6 text-muted-foreground">
         준비본 선택·대조 → 선택 항목 검토 → 전송 승인 → 입력·첨부 1회 실행 순서로 진행합니다. 실행

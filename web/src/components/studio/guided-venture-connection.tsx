@@ -8,7 +8,11 @@ import {
 import { studioFetch, formatDate } from "./shared";
 import styles from "./guided-workspace.module.css";
 
-type Props = { company: { id: string; revision: number }; disabled: boolean; onOpen: () => void };
+type Props = {
+  company: { id: string; revision: number };
+  disabled: boolean;
+  onOpen: (target: VentureOverview) => void;
+};
 /** Keyed by the parent company's revision. Reading never logs in or inspects a remote page. */
 export function GuidedVentureConnection({ company, disabled, onOpen }: Props) {
   const [value, setValue] = useState<VentureOverview | null>(null);
@@ -96,7 +100,9 @@ export function GuidedVentureConnection({ company, disabled, onOpen }: Props) {
             type="button"
             className={styles.primary}
             disabled={disabled || loading}
-            onClick={onOpen}
+            onClick={() => {
+              if (current) onOpen(readVentureOverview(current, company));
+            }}
           >
             {action.label}
           </button>

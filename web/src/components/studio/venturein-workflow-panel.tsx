@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 import Image from "next/image";
 import { Download, RefreshCw, Save, Search } from "lucide-react";
 import { toast } from "sonner";
@@ -19,6 +19,9 @@ import type { VentureWorkflowStatus } from "@/lib/venturein-workflow";
 import { Loading, Notice, formatDate, jsonBody, selectClass, studioFetch } from "./shared";
 import { VentureinExecutionPanel } from "./venturein-execution-panel";
 import { VentureinJourneyPanel } from "./venturein-journey-panel";
+
+import { VentureinGuidedEntry } from "./venturein-guided-entry";
+import type { VentureOverview } from "@/lib/venturein-overview-types";
 
 const profileLabels: Record<keyof CompanyProfile, string> = {
   companyName: "기업명",
@@ -53,7 +56,14 @@ function Step({
   children: ReactNode;
 }) {
   return (
-    <section aria-label={title} className="min-w-0 rounded-2xl border p-5">
+    <section
+      data-venture-section={
+        number === 1 ? "company" : number === 2 ? "mapping" : number === 4 ? "review" : undefined
+      }
+      tabIndex={-1}
+      aria-label={title}
+      className="min-w-0 rounded-2xl border p-5"
+    >
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h3 className="font-bold">
           <span className="mr-2 text-primary">{number}.</span>
@@ -149,6 +159,8 @@ function OfficialScreenPreview({ url }: { url: string }) {
 }
 
 type Props = {
+  guidedTarget?: VentureOverview;
+  navigationRoot?: RefObject<HTMLDivElement | null>;
   company: StudioCase;
   connection: VentureConnectionStatus;
   executionBlocked?: boolean;
@@ -156,6 +168,8 @@ type Props = {
 };
 
 export function VentureinWorkflowPanel({
+  guidedTarget,
+  navigationRoot,
   company,
   connection,
   executionBlocked = false,
@@ -446,6 +460,15 @@ export function VentureinWorkflowPanel({
         !requestError && !error && <Loading text="제출 준비를 불러오고 있습니다" />
       ) : (
         <fieldset disabled={!!busy || executionBusy} className="min-w-0 space-y-5">
+          {guidedTarget && navigationRoot && (
+            <VentureinGuidedEntry
+              target={guidedTarget}
+              company={company}
+              connection={connection}
+              workflow={workflow}
+              root={navigationRoot}
+            />
+          )}
           <Notice>
             열린 Edge 창의 신청 화면을 읽고, 입력할 원고와 첨부할 원본을 이 PC에서 연결합니다.
             저장한 연결은 제출 전 점검과 검토용 다운로드에 사용합니다.

@@ -58,6 +58,7 @@ import { PreparationAutomationPanel } from "./preparation-automation-panel";
 import { AnalysisPanel } from "./analysis-panel";
 import { PlanEditor } from "./plan-editor";
 import { WorkflowPanel } from "./workflow-panel";
+import { readVentureOverview, type VentureOverview } from "@/lib/venturein-overview-types";
 import { VentureinPanel } from "./venturein-panel";
 import { GuidedWorkspace } from "./guided-workspace";
 import { studioMutationResponse } from "./studio-mutation-response";
@@ -109,6 +110,10 @@ export function StudioWorkspace() {
   const [workflowNavigation, setWorkflowNavigation] = useState<{
     key: string;
     target: GuidedWorkflowTarget;
+  } | null>(null);
+  const [ventureNavigation, setVentureNavigation] = useState<{
+    key: string;
+    target: VentureOverview;
   } | null>(null);
   const [impactNavigation, setImpactNavigation] = useState<SourceImpactNavigation | null>(null);
   const [panelDirty, setDirty] = useState(false);
@@ -218,12 +223,28 @@ export function StudioWorkspace() {
   function switchTab(next: StudioTab) {
     if (next === tab || !mayLeave()) return false;
     setWorkflowNavigation(null);
+    setVentureNavigation(null);
     setImpactNavigation(null);
     setDirty(false);
     setTab(next);
     return true;
   }
-  function showDetails(next: GuidedDestination, target?: GuidedWorkflowTarget) {
+  function showDetails(
+    next: GuidedDestination,
+    target?: GuidedWorkflowTarget,
+    ventureTarget?: VentureOverview,
+  ) {
+    let verifiedVenture: VentureOverview | null = null;
+    if (ventureTarget) {
+      try {
+        if (!company || next !== "venturein" || target)
+          throw new Error("연결할 기업을 다시 확인해 주세요.");
+        verifiedVenture = readVentureOverview(ventureTarget, company);
+      } catch (caught) {
+        toast.info(caught instanceof Error ? caught.message : "연결 기록을 다시 확인해 주세요.");
+        return;
+      }
+    }
     if (target) {
       const validation =
         company && next === "workflow"
@@ -236,6 +257,9 @@ export function StudioWorkspace() {
     }
     if (!mayLeave() || guidedUnsettled) return;
     setWorkflowNavigation(target ? { key: crypto.randomUUID(), target } : null);
+    setVentureNavigation(
+      verifiedVenture ? { key: crypto.randomUUID(), target: verifiedVenture } : null,
+    );
     setGuidedDirty(false);
     setDirty(false);
     setImpactNavigation(null);
@@ -244,6 +268,7 @@ export function StudioWorkspace() {
   }
   function toggleWorkspace() {
     if (!mayLeave() || guidedUnsettled) return;
+    setVentureNavigation(null);
     setWorkflowNavigation(null);
     setGuidedDirty(false);
     setDirty(false);
@@ -293,6 +318,7 @@ export function StudioWorkspace() {
       )
         throw new Error("요청한 기업의 최신 자료를 확인하지 못했습니다. 다시 불러와 주세요.");
       accept(parsed.data);
+      setVentureNavigation(null);
       setWorkflowNavigation(null);
       setTab(nextTab);
       setGuidedDirty(false);
@@ -1036,7 +1062,21 @@ export function StudioWorkspace() {
                       onBusyChange={setBusy}
                     />
                   )}
-                  {panelProps && tab === "venturein" && <VentureinPanel {...panelProps} />}
+                  {panelProps && tab === "venturein" && (
+                    <VentureinPanel
+                      key={
+                        ventureNavigation?.target.caseId === company.id
+                          ? ventureNavigation.key
+                          : company.id
+                      }
+                      {...panelProps}
+                      guidedTarget={
+                        ventureNavigation?.target.caseId === company.id
+                          ? ventureNavigation.target
+                          : undefined
+                      }
+                    />
+                  )}
                 </div>
               </fieldset>
             </div>

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ArrowUpRight,
   KeyRound,
@@ -33,6 +33,8 @@ import {
   type PanelProps,
 } from "./shared";
 
+import type { VentureOverview } from "@/lib/venturein-overview-types";
+
 const sessionLabels: Record<VentureSessionState, string> = {
   idle: "연결 전",
   starting: "로그인 연결 중",
@@ -44,7 +46,12 @@ const sessionLabels: Record<VentureSessionState, string> = {
   stopped: "연결 종료",
 };
 
-export function VentureinPanel({ company, setDirty }: PanelProps) {
+export function VentureinPanel({
+  company,
+  setDirty,
+  guidedTarget,
+}: PanelProps & { guidedTarget?: VentureOverview }) {
+  const root = useRef<HTMLDivElement>(null);
   const [connection, setConnection] = useState<VentureConnectionStatus | null>(null);
   const [loginId, setLoginId] = useState("");
   const [password, setPassword] = useState("");
@@ -181,7 +188,7 @@ export function VentureinPanel({ company, setDirty }: PanelProps) {
   }, [activeSession, busy, endpoint]);
   const canSave = connection?.credentialStorage === "windows-dpapi" && loginId.trim() && password;
   return (
-    <div>
+    <div ref={root}>
       <PanelHeading
         title="벤처인 계정 연결과 제출 준비"
         description="기업별 계정을 한 번 저장하고 로그인 연결에 사용하세요. 작성본과 원본 파일을 같은 기업 작업공간에서 확인합니다."
@@ -218,7 +225,12 @@ export function VentureinPanel({ company, setDirty }: PanelProps) {
         )
       ) : (
         <fieldset disabled={!!busy} className="mt-5 min-w-0 space-y-5">
-          <section aria-label="벤처인 계정 저장" className="rounded-2xl border p-5">
+          <section
+            data-venture-section="account"
+            tabIndex={-1}
+            aria-label="벤처인 계정 저장"
+            className="rounded-2xl border p-5"
+          >
             <div className="flex flex-wrap items-center justify-between gap-3">
               <h3 className="flex items-center gap-2 font-bold">
                 <LockKeyhole className="size-4 text-primary" />
@@ -302,7 +314,12 @@ export function VentureinPanel({ company, setDirty }: PanelProps) {
               </div>
             </form>
           </section>
-          <section aria-label="벤처인 로그인 연결" className="rounded-2xl border p-5">
+          <section
+            data-venture-section="login"
+            tabIndex={-1}
+            aria-label="벤처인 로그인 연결"
+            className="rounded-2xl border p-5"
+          >
             <div className="flex flex-wrap items-center justify-between gap-3">
               <h3 className="flex items-center gap-2 font-bold">
                 <KeyRound className="size-4 text-primary" />
@@ -431,6 +448,8 @@ export function VentureinPanel({ company, setDirty }: PanelProps) {
             </div>
           </section>
           <VentureinWorkflowPanel
+            guidedTarget={guidedTarget}
+            navigationRoot={root}
             company={company}
             connection={connection}
             executionBlocked={Boolean(loginId || password || busy)}

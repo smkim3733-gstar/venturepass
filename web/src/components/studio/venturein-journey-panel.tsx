@@ -52,7 +52,12 @@ export function VentureinJourneyPanel({
     .slice(0, 12);
 
   return (
-    <section aria-label="신청 화면별 진행 상태" className="space-y-4 rounded-2xl border p-5">
+    <section
+      data-venture-section="journey"
+      tabIndex={-1}
+      aria-label="신청 화면별 진행 상태"
+      className="space-y-4 rounded-2xl border p-5"
+    >
       <div className="flex flex-wrap items-center gap-2">
         <ArrowRight className="size-4 text-primary" />
         <h3 className="font-bold">신청 화면별 진행 상태</h3>
