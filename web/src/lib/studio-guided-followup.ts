@@ -1,12 +1,14 @@
 import {
+  currentRequests,
+  currentNotices,
+  validGuidedAgencyRecordTarget,
+  type GuidedAgencyRecordTarget,
+} from "./studio-guided-agency-records";
+import {
   validGuidedApplicationTarget,
   type GuidedApplicationTarget,
 } from "./studio-guided-applications";
-import {
-  isAgencyNoticeRecord,
-  type AgencyNoticeRecord,
-  type AgencyRequestRecord,
-} from "./studio-agency-records";
+import { isAgencyNoticeRecord, type AgencyNoticeRecord } from "./studio-agency-records";
 import { applicationMetadata, currentApplicationLinks } from "./studio-application-types";
 import type { StudioCase } from "./studio-schema";
 
@@ -14,6 +16,7 @@ type TargetContext = { caseId: string; companyRevision: number };
 /** Navigation only. Never approves a mutation, an official action, or a newer record version. */
 export type GuidedWorkflowTarget =
   | GuidedApplicationTarget
+  | GuidedAgencyRecordTarget
   | (TargetContext &
       (
         | { kind: "response"; requestRecordId: string; requestVersionId: string }
@@ -23,7 +26,7 @@ export type GuidedWorkflowTarget =
       ));
 export type GuidedDeadlineStatus = "unknown" | "upcoming" | "today" | "overdue";
 export type GuidedFollowupItem = {
-  kind: Exclude<GuidedWorkflowTarget["kind"], "application">;
+  kind: Exclude<GuidedWorkflowTarget["kind"], "application" | "agency-record">;
   target: GuidedWorkflowTarget;
   title: string;
   description: string;
@@ -67,61 +70,6 @@ function deadline(due: string | null, today: string | null): GuidedDeadlineStatu
       : due === today
         ? "today"
         : "upcoming";
-}
-function currentRequests(company: StudioCase) {
-  const records = company.agencyRecords.filter(
-    (record): record is AgencyRequestRecord => !isAgencyNoticeRecord(record),
-  );
-  return records
-    .filter((record) => record.kind === "request")
-    .flatMap((root) => {
-      const chain = records.filter((record) => record.requestRecordId === root.id);
-      let latest: AgencyRequestRecord | undefined;
-      let response: AgencyRequestRecord | undefined;
-      for (const record of chain) {
-        if (company.agencyRecords.filter((item) => item.id === record.id).length !== 1) return [];
-        if (record.kind === "response") {
-          if (
-            !latest ||
-            record.previousVersionId !== (response?.id ?? null) ||
-            record.version !== (response?.version ?? 0) + 1 ||
-            record.requestVersionId !== latest.id
-          )
-            return [];
-          response = record;
-        } else {
-          if (
-            record.previousVersionId !== (latest?.id ?? null) ||
-            record.version !== (latest?.version ?? 0) + 1 ||
-            record.kind !== (latest ? "request-correction" : "request") ||
-            record.requestVersionId !== record.id ||
-            (!latest && record.id !== root.id)
-          )
-            return [];
-          latest = record;
-        }
-      }
-      return latest ? [{ root, latest, response }] : [];
-    });
-}
-function currentNotices(company: StudioCase) {
-  const records = company.agencyRecords.filter(isAgencyNoticeRecord);
-  return records
-    .filter((record) => record.kind === "notice")
-    .flatMap((root) => {
-      const chain = records.filter((record) => record.noticeRecordId === root.id);
-      for (const [index, record] of chain.entries()) {
-        if (
-          company.agencyRecords.filter((item) => item.id === record.id).length !== 1 ||
-          record.previousVersionId !== (chain[index - 1]?.id ?? null) ||
-          record.version !== index + 1 ||
-          record.kind !== (index ? "notice-correction" : "notice") ||
-          (!index && record.id !== root.id)
-        )
-          return [];
-      }
-      return chain.length ? [chain.at(-1)!] : [];
-    });
 }
 /** A matching manual completion can remove a repeated reminder, never prove official completion. */
 function visitReportedCompleted(company: StudioCase, notice: AgencyNoticeRecord) {
@@ -188,6 +136,8 @@ export function validateGuidedWorkflowTarget(
     ).length === 1
       ? { valid: true }
       : invalid;
+  if (target.kind === "agency-record")
+    return validGuidedAgencyRecordTarget(company, target) ? { valid: true } : invalid;
   if (target.kind === "application")
     return validGuidedApplicationTarget(company, target) ? { valid: true } : invalid;
   if (target.kind === "notice" || target.kind === "certificate") {

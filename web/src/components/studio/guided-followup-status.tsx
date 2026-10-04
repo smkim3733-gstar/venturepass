@@ -1,3 +1,5 @@
+import { guidedAgencyApplicationContexts } from "@/lib/studio-guided-agency-context";
+import { GuidedFollowupApplication } from "./guided-followup-application";
 import { stageLabels, type StudioCase } from "@/lib/studio-schema";
 import type {
   GuidedFollowupItem,
@@ -38,11 +40,13 @@ function ItemContext({ item }: { item: GuidedFollowupItem }) {
 
 /** Local records remain local records; this view never claims a live agency check. */
 export function GuidedFollowupStatus({
+  company,
   stage,
   summary,
   disabled,
   onNavigate,
 }: {
+  company: StudioCase;
   stage: StudioCase["stage"];
   summary: GuidedFollowupSummary;
   disabled: boolean;
@@ -51,6 +55,10 @@ export function GuidedFollowupStatus({
   if (summary.state === "none") return null;
   const primary = summary.primary;
   const others = summary.items.filter((item) => item !== primary);
+  const applications = guidedAgencyApplicationContexts(
+    company,
+    (primary ? [primary, ...others] : others).map((item) => item.target),
+  );
   return (
     <section className={styles.sheet} aria-label="신청 진행 기록 요약">
       <dl className={styles.facts}>
@@ -74,6 +82,12 @@ export function GuidedFollowupStatus({
         <div className={styles.notice}>
           <strong>{primary.title}</strong>
           <ItemContext item={primary} />
+          <GuidedFollowupApplication
+            key={`${company.id}:${company.revision}:${JSON.stringify(primary.target)}`}
+            value={applications[0]}
+            disabled={disabled}
+            onNavigate={onNavigate}
+          />
         </div>
       )}
       {others.length > 0 && (
@@ -84,6 +98,12 @@ export function GuidedFollowupStatus({
               <li key={index} className={styles.followupItem}>
                 <strong>{item.title}</strong>
                 <ItemContext item={item} />
+                <GuidedFollowupApplication
+                  key={`${company.id}:${company.revision}:${JSON.stringify(item.target)}`}
+                  value={applications[index + (primary ? 1 : 0)]}
+                  disabled={disabled}
+                  onNavigate={onNavigate}
+                />
                 <button
                   type="button"
                   className={styles.link}

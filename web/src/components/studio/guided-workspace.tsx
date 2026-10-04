@@ -1426,6 +1426,7 @@ export function GuidedWorkspace({
           )}
           {flow.followup && flow.followup.state !== "none" && (
             <GuidedFollowupStatus
+              company={company}
               stage={company.stage}
               summary={flow.followup}
               disabled={locked}

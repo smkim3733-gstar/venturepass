@@ -1,3 +1,4 @@
+import { guidedApplicationsFixture } from "@/lib/studio-guided-applications-test-helpers";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
@@ -41,6 +42,7 @@ function render(value = summary(), disabled = false) {
   const onNavigate = vi.fn();
   const html = renderToStaticMarkup(
     createElement(GuidedFollowupStatus, {
+      company: guidedApplicationsFixture().company,
       stage: "evaluating",
       summary: value,
       disabled,
