@@ -33,6 +33,9 @@ import { Notice, formatDate, selectClass, useDirty } from "./shared";
 import {
   IntakeHttpError,
   intakeBatchError,
+  intakeFileSha256,
+  intakeSelectionMatches,
+  intakeRecoverySummary,
   intakeCanRead,
   intakeCanResume,
   intakeCanUpload,
@@ -351,6 +354,7 @@ function SourceIntakesPanelInner({
   );
   const validFiles = newFiles.filter((entry) => !intakeFileError(entry.file));
   const batchProblem = intakeBatchError(validFiles);
+  const recovery = intakeRecoverySummary(company.sourceIntakes);
   function lock(message: string) {
     inFlight.current = true;
     setRequesting(true);
@@ -454,16 +458,23 @@ function SourceIntakesPanelInner({
     setErrorCode("");
     setMessage("");
     try {
-      const request = intakeCommand({
-        action: "create",
-        revision: current.current.revision,
-        clientRequestId: crypto.randomUUID(),
-        files: chosen.map((entry) => ({
+      const declarations = [];
+      for (const entry of chosen) {
+        const sha256 = await intakeFileSha256(entry.file);
+        if (!mounted.current || current.current.id !== companyId) return;
+        declarations.push({
           clientFileId: entry.clientFileId,
           originalName: entry.file.name,
           sizeBytes: entry.file.size,
           kind: entry.kind,
-        })),
+          sha256,
+        });
+      }
+      const request = intakeCommand({
+        action: "create",
+        revision: current.current.revision,
+        clientRequestId: crypto.randomUUID(),
+        files: declarations,
       });
       const created = await perform(request);
       if (!created || request.kind !== "command") return;
@@ -488,6 +499,7 @@ function SourceIntakesPanelInner({
               expectedItemVersion: item.version,
             },
             file: entry.file,
+            sha256: item.declared.sha256,
           });
         } catch {
           if (!rejected.current) return;
@@ -500,6 +512,10 @@ function SourceIntakesPanelInner({
           "파일별 원본 접수 결과를 확인해 주세요. 판독과 본문 채택은 아래에서 별도로 진행합니다.",
         );
     } catch {
+      if (mounted.current && !pending.current)
+        setError(
+          "파일 내용을 확인하지 못했습니다. 새 접수는 시작하지 않았습니다. 원래 파일을 다시 선택해 주세요.",
+        );
       /* preserve pending nonce and successful earlier files */
     } finally {
       unlock();
@@ -526,6 +542,12 @@ function SourceIntakesPanelInner({
     setError("");
     setErrorCode("");
     try {
+      const sha256 = await intakeSelectionMatches(item, entry.file);
+      if (!mounted.current || current.current.id !== companyId) return;
+      if (!sha256) {
+        setItemErrors((previous) => ({ ...previous, [item.id]: "INTAKE_SELECTION_MISMATCH" }));
+        return;
+      }
       await perform({
         kind: "original",
         itemId: item.id,
@@ -535,8 +557,13 @@ function SourceIntakesPanelInner({
           expectedItemVersion: item.version,
         },
         file: entry.file,
+        sha256,
       });
     } catch {
+      if (mounted.current && !pending.current)
+        setError(
+          "파일 내용을 확인하지 못했습니다. 전송하지 않았으니 원래 파일을 다시 선택해 주세요.",
+        );
       /* GET before another write */
     } finally {
       unlock();
@@ -785,6 +812,14 @@ function SourceIntakesPanelInner({
         보관한 원본과 판독 결과는 저장 상태에서 이어갑니다. 탭 종료 뒤 무인 처리를 보장하지
         않습니다.
       </p>
+      <p aria-label="접수 원본 보관 요약" className="text-sm">
+        원본 보관 {recovery.stored}개 · 다시 선택·접수 {recovery.awaiting}개 · 상태 확인{" "}
+        {recovery.check}개 · 취소 {recovery.cancelled}개
+      </p>
+      <p className="text-xs text-muted-foreground">
+        접수 이력 {company.sourceIntakes.length}/{sourceIntakeLimits.items}개에는 취소 기록도
+        포함됩니다. 원본 보관은 본문 채택·사실 확인 완료가 아닙니다.
+      </p>
       {blockedReason && <Notice tone="warning">{blockedReason}</Notice>}
       <div className="flex flex-wrap gap-2">
         <Button type="button" variant="outline" disabled={blocked} onClick={() => void refresh()}>
@@ -977,8 +1012,11 @@ function SourceIntakesPanelInner({
               {item.phase === "awaiting_original" && (
                 <div className="space-y-2">
                   <p className="text-xs">
-                    원본이 아직 접수되지 않았습니다. 새로고침 후에는 원래 이름·크기의 파일을 직접
-                    다시 선택합니다.
+                    원본이 아직 접수되지 않았습니다. 새로고침 후에는 원래 파일을 직접 다시
+                    선택합니다.
+                    {item.declared.sha256
+                      ? " 처음 선택한 파일과 이름·크기·내용 해시가 모두 같아야 접수합니다."
+                      : " 과거 접수에는 선택 당시 내용 해시가 없습니다. 이름·크기만 비교하므로 원래 파일인지 직접 확인해 주세요."}
                   </p>
                   <Input
                     aria-label="미접수 원본 다시 선택"

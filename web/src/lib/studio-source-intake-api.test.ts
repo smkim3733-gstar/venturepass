@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { StudioStore } from "./studio-storage";
+import { intakeSha } from "./studio-source-intake";
 import { emptyProfile } from "./studio-schema";
 import type {
   SourceIntakeItem,
@@ -151,6 +152,43 @@ describe("접수·판독 재개 실제 SQLite/API", { timeout: 60_000 }, () => {
     });
     expect((await POST(request(input), context())).status).toBe(200);
     expect(store().get(caseId)).toEqual(before);
+    expect(state.extract).not.toHaveBeenCalled();
+  });
+  it("내용 해시를 선언한 접수는 다른 bytes를 거절하고 원래 nonce는 그대로 복구한다", async () => {
+    const input = {
+      action: "create",
+      revision: store().get(caseId).revision,
+      clientRequestId: randomUUID(),
+      files: [
+        {
+          clientFileId: randomUUID(),
+          originalName: "identity.txt",
+          kind: "other",
+          sizeBytes: 3,
+          sha256: intakeSha("abc"),
+        },
+      ],
+    };
+    expect((await POST(request(input), context())).status).toBe(200);
+    const company = store().get(caseId),
+      item = company.sourceIntakes[0];
+    const refused = await put(item, formFor(item, randomUUID(), "xyz"));
+    expect(refused.status).toBe(409);
+    expect(await refused.json()).toMatchObject({
+      code: "INTAKE_SELECTION_MISMATCH",
+      accepted: false,
+    });
+    expect(store().get(caseId)).toEqual(company);
+    const nonce = randomUUID(),
+      form = formFor(item, nonce, "abc"),
+      entries = [...form.entries()];
+    expect((await put(item, form)).status).toBe(200);
+    const saved = store().get(caseId);
+    const replay = new FormData();
+    for (const [key, value] of entries) replay.append(key, value);
+    expect((await put(item, replay)).status).toBe(200);
+    expect((await POST(request(input), context())).status).toBe(200);
+    expect(store().get(caseId)).toEqual(saved);
     expect(state.extract).not.toHaveBeenCalled();
   });
   it("원본 없는 예약 취소도 사용자 확인을 요구한다", async () => {

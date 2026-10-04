@@ -2636,6 +2636,8 @@ export class StudioStore {
           intakeError("INTAKE_PHASE_INVALID");
         if (upload.name !== item.declared.originalName || buffer.length !== item.declared.sizeBytes)
           intakeError("INTAKE_ORIGINAL_INVALID");
+        if (item.declared.sha256 && item.declared.sha256 !== sha256)
+          intakeError("INTAKE_SELECTION_MISMATCH");
         intakeTouch(item, parsed.expectedItemVersion);
         item.original = {
           originalName: upload.name,

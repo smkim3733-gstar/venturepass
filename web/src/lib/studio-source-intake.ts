@@ -25,6 +25,8 @@ export function intakeError(code: string, status = 409): never {
     INTAKE_LIMIT: "접수 이력의 보관 한도에 도달했습니다. 기존 기록은 보존됩니다.",
     INTAKE_RESULT_LIMIT: "미검토 판독문 보관 한도에 도달했습니다. 원본은 보존됩니다.",
     INTAKE_ORIGINAL_CHANGED: "접수 당시 원본과 현재 원본이 다릅니다. 결과를 저장하지 않았습니다.",
+    INTAKE_SELECTION_MISMATCH:
+      "처음 선택한 파일과 내용이 다릅니다. 원래 파일을 다시 선택해 주세요.",
     INTAKE_ORIGINAL_INVALID: "원본 파일의 이름, 형식 또는 크기가 접수 정보와 다릅니다.",
     INTAKE_SOURCE_NOT_PENDING: "이미 본문이 저장된 자료입니다. 기존 본문을 덮어쓰지 않습니다.",
     INTAKE_RESULT_INVALID: "판독 결과 형식이나 본문을 확인할 수 없습니다.",
@@ -154,7 +156,12 @@ export function newSourceIntakeBatch(input: CreateSourceIntakeCommand): SourceIn
     clientFileId: file.clientFileId,
     sourceId: randomUUID(),
     version: 1,
-    declared: { originalName: file.originalName, sizeBytes: file.sizeBytes, kind: file.kind },
+    declared: {
+      originalName: file.originalName,
+      sizeBytes: file.sizeBytes,
+      kind: file.kind,
+      ...(file.sha256 ? { sha256: file.sha256 } : {}),
+    },
     original: null,
     phase: "awaiting_original",
     attempts: [],

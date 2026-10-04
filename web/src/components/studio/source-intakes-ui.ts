@@ -13,7 +13,13 @@ import {
 export type IntakeFile = { clientFileId: string; file: File; kind: SourceDocument["kind"] };
 export type IntakePending =
   | { kind: "command"; command: SourceIntakeCommand }
-  | { kind: "original"; itemId: string; input: SourceIntakeOriginalInput; file: File };
+  | {
+      kind: "original";
+      itemId: string;
+      input: SourceIntakeOriginalInput;
+      file: File;
+      sha256?: string;
+    };
 export const intakeNonce = (request: IntakePending) =>
   request.kind === "command" ? request.command.clientRequestId : request.input.clientRequestId;
 export const intakeRevision = (request: IntakePending) =>
@@ -69,7 +75,8 @@ export function intakeRequestAcknowledged(
           matches.length === 1 &&
           matches[0].declared.originalName === file.originalName &&
           matches[0].declared.sizeBytes === file.sizeBytes &&
-          matches[0].declared.kind === file.kind
+          matches[0].declared.kind === file.kind &&
+          matches[0].declared.sha256 === file.sha256
         );
       })
     );
@@ -96,7 +103,8 @@ export function intakeRequestAcknowledged(
   if (request.kind === "original")
     return (
       item.declared.originalName === request.file.name &&
-      item.declared.sizeBytes === request.file.size
+      item.declared.sizeBytes === request.file.size &&
+      (!request.sha256 || item.original?.sha256 === request.sha256)
     );
   if (request.command.action === "adopt") {
     const input = request.command,
@@ -252,6 +260,8 @@ export class IntakeHttpError extends Error {
   }
 }
 export function intakeErrorMessage(code: string): string {
+  if (code === "INTAKE_SELECTION_MISMATCH")
+    return "처음 선택한 파일과 내용이 다릅니다. 이름·크기가 같아도 다른 내용은 접수하지 않습니다. 원래 파일을 다시 선택해 주세요.";
   if (code === "INTAKE_AI_NOT_CONFIGURED")
     return "외부 판독·전사 설정이 준비되지 않았습니다. 설정을 확인한 뒤 새 전송 검토안을 열어 주세요. 원본은 보관합니다.";
   if (code === "INTAKE_EXTERNAL_RESULT_UNKNOWN")
@@ -345,4 +355,38 @@ export async function sendIntakeRequest(
     throw new IntakeHttpError(code, typeof body.accepted === "boolean" ? body.accepted : null);
   }
   return raw;
+}
+
+/** Hash one bounded File at a time; no network, parsing, path or content retention. */
+export async function intakeFileSha256(file: File): Promise<string> {
+  if (intakeFileError(file)) throw new Error("INTAKE_ORIGINAL_INVALID");
+  const bytes = await file.arrayBuffer();
+  if (bytes.byteLength !== file.size) throw new Error("INTAKE_ORIGINAL_INVALID");
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return Array.from(new Uint8Array(digest), (value) => value.toString(16).padStart(2, "0")).join(
+    "",
+  );
+}
+export async function intakeSelectionMatches(item: SourceIntakeItem, file: File) {
+  if (
+    intakeFileError(file) ||
+    file.name !== item.declared.originalName ||
+    file.size !== item.declared.sizeBytes
+  )
+    return null;
+  const sha256 = await intakeFileSha256(file);
+  if (item.declared.sha256 && sha256 !== item.declared.sha256) return null;
+  return sha256;
+}
+/** These counts describe original intake, never factual review or AI readiness. */
+export function intakeRecoverySummary(items: readonly SourceIntakeItem[]) {
+  const result = { stored: 0, awaiting: 0, check: 0, cancelled: 0 };
+  for (const item of items) {
+    if (item.phase === "cancelled") result.cancelled++;
+    else if (item.phase === "awaiting_original" && !item.original) result.awaiting++;
+    else if (intakeCanResume(item) || item.phase === "external_result_unknown" || !item.original)
+      result.check++;
+    else result.stored++;
+  }
+  return result;
 }

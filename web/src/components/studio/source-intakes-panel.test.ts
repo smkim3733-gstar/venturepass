@@ -527,6 +527,31 @@ describe("명시적 접수 요청 전송", () => {
   });
 });
 describe("복수 접수 화면 의미", () => {
+  it("원본 상태 요약과 신규 해시 대조·과거 한계를 분리해 표시한다", () => {
+    const callbacks = { onCompany: vi.fn(), onBusyChange: vi.fn(), onDirtyChange: vi.fn() };
+    const bound = item();
+    bound.declared.sha256 = hash;
+    const markup = renderToStaticMarkup(
+      createElement(SourceIntakesPanel, {
+        company: company({ sourceIntakes: [bound] }),
+        busy: false,
+        ...callbacks,
+      }),
+    );
+    expect(markup).toContain("접수 원본 보관 요약");
+    expect(markup).toContain("이름·크기·내용 해시가 모두 같아야 접수");
+    expect(markup).toContain("취소 기록도 포함");
+    expect(markup).toContain("본문 채택·사실 확인 완료가 아닙니다");
+    const legacy = renderToStaticMarkup(
+      createElement(SourceIntakesPanel, {
+        company: company({ sourceIntakes: [item()] }),
+        busy: false,
+        ...callbacks,
+      }),
+    );
+    expect(legacy).toContain("선택 당시 내용 해시가 없습니다");
+  });
+
   it("채택 결과도 초안 공간을 비울 수 있으며 자료 본문 보존을 명시한다", () => {
     const html = renderToStaticMarkup(
       createElement(SourceIntakesPanel, {

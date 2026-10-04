@@ -90,6 +90,8 @@ const file = z
     originalName: sourceIntakeNameSchema,
     kind,
     sizeBytes: z.number().int().min(1).max(sourceIntakeLimits.fileBytes),
+    // Optional only for pre-existing intake records; new UI selections always bind bytes.
+    sha256: sha.optional(),
   })
   .strict();
 const common = { revision, clientRequestId: uuid };
@@ -314,7 +316,12 @@ export const sourceIntakeItemSchema = z
     updatedAt: at,
     code: z.string().max(100).nullable(),
   })
-  .strict();
+  .strict()
+  .refine(
+    (item) =>
+      !item.declared.sha256 || !item.original || item.declared.sha256 === item.original.sha256,
+    "선택 당시 파일과 보관 원본의 해시가 다릅니다.",
+  );
 export type SourceIntakeItem = z.infer<typeof sourceIntakeItemSchema>;
 export type SourceIntakeResponse = {
   company: StudioCase;
