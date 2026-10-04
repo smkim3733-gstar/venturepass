@@ -21,8 +21,27 @@ export const guidedPreparationApprovalSchema = z
     purpose: z.literal("analysis-plan-review"),
     // Missing on earlier approvals means no automatic repair; never default consent forward.
     autoRevisionLimit: z.literal(1).optional(),
+    // Absent on existing approvals: preserve the original all-usable-sources contract.
+    sourceScope: z.literal("selected-sources-v1").optional(),
   })
-  .strict();
+  .strict()
+  .refine(
+    (value) =>
+      !value.sourceScope ||
+      (value.sourceIds.length === value.sourceNames.length &&
+        new Set(value.sourceIds).size === value.sourceIds.length),
+    "선택한 자료의 신원을 확인해 주세요.",
+  );
+export const guidedSourceSelectionPreviewSchema = z
+  .object({
+    revision,
+    sourceIds: z.array(uuid).max(MAX_COMPANY_SOURCES),
+  })
+  .strict()
+  .refine(
+    (value) => new Set(value.sourceIds).size === value.sourceIds.length,
+    "같은 자료를 중복 선택할 수 없습니다.",
+  );
 export type GuidedPreparationApproval = z.infer<typeof guidedPreparationApprovalSchema>;
 export const guidedPreparationRequestSchema = z.discriminatedUnion("action", [
   z

@@ -14,13 +14,17 @@ import {
   guidedPreparationRequestSchema,
   type GuidedPreparationRequest,
   type GuidedPreparationRun,
+  guidedSourceSelectionPreviewSchema,
 } from "./studio-guided-preparation-types";
 import {
   assertGuidedPreparationBinding,
   guidedPreparationApproval,
   guidedPreparationError,
+  guidedPreparationInputCompany,
+  guidedSelectedPreparationApproval,
 } from "./studio-guided-preparation-state";
 import type { StudioStore } from "./studio-storage";
+import { serializeStudioAiInput, STUDIO_AI_INPUT_CHARACTER_LIMIT } from "./studio-ai-input";
 import { assertVentureCompanyWritable } from "./venturein-input-lock";
 
 export function guidedPreparationStatus(store: StudioStore, caseId: string) {
@@ -31,6 +35,27 @@ export function guidedPreparationStatus(store: StudioStore, caseId: string) {
     active: studioGenerationJobs.has(caseId),
     aiConfigured: status.aiConfigured,
     approval: guidedPreparationApproval(company, status.model),
+  };
+}
+/** Read-only preview; it creates neither a run, receipt, reservation, nor transmission permission. */
+export function guidedSourceSelectionPreview(store: StudioStore, caseId: string, raw: unknown) {
+  const input = guidedSourceSelectionPreviewSchema.parse(raw);
+  const company = store.get(caseId);
+  if (company.revision !== input.revision) guidedPreparationError("GUIDED_INPUT_CHANGED");
+  const status = getAiStatus();
+  const approval = guidedSelectedPreparationApproval(company, status.model, input.sourceIds);
+  const inputCharacters = serializeStudioAiInput(
+    guidedPreparationInputCompany(company, approval),
+  ).length;
+  return {
+    company,
+    approval,
+    active: studioGenerationJobs.has(caseId),
+    aiConfigured: status.aiConfigured,
+    inputCharacters,
+    inputCharacterLimit: STUDIO_AI_INPUT_CHARACTER_LIMIT,
+    overInputLimit: inputCharacters > STUDIO_AI_INPUT_CHARACTER_LIMIT,
+    transmissionAllowed: false as const,
   };
 }
 export class GuidedPreparationRequestError extends StudioError {
@@ -90,8 +115,9 @@ export async function runGuidedPreparation(
       assertGuidedPreparationBinding(current, run!);
     };
     assertCurrent();
+    const inputCompany = guidedPreparationInputCompany(started.company, run.approval);
     if (run.phase === "analysis") {
-      const content = await analyzeCompany(started.company, "ai", assertCurrent);
+      const content = await analyzeCompany(inputCompany, "ai", assertCurrent);
       return store.commitGuidedPreparation(caseId, revision, run.id, {
         phase: "analysis",
         content,
@@ -102,7 +128,7 @@ export async function runGuidedPreparation(
     );
     if (!candidate) guidedPreparationError("GUIDED_SELECTION_REQUIRED");
     if (run.approval.autoRevisionLimit === 1) {
-      const result = await generatePlanWithRepair(started.company, candidate, assertCurrent, {
+      const result = await generatePlanWithRepair(inputCompany, candidate, assertCurrent, {
         onInitial: (initial, initialReview) => {
           assertCurrent();
           const checkpoint = store.checkpointGuidedPlan(
@@ -131,11 +157,11 @@ export async function runGuidedPreparation(
         },
       });
     }
-    const content = await generatePlan(started.company, candidate, "ai", assertCurrent);
+    const content = await generatePlan(inputCompany, candidate, "ai", assertCurrent);
     return store.commitGuidedPreparation(caseId, revision, run.id, {
       phase: "plan",
       content,
-      review: reviewPlan(started.company, content),
+      review: reviewPlan(inputCompany, content),
     });
   } catch (error) {
     const code =

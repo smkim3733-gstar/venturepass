@@ -18,7 +18,8 @@ import {
 } from "./studio-guided-preparation-types";
 import {
   assertGuidedPreparationBinding,
-  guidedPreparationApproval,
+  guidedExpectedPreparationApproval,
+  assertGuidedResultSourceIds,
   guidedPreparationDigest,
   guidedPreparationError,
 } from "./studio-guided-preparation-state";
@@ -1974,7 +1975,7 @@ export class StudioStore {
           if (runs.length >= 30) guidedPreparationError("GUIDED_LIMIT", 413);
           if (
             JSON.stringify(input.approval) !==
-            JSON.stringify(guidedPreparationApproval(record, model))
+            JSON.stringify(guidedExpectedPreparationApproval(record, model, input.approval))
           )
             guidedPreparationError("GUIDED_APPROVAL_CHANGED");
           const sameScope = runs.filter(
@@ -1995,9 +1996,11 @@ export class StudioStore {
             if (unresolvedGuidedPreparationRuns(runs).some((run) => run.id !== previous.id))
               guidedPreparationError("GUIDED_UNRESOLVED_REQUEST");
           }
-          const selected = currentVerifiedCandidateSelection(record)
-            ? record.analysis?.candidates.find((item) => item.id === record.selectedCandidateId)
-            : undefined;
+          // A new selected scope must obtain its own analysis, even if an old full-scope candidate exists.
+          const selected =
+            !input.approval.sourceScope && currentVerifiedCandidateSelection(record)
+              ? record.analysis?.candidates.find((item) => item.id === record.selectedCandidateId)
+              : undefined;
           runs.push({
             id: randomUUID(),
             retryOfId: input.action === "restart" ? input.previousRunId : null,
@@ -2025,6 +2028,10 @@ export class StudioStore {
             ? record.analysis?.candidates.find((item) => item.id === record.selectedCandidateId)
             : undefined;
           if (!selected) guidedPreparationError("GUIDED_SELECTION_REQUIRED");
+          assertGuidedResultSourceIds(
+            run.approval,
+            selected.evidence.map((ref) => ref.sourceId),
+          );
           if (run.requests.length >= 20) guidedPreparationError("GUIDED_LIMIT", 413);
           run.candidateId = selected.id;
           run.candidateDigest = guidedPreparationDigest(selected);
@@ -2084,6 +2091,10 @@ export class StudioStore {
         guidedPreparationDigest(selected) !== run.candidateDigest
       )
         guidedPreparationError("GUIDED_SELECTION_CHANGED");
+      assertGuidedResultSourceIds(run.approval, [
+        ...content.sections.flatMap((section) => section.evidence.map((ref) => ref.sourceId)),
+        ...review.flatMap((finding) => finding.sourceIds),
+      ]);
       const initial = appendGeneratedPlan(record, revision, selected.id, content, review, "ai");
       run.planId = initial.id;
       run.repair = {
@@ -2151,6 +2162,12 @@ export class StudioStore {
         guidedPreparationError("GUIDED_PHASE_CHANGED");
       assertGuidedPreparationBinding(record, run);
       if (result.phase === "analysis") {
+        assertGuidedResultSourceIds(run.approval, [
+          ...result.content.facts.flatMap((fact) => fact.evidence.map((ref) => ref.sourceId)),
+          ...result.content.candidates.flatMap((candidate) =>
+            candidate.evidence.map((ref) => ref.sourceId),
+          ),
+        ]);
         applyAnalysis(record, result.content, "ai", revision);
         run.analysisDigest = guidedPreparationDigest(record.analysis);
         run.status = result.content.candidates.length ? "awaiting_choice" : "awaiting_materials";
@@ -2164,6 +2181,12 @@ export class StudioStore {
           guidedPreparationDigest(selected) !== run.candidateDigest
         )
           guidedPreparationError("GUIDED_SELECTION_CHANGED");
+        assertGuidedResultSourceIds(run.approval, [
+          ...result.content.sections.flatMap((section) =>
+            section.evidence.map((ref) => ref.sourceId),
+          ),
+          ...result.review.flatMap((finding) => finding.sourceIds),
+        ]);
         let plan: BusinessPlan;
         if (result.repair) {
           const checkpoint = run.repair;
