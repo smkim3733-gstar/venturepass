@@ -2,7 +2,12 @@ import { z } from "zod";
 import type { StudioCase } from "@/lib/studio-schema";
 import { MAX_COMPANY_SOURCES, occupiedSourceSlots } from "@/lib/studio-source-limits";
 import { createSourceIntakeSchema, sourceIntakeLimits } from "@/lib/studio-source-intake-types";
-import { intakeFileSha256, intakeNonce, type IntakePending } from "./source-intakes-ui";
+import {
+  IntakeHttpError,
+  intakeFileSha256,
+  intakeNonce,
+  type IntakePending,
+} from "./source-intakes-ui";
 import {
   IntakeUploadOutbox,
   browserIntakeUploadOutbox,
@@ -33,14 +38,22 @@ const queueSchema = z
       .min(1)
       .max(100),
     actions: z
-      .array(z.object({ journal: z.unknown(), acknowledged: z.boolean() }).strict())
+      .array(
+        z
+          .object({
+            journal: z.unknown(),
+            acknowledged: z.boolean(),
+            rejection: z.string().min(1).max(100).optional(),
+          })
+          .strict(),
+      )
       .max(200),
     digest: sha,
   })
   .strict();
 type Selected = z.infer<typeof selectedSchema>;
 export type IntakeBulkQueue = Omit<z.infer<typeof queueSchema>, "actions"> & {
-  actions: { journal: IntakeUploadJournal; acknowledged: boolean }[];
+  actions: { journal: IntakeUploadJournal; acknowledged: boolean; rejection?: string }[];
 };
 export type BulkFileState = "remaining" | "stored" | "confirmation" | "cancelled";
 export type IntakeBulkView = {
@@ -164,6 +177,7 @@ export async function decodeIntakeBulkQueue(
     const steps = sequence(queue);
     if (actions.length > steps.length) return fail("CORRUPT");
     for (const [index, action] of actions.entries()) {
+      if (action.rejection && action.acknowledged) return fail("CORRUPT");
       if (!action.acknowledged && index !== actions.length - 1) return fail("CORRUPT");
       const step = steps[index],
         request = action.journal.request;
@@ -208,6 +222,7 @@ type Dependencies = {
  */
 export class IntakeBulkUploadQueue {
   readonly key: string;
+  private inspection: Promise<IntakeBulkView> | null = null;
   constructor(
     readonly companyId: string,
     private readonly deps: Dependencies,
@@ -307,7 +322,7 @@ export class IntakeBulkUploadQueue {
       return { ...snapshot, queue: null, files: [], complete: false };
     }
     const last = queue.actions.at(-1);
-    if (snapshot.journal && (!last || !identical(last.journal, snapshot.journal)))
+    if (snapshot.journal && (!last || last.rejection || !identical(last.journal, snapshot.journal)))
       return fail("EXISTING");
     let changed = false;
     for (const action of queue.actions) {
@@ -316,6 +331,7 @@ export class IntakeBulkUploadQueue {
         this.companyId,
         action.journal,
       );
+      if (action.rejection && acknowledged) return fail("RESPONSE");
       if (action.acknowledged && !acknowledged) return fail("RESPONSE");
       if (acknowledged && !action.acknowledged) {
         action.acknowledged = true;
@@ -400,8 +416,22 @@ export class IntakeBulkUploadQueue {
         files.every((file) => file.state === "stored"),
     };
   }
-  inspect(minimumRevision = 0) {
-    return this.deps.exclusive(() => this.inspectLocked(minimumRevision));
+  async inspect(minimumRevision = 0) {
+    this.inspection ??= this.deps
+      .exclusive(() => this.inspectLocked(minimumRevision))
+      .finally(() => {
+        this.inspection = null;
+      });
+    const view = await this.inspection;
+    if (view.company.revision < minimumRevision) return fail("RESPONSE");
+    return structuredClone(view);
+  }
+  /** Metadata-only fallback for a failed GET; not a statement about server storage. */
+  readSelection() {
+    return this.deps.exclusive(async () => {
+      const raw = this.raw();
+      return raw === null ? null : decodeIntakeBulkQueue(raw, this.companyId);
+    });
   }
   private async match(queue: IntakeBulkQueue, files: readonly File[]) {
     const selected = new Map<string, File>();
@@ -457,6 +487,8 @@ export class IntakeBulkUploadQueue {
         if (raw === null || !identical(await decodeIntakeBulkQueue(raw, this.companyId), queue))
           return fail("CHANGED");
         let action = queue.actions.at(-1);
+        if (action?.rejection) return view;
+        let newlyPrepared = false;
         if (!action || action.acknowledged) {
           const step = sequence(queue)[queue.actions.length];
           if (!step) return view;
@@ -507,6 +539,7 @@ export class IntakeBulkUploadQueue {
           queue.actions.push(action);
           view.queue = await this.save(queue, raw);
           action = view.queue.actions.at(-1)!;
+          newlyPrepared = true;
         }
         const request = action.journal.request;
         let transmission: IntakePending;
@@ -520,12 +553,43 @@ export class IntakeBulkUploadQueue {
         } else transmission = request;
         // Both the entire selection and this exact command are durable before the old outbox sends.
         this.assertRaw(JSON.stringify(view.queue));
-        await this.deps.outbox.send(transmission);
+        try {
+          await this.deps.outbox.send(transmission);
+        } catch (error) {
+          // Only this first, directly observed refusal proves no write. A refusal after
+          // uncertainty remains unresolved and cannot authorize forgetting the command.
+          if (newlyPrepared && error instanceof IntakeHttpError && error.accepted === false) {
+            const expected = JSON.stringify(view.queue);
+            const code = z.string().min(1).max(100).parse(error.code);
+            action.rejection = code;
+            await this.save(view.queue!, expected);
+          }
+          throw error;
+        }
         view = await this.inspectLocked();
         options.onProgress?.(structuredClone(view));
         if (view.complete) return view;
       }
       return fail("RESPONSE");
+    });
+  }
+  async closeStoppedSelection(input: { confirmed: true }) {
+    if (input.confirmed !== true) return fail("INCOMPLETE");
+    return this.deps.exclusive(async () => {
+      const view = await this.inspectLocked();
+      if (
+        !view.queue ||
+        view.activeItemIds.length ||
+        view.queue.actions.some((action) => !action.acknowledged && !action.rejection)
+      )
+        return fail("INCOMPLETE");
+      this.assertRaw(JSON.stringify(view.queue));
+      try {
+        this.deps.storage.removeItem(this.key);
+        if (this.raw() !== null) fail("STORAGE");
+      } catch {
+        return fail("STORAGE");
+      }
     });
   }
   async clearCompleted() {

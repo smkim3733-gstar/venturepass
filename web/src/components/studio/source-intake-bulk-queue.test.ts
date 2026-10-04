@@ -528,3 +528,122 @@ describe("durable complete selection and batches", () => {
     expect(send).not.toHaveBeenCalled();
   });
 });
+
+describe("guided queue recovery and explicit closing", () => {
+  it("shares only an in-flight same-controller GET and returns isolated views", async () => {
+    await controller().begin(files(1));
+    status.mockClear();
+    let release!: () => void;
+    const wait = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    status.mockImplementation(async () => {
+      await wait;
+      return { company: store.get(companyId), activeItemIds: [] };
+    });
+    const owner = controller(),
+      first = owner.inspect(),
+      second = owner.inspect();
+    await expect(controller().inspect()).rejects.toMatchObject({ code: "BUSY" });
+    release();
+    const [a, b] = await Promise.all([first, second]);
+    expect(status).toHaveBeenCalledTimes(1);
+    a.queue!.files[0].originalName = "changed.txt";
+    expect(b.queue!.files[0].originalName).toBe("bulk-0.txt");
+    await owner.inspect();
+    expect(status).toHaveBeenCalledTimes(2);
+    expect(send).not.toHaveBeenCalled();
+  });
+  it("retains selection cards when GET fails without treating metadata as storage evidence", async () => {
+    const queue = await controller().begin(files(2));
+    status.mockRejectedValue(new Error("offline"));
+    await expect(controller().inspect()).rejects.toThrow("offline");
+    expect(await controller().readSelection()).toEqual(queue);
+    expect(store.get(companyId).sourceIntakes).toEqual([]);
+    expect(send).not.toHaveBeenCalled();
+  });
+  it("records only a first directly observed refusal and explicitly closes its local selection", async () => {
+    const chosen = files(1),
+      before = store.get(companyId);
+    await controller().begin(chosen);
+    send.mockRejectedValueOnce(new IntakeHttpError("INTAKE_VERSION_CONFLICT", false));
+    await expect(controller().run(chosen)).rejects.toBeInstanceOf(IntakeHttpError);
+    const saved = await stored();
+    expect(saved.actions[0]).toMatchObject({
+      acknowledged: false,
+      rejection: "INTAKE_VERSION_CONFLICT",
+    });
+    expect(values.has(intakeUploadOutboxKey(companyId))).toBe(false);
+    await controller().run(chosen);
+    expect(send).toHaveBeenCalledTimes(1);
+    await expect(
+      controller().closeStoppedSelection({ confirmed: false } as never),
+    ).rejects.toThrow();
+    await controller().closeStoppedSelection({ confirmed: true });
+    expect(values.size).toBe(0);
+    expect(store.get(companyId)).toEqual(before);
+  });
+  it("never closes an uncertain request after a later refused replay", async () => {
+    const chosen = files(1);
+    await controller().begin(chosen);
+    send.mockRejectedValueOnce(new Error("reply unknown"));
+    await expect(controller().run(chosen)).rejects.toThrow("reply unknown");
+    const original = raw();
+    send.mockRejectedValueOnce(new IntakeHttpError("INTAKE_VERSION_CONFLICT", false));
+    await expect(controller().run(chosen)).rejects.toThrow();
+    await expect(controller().closeStoppedSelection({ confirmed: true })).rejects.toMatchObject({
+      code: "INCOMPLETE",
+    });
+    expect(raw()).toBe(original);
+    expect((await stored()).actions[0].rejection).toBeUndefined();
+    expect(values.has(intakeUploadOutboxKey(companyId))).toBe(true);
+    expect(send.mock.calls[0][0]).toEqual(send.mock.calls[1][0]);
+  });
+  it("closing a cancelled partial selection preserves the stored original and server reservations", async () => {
+    const chosen = files(3);
+    await controller().begin(chosen);
+    let step = 0;
+    await controller().run(chosen, { shouldContinue: () => ++step <= 2 });
+    const company = store.get(companyId),
+      item = company.sourceIntakes[1];
+    store.cancelSourceIntakeItem(companyId, {
+      action: "cancel-awaiting-original",
+      revision: company.revision,
+      itemId: item.id,
+      expectedItemVersion: item.version,
+      clientRequestId: randomUUID(),
+      confirmed: true,
+    });
+    const before = store.get(companyId);
+    const stopped = await controller().run(chosen);
+    expect(stopped.files.map((file) => file.state)).toEqual(["stored", "cancelled", "remaining"]);
+    expect(send).toHaveBeenCalledTimes(2);
+    await controller().closeStoppedSelection({ confirmed: true });
+    expect(values.size).toBe(0);
+    expect(store.get(companyId)).toEqual(before);
+    expect(store.original(companyId, before.sources[0].id).buffer).toEqual(
+      Buffer.from(await chosen[0].arrayBuffer()),
+    );
+  }, 30000);
+  it("refusal markers cannot coexist with an acknowledged server receipt", async () => {
+    const chosen = files(1);
+    await controller().begin(chosen);
+    let step = 0;
+    await controller().run(chosen, { shouldContinue: () => ++step === 1 });
+    const saved = JSON.parse(raw());
+    saved.actions[0].rejection = "INTAKE_VERSION_CONFLICT";
+    delete saved.digest;
+    saved.digest = intakeSha(JSON.stringify(saved));
+    values.set(intakeBulkQueueKey(companyId), JSON.stringify(saved));
+    await expect(controller().inspect()).rejects.toMatchObject({ code: "CORRUPT" });
+    saved.actions[0].acknowledged = false;
+    delete saved.digest;
+    saved.digest = intakeSha(JSON.stringify(saved));
+    values.set(intakeBulkQueueKey(companyId), JSON.stringify(saved));
+    await expect(controller().closeStoppedSelection({ confirmed: true })).rejects.toMatchObject({
+      code: "RESPONSE",
+    });
+    expect(values.has(intakeBulkQueueKey(companyId))).toBe(true);
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+});

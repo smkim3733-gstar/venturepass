@@ -1,10 +1,7 @@
 "use client";
 
-import { MAX_COMPANY_SOURCES, occupiedSourceSlots } from "@/lib/studio-source-limits";
-
 import { useEffect, useRef, useState } from "react";
-import { ArrowRight, FolderUp, LoaderCircle } from "lucide-react";
-import { toast } from "sonner";
+import { ArrowRight, LoaderCircle } from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -34,14 +31,9 @@ import { EvidenceList } from "./evidence";
 import { GuidedRepairSummary } from "./guided-repair-summary";
 import { guidedQuestions, type GuidedQuestion } from "./guided-questions";
 import { GuidedSourceReview } from "./guided-source-review";
-import { GuidedFileDropZone, useFileDropNavigationGuard } from "./guided-file-drop-zone";
-import { guidedUploadResult } from "./guided-upload-result";
-import {
-  AttachmentCard,
-  GuidedMaterials,
-  attachmentGridClass,
-  attachmentSize,
-} from "./guided-materials";
+import { useFileDropNavigationGuard } from "./guided-file-drop-zone";
+import { GuidedMaterials } from "./guided-materials";
+import { GuidedBulkUpload } from "./guided-bulk-upload";
 import { PreparedPackagesPanel } from "./prepared-packages-panel";
 import { GuidedPlanEvidence } from "./guided-plan-evidence";
 import { GuidedFollowupStatus } from "./guided-followup-status";
@@ -62,21 +54,6 @@ type Props = {
   mutate: (mutation: StudioMutation) => Promise<StudioCase | null>;
   onDetails: (destination: GuidedDestination, target?: GuidedWorkflowTarget) => void;
   onSettings: () => void;
-};
-
-type UploadItem = {
-  name: string;
-  size: number;
-  state: "waiting" | "uploading" | "saved" | "failed" | "unknown" | "not-sent";
-  detail: string;
-};
-const uploadLabels: Record<UploadItem["state"], string> = {
-  waiting: "전송 대기",
-  uploading: "저장 중",
-  saved: "저장 완료",
-  failed: "저장 실패",
-  unknown: "저장 여부 확인 필요",
-  "not-sent": "전송하지 않음",
 };
 
 const steps: { id: GuidedStep; label: string }[] = [
@@ -108,7 +85,7 @@ export function GuidedWorkspace({
   const [descriptionTouched, setDescriptionTouched] = useState(false);
   const [error, setError] = useState("");
   const [unsettled, setUnsettled] = useState(false);
-  const [uploads, setUploads] = useState<UploadItem[]>([]);
+  const [bulkUploading, setBulkUploading] = useState(false);
   const [approval, setApproval] = useState<GuidedPreparationApproval | null>(null);
   const [restartRunId, setRestartRunId] = useState<string | null>(null);
   const [restartAcknowledged, setRestartAcknowledged] = useState(false);
@@ -132,7 +109,6 @@ export function GuidedWorkspace({
   const [packagePlanId, setPackagePlanId] = useState<string | null>(null);
   const [packageUnsettled, setPackageUnsettled] = useState(false);
   const inFlight = useRef(false);
-  const fileInput = useRef<HTMLInputElement>(null);
   const mounted = useRef(true);
   const pendingRequest = useRef<GuidedPreparationRequest | null>(null);
   const editingDirty =
@@ -382,114 +358,6 @@ export function GuidedWorkspace({
     }
   }
 
-  async function uploadFiles(files: File[]) {
-    if (!files.length || inFlight.current || locked) return;
-    setStep("materials");
-    setUploads(
-      files.map((file) => ({ name: file.name, size: file.size, state: "not-sent", detail: "" })),
-    );
-    if (
-      files.length + occupiedSourceSlots(company) > MAX_COMPANY_SOURCES ||
-      files.some((file) => !file.size || file.size > 12 * 1024 * 1024)
-    ) {
-      setError(
-        `자료는 접수 대기를 포함해 회사별 ${MAX_COMPANY_SOURCES}개, 파일당 12MB까지 올릴 수 있습니다. 내용이 있는 파일을 선택해 주세요.`,
-      );
-      return;
-    }
-    inFlight.current = true;
-    setError("");
-    let current = company;
-    let uploaded = 0;
-    let uploadUncertain = false;
-    let activeUpload = 0;
-    setUploads(
-      files.map((file) => ({ name: file.name, size: file.size, state: "waiting", detail: "" })),
-    );
-    const updateUpload = (index: number, change: Partial<UploadItem>) =>
-      setUploads((items) => items.map((item, i) => (i === index ? { ...item, ...change } : item)));
-    try {
-      for (const [index, file] of files.entries()) {
-        activeUpload = index;
-        updateUpload(index, { state: "uploading" });
-        onBusyChange(`자료를 읽고 보관하는 중입니다 · ${uploaded + 1}/${files.length}`);
-        const originalOnly = /\.(png|jpe?g|webp)$/i.test(file.name);
-        const form = new FormData();
-        form.append("file", file);
-        form.append("kind", "other");
-        form.append("revision", String(current.revision));
-        form.append("allowAi", "false");
-        form.append("extractionMode", originalOnly ? "original-only" : "extract");
-        uploadUncertain = true;
-        let response = await fetch(`/api/studio/cases/${current.id}/sources`, {
-          method: "POST",
-          body: form,
-        });
-        let raw: unknown = await response.json();
-        // NO_TEXT is rejected before storage. A scanned PDF can safely be kept as an
-        // unverified original; uncertain network failures must never trigger a retry.
-        if (
-          response.status === 422 &&
-          raw &&
-          typeof raw === "object" &&
-          "code" in raw &&
-          raw.code === "NO_TEXT" &&
-          /\.pdf$/i.test(file.name)
-        ) {
-          form.set("extractionMode", "original-only");
-          response = await fetch(`/api/studio/cases/${current.id}/sources`, {
-            method: "POST",
-            body: form,
-          });
-          raw = await response.json();
-        }
-        if (!mounted.current) return;
-        if (!response.ok) {
-          if ([400, 403, 409, 413, 415, 422].includes(response.status)) uploadUncertain = false;
-          const body = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
-          throw new Error(
-            typeof body.error === "string" ? body.error : "자료 등록 결과를 확인하지 못했습니다.",
-          );
-        }
-        const result = guidedUploadResult(raw, current, file.name);
-        if (!result) throw new Error("저장된 파일 정보를 확인하지 못했습니다.");
-        current = result.company;
-        onCompany(current);
-        uploadUncertain = false;
-        uploaded += 1;
-        updateUpload(index, {
-          state: "saved",
-          detail:
-            result.source.extraction === "pending"
-              ? "원본 보관 · 본문 확인 필요"
-              : "본문 추출 · 사실 확인은 별도",
-        });
-      }
-      toast.success(`자료 ${uploaded}개를 보관했습니다. 아래 목록에서 확인해 주세요.`);
-    } catch (caught) {
-      if (mounted.current) {
-        const detail =
-          caught instanceof Error ? caught.message : "자료 등록 상태를 확인하지 못했습니다.";
-        setUploads((items) =>
-          items.map((item, index) =>
-            index === activeUpload
-              ? { ...item, state: uploadUncertain ? "unknown" : "failed", detail }
-              : item.state === "waiting"
-                ? { ...item, state: "not-sent" }
-                : item,
-          ),
-        );
-      }
-      if (mounted.current && uploadUncertain) setUnsettled(true);
-      if (mounted.current)
-        setError(
-          `선택 ${files.length}개 중 ${uploaded}개 저장을 확인했습니다. ${files[activeUpload].name}: ${caught instanceof Error ? caught.message : "자료 등록 상태를 확인하지 못했습니다."} 남은 파일은 전송하지 않았습니다. 아래 파일별 결과를 확인해 주세요.`,
-        );
-    } finally {
-      inFlight.current = false;
-      if (mounted.current) onBusyChange("");
-    }
-  }
   async function mutateOnce(mutation: StudioMutation) {
     if (inFlight.current || locked) return null;
     inFlight.current = true;
@@ -650,32 +518,6 @@ export function GuidedWorkspace({
           {error}
         </div>
       )}
-      {uploads.length > 0 && step === "materials" && !sourceReview && !packagePlanId && (
-        <section className={styles.sheet} aria-label="이번 업로드 결과">
-          <h3 className={styles.subheading}>이번에 선택한 자료 {uploads.length}개</h3>
-          <p role="status" className={styles.helper}>
-            저장 완료 {uploads.filter((item) => item.state === "saved").length}개 · 저장 실패{" "}
-            {uploads.filter((item) => item.state === "failed").length}개 · 확인 필요{" "}
-            {uploads.filter((item) => item.state === "unknown").length}개 · 전송하지 않음{" "}
-            {uploads.filter((item) => item.state === "not-sent").length}개
-          </p>
-          <ul className={attachmentGridClass}>
-            {uploads.map((item, index) => (
-              <AttachmentCard
-                key={index}
-                name={item.name}
-                state={item.state}
-                label={uploadLabels[item.state]}
-                detail={item.detail}
-                meta={attachmentSize(item.size)}
-              />
-            ))}
-          </ul>
-          <p className={styles.helper}>
-            이번 선택의 결과입니다. 새로고침 후에는 아래 저장된 자료 목록에서 확인할 수 있습니다.
-          </p>
-        </section>
-      )}
       {packagePlanId ? (
         <PreparedPackagesPanel
           company={company}
@@ -705,7 +547,7 @@ export function GuidedWorkspace({
           }}
           onDirtyChange={setSourceReviewDirty}
         />
-      ) : busy ? (
+      ) : busy && !bulkUploading ? (
         <div role="status" className={styles.sheet}>
           <LoaderCircle aria-hidden="true" className="mb-3 size-5 animate-spin" />
           <h2 className={styles.subheading}>{busy}</h2>
@@ -780,42 +622,16 @@ export function GuidedWorkspace({
                   : "자료 첨부는 선택 사항입니다",
                 "자료가 없어도 회사 설명으로 시작할 수 있습니다. 자료는 나중에 추가할 수 있습니다.",
               )}
-              <GuidedFileDropZone
-                className={`${styles.sheet} ${styles.upload}`}
-                disabled={locked}
-                onFiles={(files) => void uploadFiles(files)}
-              >
-                <FolderUp aria-hidden="true" className={styles.uploadIcon} />
-                <h3 className={styles.subheading}>사업자등록증 · 회사소개서 · 재무자료 등</h3>
-                <p className={styles.helper}>
-                  PDF·워드(DOCX)·엑셀·이미지 등을 여러 개 선택할 수 있습니다. 파일당 12MB, 회사별
-                  {MAX_COMPANY_SOURCES}개까지 지원합니다. 이전 워드 형식(DOC)은 DOCX 또는 PDF로
-                  저장해 주세요.
-                </p>
-                <p className={styles.helper}>
-                  저장된 자료와 접수 대기 {occupiedSourceSlots(company)} / {MAX_COMPANY_SOURCES}개 ·
-                  추가 가능 {Math.max(0, MAX_COMPANY_SOURCES - occupiedSourceSlots(company))}개
-                </p>
-                {
-                  <PrimaryAction disabled={locked} onClick={() => fileInput.current?.click()}>
-                    {"자료 올리기"}
-                  </PrimaryAction>
-                }
-                <input
-                  ref={fileInput}
-                  type="file"
-                  multiple
-                  className="sr-only"
-                  aria-label="회사 자료 파일 선택"
-                  accept=".pdf,.docx,.xlsx,.csv,.txt,.md,.png,.jpg,.jpeg,.webp"
-                  onChange={(event) => {
-                    const files = Array.from(event.currentTarget.files ?? []);
-                    event.currentTarget.value = "";
-                    void uploadFiles(files);
-                  }}
-                  disabled={locked}
-                />
-              </GuidedFileDropZone>
+              <GuidedBulkUpload
+                company={company}
+                locked={locked}
+                onCompany={onCompany}
+                onBusyChange={(message) => {
+                  setBulkUploading(!!message);
+                  onBusyChange(message);
+                }}
+                onReviewSources={() => onDetails("sources")}
+              />
               <GuidedMaterials company={company} locked={locked} onReview={setSourceReview} />
               <div className={styles.support}>
                 <button
