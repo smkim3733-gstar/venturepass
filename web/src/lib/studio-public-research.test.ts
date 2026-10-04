@@ -81,7 +81,7 @@ it("SSR and disabled rendering have no outbound links, automatic search, or call
     for (const disabled of [true, false]) {
       const html = renderToStaticMarkup(createElement(PublicResearchLinks, { disabled }));
       expect(html).not.toContain("href=");
-      expect(html).toContain("자동 수집되지 않습니다");
+      expect(html).toContain("자료 보관·사실 확인·AI 전송은 하지 않습니다");
       expect(html).not.toContain("checked=");
     }
     expect(fetchSpy).not.toHaveBeenCalled();

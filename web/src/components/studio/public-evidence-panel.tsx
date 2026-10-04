@@ -12,6 +12,7 @@ import {
 import { jsonBody, studioFetch, useDirty } from "./shared";
 import styles from "./guided-workspace.module.css";
 import { PublicResearchLinks } from "./public-research-links";
+import { publicResearchCandidateFields } from "@/lib/studio-public-research-result";
 import { isPublicDiscoveryPage } from "@/lib/studio-public-research";
 export function PublicEvidencePanel({
   company,
@@ -215,7 +216,16 @@ export function PublicEvidencePanel({
         </div>
       ) : (
         <>
-          <PublicResearchLinks disabled={working || blocked || !!pending || changed} />
+          <PublicResearchLinks
+            disabled={working || blocked || !!pending || changed}
+            canFill={!draft.title && !draft.url}
+            onCandidate={(candidate) => {
+              if (working || blocked || pending || changed || draft.title || draft.url) return;
+              const fields = publicResearchCandidateFields(candidate);
+              setDraft((d) => (d.title || d.url ? d : { ...d, ...fields }));
+              setConfirmed(false);
+            }}
+          />
           {changed && (
             <p role="alert">
               회사 자료가 바뀌어 저장을 멈췄습니다. 입력을 복사한 뒤 최신 자료에서 다시 확인해
@@ -325,7 +335,7 @@ export function PublicEvidencePanel({
             </button>
           )}
           <p className={styles.helper}>
-            주소 자동 조회·검색은 하지 않습니다. 선택한 공개 검색은 새 창에서만 열립니다. 자료 추가
+            원문 주소는 자동 조회하지 않습니다. 공개 후보 조회와 원문 확인은 구분합니다. 자료 추가
             시 기존 분석·주제 선택과 원고 확인 상태가 해제됩니다. 원고 본문과 과거 실행은
             보존합니다. 미저장 입력은 현재 창에서만 유지됩니다.
           </p>

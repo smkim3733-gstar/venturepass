@@ -207,7 +207,7 @@ it("public form renders empty dates and explicit unchecked storage consent witho
     }),
   );
   expect(html).toContain("원문을 읽은 날짜");
-  expect(html).toContain("주소 자동 조회·검색은 하지 않습니다");
+  expect(html).toContain("원문 주소는 자동 조회하지 않습니다");
   expect(html).not.toContain('checked=""');
   expect(spy).not.toHaveBeenCalled();
 });
