@@ -48,6 +48,7 @@ import { GuidedMaterialReadiness } from "./guided-material-readiness";
 import { GuidedBulkUpload } from "./guided-bulk-upload";
 import { PreparedPackagesPanel } from "./prepared-packages-panel";
 import { GuidedPlanEvidence } from "./guided-plan-evidence";
+import { GuidedVentureConnection } from "./guided-venture-connection";
 import { GuidedFollowupStatus } from "./guided-followup-status";
 import { useLocalDay } from "./case-attention";
 import type { GuidedWorkflowTarget } from "@/lib/studio-guided-followup";
@@ -1424,21 +1425,29 @@ export function GuidedWorkspace({
               onNavigate={(target) => onDetails("workflow", target)}
             />
           )}
-          {(!flow.followup || flow.followup.state === "none") && (
-            <section className={`${styles.sheet} ${styles.topic}`}>
-              <p className={styles.eyebrow}>지금 할 일</p>
-              <h3 className={styles.subheading}>
-                {flow.step === "application"
-                  ? (flow.action?.label ?? "다음 안내 기다리기")
-                  : flow.title}
-              </h3>
-              <p className={styles.helper}>
-                {flow.step === "application"
-                  ? "입력·첨부할 자료와 최종 제출은 각각 내용을 확인받습니다. 기관 결과가 확인되기 전에는 접수 완료로 표시하지 않습니다."
-                  : flow.description}
-              </p>
-            </section>
-          )}
+          {(!flow.followup || flow.followup.state === "none") &&
+            (flow.planReady ? (
+              <GuidedVentureConnection
+                key={`venture-overview:${company.id}:${company.revision}`}
+                company={company}
+                disabled={locked}
+                onOpen={() => onDetails("venturein")}
+              />
+            ) : (
+              <section className={`${styles.sheet} ${styles.topic}`}>
+                <p className={styles.eyebrow}>지금 할 일</p>
+                <h3 className={styles.subheading}>
+                  {flow.step === "application"
+                    ? (flow.action?.label ?? "다음 안내 기다리기")
+                    : flow.title}
+                </h3>
+                <p className={styles.helper}>
+                  {flow.step === "application"
+                    ? "입력·첨부할 자료와 최종 제출은 각각 내용을 확인받습니다. 기관 결과가 확인되기 전에는 접수 완료로 표시하지 않습니다."
+                    : flow.description}
+                </p>
+              </section>
+            ))}
           <div className={styles.actions}>
             <button
               type="button"
@@ -1449,7 +1458,8 @@ export function GuidedWorkspace({
               계획서 다시 보기
             </button>
             {flow.step === "application" ? (
-              flow.action && (
+              flow.action &&
+              (!flow.planReady || flow.followup?.state !== "none") && (
                 <PrimaryAction
                   disabled={locked}
                   onClick={() => onDetails(flow.action!.destination, flow.action!.workflowTarget)}
