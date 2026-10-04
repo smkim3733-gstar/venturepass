@@ -104,6 +104,37 @@ async function inputDigest(request: IntakeUploadJournal["request"]) {
   delete value.revision;
   return hash(value);
 }
+export async function createIntakeUploadJournal(
+  companyId: string,
+  request: IntakeUploadJournal["request"],
+) {
+  const normalized = requestSchema.parse(request);
+  const body = {
+    journalVersion: 1 as const,
+    companyId: z.string().uuid().parse(companyId),
+    request: normalized,
+    inputDigest: await inputDigest(normalized),
+  };
+  return { ...body, journalDigest: await hash(body) };
+}
+export function intakeUploadAcknowledged(
+  company: StudioCase,
+  companyId: string,
+  journal: IntakeUploadJournal,
+) {
+  if (journal.companyId !== companyId) return fail("RESPONSE");
+  const receipts = company.sourceIntakes
+    .flatMap((item) => item.requests)
+    .filter((receipt) => receipt.clientRequestId === intakeNonce(journal.request));
+  if (!receipts.length) return false;
+  if (
+    receipts.length !== 1 ||
+    receipts[0].inputDigest !== journal.inputDigest ||
+    !intakeRequestAcknowledged(company, companyId, journal.request)
+  )
+    return fail("RESPONSE");
+  return true;
+}
 export async function decodeIntakeUploadJournal(raw: string, companyId: string) {
   try {
     if (new TextEncoder().encode(raw).length > 32 * 1024) return fail("CORRUPT");
@@ -178,19 +209,6 @@ export class IntakeUploadOutbox {
       fail("STORAGE");
     }
   }
-  private acknowledged(company: StudioCase, journal: IntakeUploadJournal) {
-    const receipts = company.sourceIntakes
-      .flatMap((item) => item.requests)
-      .filter((receipt) => receipt.clientRequestId === intakeNonce(journal.request));
-    if (!receipts.length) return false;
-    if (
-      receipts.length !== 1 ||
-      receipts[0].inputDigest !== journal.inputDigest ||
-      !intakeRequestAcknowledged(company, this.companyId, journal.request)
-    )
-      return fail("RESPONSE");
-    return true;
-  }
   async inspect(minimumRevision: number) {
     // React development effect replay may request the same read twice. Share only this
     // instance's ongoing lookup, never another tab's lock or a completed cached snapshot.
@@ -212,7 +230,7 @@ export class IntakeUploadOutbox {
       );
       if (!snapshot) return fail("RESPONSE");
       this.assertRaw(raw);
-      if (journal && this.acknowledged(snapshot.company, journal)) {
+      if (journal && intakeUploadAcknowledged(snapshot.company, this.companyId, journal)) {
         this.clear(raw!);
         journal = null;
       }
@@ -236,15 +254,12 @@ export class IntakeUploadOutbox {
         normalized.kind === "original" ? { ...normalized, file: selectedFile! } : normalized;
       if (previous && JSON.stringify(previous.request) !== JSON.stringify(normalized))
         return fail("EXISTING");
-      if (transmission.kind === "original" && (await intakeFileSha256(transmission.file)) !== transmission.sha256)
+      if (
+        transmission.kind === "original" &&
+        (await intakeFileSha256(transmission.file)) !== transmission.sha256
+      )
         return fail("FILE");
-      const body = {
-        journalVersion: 1 as const,
-        companyId: this.companyId,
-        request: normalized,
-        inputDigest: await inputDigest(normalized),
-      };
-      const journal = { ...body, journalDigest: await hash(body) };
+      const journal = await createIntakeUploadJournal(this.companyId, normalized);
       const stored = JSON.stringify(journal);
       await decodeIntakeUploadJournal(stored, this.companyId);
       this.assertRaw(raw);
@@ -266,7 +281,7 @@ export class IntakeUploadOutbox {
         );
         this.assertRaw(expected);
         if (!snapshot) return fail("RESPONSE");
-        if (this.acknowledged(snapshot.company, journal)) {
+        if (intakeUploadAcknowledged(snapshot.company, this.companyId, journal)) {
           this.clear(expected);
           return snapshot.company;
         }
@@ -286,7 +301,8 @@ export class IntakeUploadOutbox {
       }
       this.assertRaw(expected);
       const company = validateIntakeResponse(response, this.companyId, transmission);
-      if (!company || !this.acknowledged(company, journal)) return fail("RESPONSE");
+      if (!company || !intakeUploadAcknowledged(company, this.companyId, journal))
+        return fail("RESPONSE");
       this.clear(expected);
       return company;
     });
