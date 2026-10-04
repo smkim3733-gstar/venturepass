@@ -1,3 +1,4 @@
+import { planSupplementAdoptionReceiptSchema } from "./studio-plan-supplement-adoption-types";
 import { planSupplementExecutionRecordSchema } from "./studio-plan-supplement-execution-types";
 import { MAX_COMPANY_SOURCES } from "./studio-source-limits";
 import { z } from "zod";
@@ -409,6 +410,7 @@ export const caseSchema = z.object({
   guidedPreparationRuns: z.array(guidedPreparationRunSchema).max(30).optional(),
   // Absent on existing cases; never materialize a new consent/history on read.
   planSupplementExecutions: z.array(planSupplementExecutionRecordSchema).max(30).optional(),
+  planSupplementAdoptions: z.array(planSupplementAdoptionReceiptSchema).max(30).optional(),
   preparationAutomation: preparationAutomationSchema.default(emptyPreparationAutomation),
   revision: z.number().int(),
   createdAt: z.string(),

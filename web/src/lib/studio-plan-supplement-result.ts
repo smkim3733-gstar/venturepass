@@ -21,6 +21,26 @@ const messageSchema = z.object({
     .array(z.object({ type: z.literal("output_text"), text: z.string().max(100000) }))
     .length(1),
 });
+export function readPlanSupplementResponse(rawJson: string) {
+  const response = responseSchema.parse(JSON.parse(rawJson));
+  const messages = response.output.filter(
+    (item) =>
+      typeof item === "object" && item !== null && (item as { type?: unknown }).type === "message",
+  );
+  if (
+    messages.length !== 1 ||
+    response.output.some(
+      (item) =>
+        typeof item !== "object" ||
+        item === null ||
+        !["message", "reasoning"].includes(String((item as { type?: unknown }).type)),
+    )
+  )
+    throw Error();
+  const message = messageSchema.parse(messages[0]);
+  const draft = planSupplementDraftSchema.parse(JSON.parse(message.content[0].text));
+  return { response, draft };
+}
 /** A stored SDK response is separately checked against the original context before comparison. No adoption. */
 export function planSupplementResult(company: StudioCase, record: PlanSupplementExecutionRecord) {
   auditPlanSupplementExecutions(company);
@@ -30,25 +50,7 @@ export function planSupplementResult(company: StudioCase, record: PlanSupplement
   if (!record.capture) return { state: "result-unconfirmed" as const, proposal: null };
   if (record.capture.kind !== "response") return { state: record.capture.kind, proposal: null };
   try {
-    const response = responseSchema.parse(JSON.parse(record.capture.rawJson));
-    const messages = response.output.filter(
-      (item) =>
-        typeof item === "object" &&
-        item !== null &&
-        (item as { type?: unknown }).type === "message",
-    );
-    if (
-      messages.length !== 1 ||
-      response.output.some(
-        (item) =>
-          typeof item !== "object" ||
-          item === null ||
-          !["message", "reasoning"].includes(String((item as { type?: unknown }).type)),
-      )
-    )
-      throw Error();
-    const message = messageSchema.parse(messages[0]);
-    const draft = planSupplementDraftSchema.parse(JSON.parse(message.content[0].text));
+    const { response, draft } = readPlanSupplementResponse(record.capture.rawJson);
     // Normalize only our reservation+capture increments. A late response is retained, never rebased.
     if (
       company.revision !== record.finishedRevision ||

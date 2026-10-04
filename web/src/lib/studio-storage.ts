@@ -1,4 +1,14 @@
 import {
+  planSupplementAdoptionCommandSchema,
+  type PlanSupplementAdoptionCommand,
+} from "./studio-plan-supplement-adoption-types";
+import {
+  assertPlanSupplementAdoption,
+  auditPlanSupplementAdoptions,
+  replayPlanSupplementAdoption,
+  supplementPlanIdentity,
+} from "./studio-plan-supplement-adoption";
+import {
   planSupplementExecutionCommandSchema,
   planSupplementCaptureSchema,
   type PlanSupplementCapture,
@@ -1872,19 +1882,7 @@ export class StudioStore {
           return true;
         }
         case "save-plan": {
-          const old = record.plans.find((plan) => plan.id === mutation.planId);
-          if (!old) throw new StudioError("사업계획서를 찾을 수 없습니다.", 404, "PLAN_NOT_FOUND");
-          const plan: BusinessPlan = {
-            ...old,
-            id: randomUUID(),
-            version: Math.max(0, ...record.plans.map((item) => item.version)) + 1,
-            generatedAt: new Date().toISOString(),
-            mode: "manual",
-            content: mutation.content,
-            review: review(record, mutation.content),
-            confirmedAt: null,
-          };
-          record.plans.push(plan);
+          this.appendManualPlan(record, mutation.planId, mutation.content, review);
           return false;
         }
         case "confirm-plan": {
@@ -1972,6 +1970,67 @@ export class StudioStore {
       return true;
     });
   }
+  private appendManualPlan(
+    record: StudioCase,
+    planId: string,
+    content: PlanContent,
+    review: Reviewer,
+  ) {
+    const old = record.plans.find((plan) => plan.id === planId);
+    if (!old) throw new StudioError("사업계획서를 찾을 수 없습니다.", 404, "PLAN_NOT_FOUND");
+    const plan: BusinessPlan = {
+      ...old,
+      id: randomUUID(),
+      version: Math.max(0, ...record.plans.map((item) => item.version)) + 1,
+      generatedAt: new Date().toISOString(),
+      mode: "manual",
+      content,
+      review: review(record, content),
+      confirmedAt: null,
+    };
+    record.plans.push(plan);
+    return plan;
+  }
+  /** The original receipt is audited before CAS. Plan and receipt share one existing writer transaction. */
+  adoptPlanSupplement(id: string, raw: PlanSupplementAdoptionCommand, review: Reviewer) {
+    const command = planSupplementAdoptionCommandSchema.parse(raw);
+    let replayed = false;
+    const company = this.update(
+      id,
+      command.revision,
+      (record) => {
+        const proposal = assertPlanSupplementAdoption(record, command);
+        const base = record.plans.find((plan) => plan.id === proposal.basePlanId)!;
+        const basePlanIdentitySha256 = supplementPlanIdentity(base);
+        const plan = this.appendManualPlan(
+          record,
+          base.id,
+          structuredClone(proposal.content),
+          review,
+        );
+        (record.planSupplementAdoptions ??= []).push({
+          id: randomUUID(),
+          command: structuredClone(command),
+          commandSha256: supplementDigest(command),
+          savedRevision: record.revision + 1,
+          planId: plan.id,
+          planVersion: plan.version,
+          planIdentitySha256: supplementPlanIdentity(plan),
+          basePlanIdentitySha256,
+          recordedAt: plan.generatedAt,
+        });
+        // Audit the prospective committed revision before writing any row.
+        auditPlanSupplementAdoptions({ ...record, revision: record.revision + 1 });
+        return false;
+      },
+      (record) => {
+        replayed = Boolean(replayPlanSupplementAdoption(record, command));
+        return replayed;
+      },
+    );
+    return { company, receipt: replayPlanSupplementAdoption(company, command)!, replayed };
+  }
+
   /** Internal server writer. A replay is returned before model/CAS checks and never receives an owner. */
   beginPlanSupplementExecution(
     id: string,
