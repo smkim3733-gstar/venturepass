@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { zodTextFormat } from "openai/helpers/zod";
 import { z } from "zod";
-import { trackContext } from "./studio-preparation-context";
+import { serializeStudioAiInput, STUDIO_AI_INPUT_CHARACTER_LIMIT } from "./studio-ai-input";
 export { trackContext } from "./studio-preparation-context";
 import { getPlanPromptDefinition, type PlanPromptVersion } from "./studio-plan-prompt-versions";
 import { getCandidateClassification } from "./studio-candidate-classification";
@@ -15,7 +15,6 @@ import {
   planContentSchema,
   reviewSchema,
   sectionDefinitions,
-  sourceKindLabels,
   type Candidate,
   type PlanContent,
   type StudioCase,
@@ -40,24 +39,8 @@ export class StudioEngineError extends Error {
 }
 
 export function aiInput(value: StudioCase, extra: object = {}) {
-  const profile = { ...value.profile, businessNumber: undefined };
-  const input = JSON.stringify({
-    profile,
-    preparationContext: trackContext(value),
-    unextractedSourceCount: value.sources.filter((source) => source.extraction === "pending")
-      .length,
-    sources: value.sources
-      .filter((source) => source.extraction !== "pending")
-      .map(({ id, name, kind, text, warnings }) => ({
-        sourceId: id,
-        name,
-        kind: sourceKindLabels[kind],
-        text,
-        warnings,
-      })),
-    ...extra,
-  });
-  if (input.length > 240000) {
+  const input = serializeStudioAiInput(value, extra);
+  if (input.length > STUDIO_AI_INPUT_CHARACTER_LIMIT) {
     throw new StudioEngineError(
       "AI_INPUT_TOO_LARGE",
       "AI 분석 자료가 너무 큽니다. 중복 자료를 줄이거나 필요한 부분을 발췌해 총 24만 자 이내로 정리해 주세요.",

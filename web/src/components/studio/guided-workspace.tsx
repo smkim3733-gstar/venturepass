@@ -33,6 +33,7 @@ import { guidedQuestions, type GuidedQuestion } from "./guided-questions";
 import { GuidedSourceReview } from "./guided-source-review";
 import { useFileDropNavigationGuard } from "./guided-file-drop-zone";
 import { GuidedMaterials } from "./guided-materials";
+import { GuidedMaterialReadiness } from "./guided-material-readiness";
 import { GuidedBulkUpload } from "./guided-bulk-upload";
 import { PreparedPackagesPanel } from "./prepared-packages-panel";
 import { GuidedPlanEvidence } from "./guided-plan-evidence";
@@ -632,7 +633,17 @@ export function GuidedWorkspace({
                 }}
                 onReviewSources={() => onDetails("sources")}
               />
-              <GuidedMaterials company={company} locked={locked} onReview={setSourceReview} />
+              <GuidedMaterialReadiness
+                company={company}
+                locked={locked}
+                onReviewSources={() => onDetails("sources")}
+              />
+              <GuidedMaterials
+                company={company}
+                locked={locked}
+                onReview={setSourceReview}
+                onReviewIntakes={() => onDetails("sources")}
+              />
               <div className={styles.support}>
                 <button
                   type="button"

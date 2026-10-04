@@ -2,6 +2,7 @@
 import { useState, type ReactNode } from "react";
 import { CheckCircle2, CircleAlert, FileText, LoaderCircle, Search } from "lucide-react";
 import { sourceKindLabels, type SourceDocument, type StudioCase } from "@/lib/studio-schema";
+import { intakeResultsAwaitingAdoption } from "@/lib/studio-material-readiness";
 import styles from "./guided-materials.module.css";
 
 export function attachmentFormat(name: string) {
@@ -117,14 +118,21 @@ export function GuidedMaterials({
   company,
   locked,
   onReview,
+  onReviewIntakes,
 }: {
-  company: Pick<StudioCase, "id" | "sources">;
+  company: Pick<StudioCase, "id" | "sources"> & Partial<Pick<StudioCase, "sourceIntakes">>;
   locked: boolean;
   onReview: (source: SourceDocument) => void;
+  onReviewIntakes?: () => void;
 }) {
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<MaterialFilter>("all");
   const [limit, setLimit] = useState(12);
+  const awaitingAdoption = intakeResultsAwaitingAdoption(company.sourceIntakes ?? []);
+  const openSource = (source: SourceDocument) => {
+    if (awaitingAdoption.has(source.id) && onReviewIntakes) onReviewIntakes();
+    else onReview(source);
+  };
   const pending = company.sources.filter(needsMaterialText).length;
   const filtered = filterMaterials(company.sources, query, filter);
   const shown = filtered.slice(0, limit);
@@ -183,21 +191,25 @@ export function GuidedMaterials({
               <AttachmentCard
                 key={source.id}
                 name={source.name}
-                onOpen={() => onReview(source)}
+                onOpen={() => openSource(source)}
                 disabled={locked}
                 state={needsMaterialText(source) ? "pending" : "ready"}
                 label={
                   needsMaterialText(source)
-                    ? source.originalName
-                      ? "원본 보관 · 본문 확인 필요"
-                      : "본문 확인 필요"
+                    ? awaitingAdoption.has(source.id)
+                      ? "판독 결과 보관 · 본문 채택 필요"
+                      : source.originalName
+                        ? "원본 보관 · 본문 확인 필요"
+                        : "본문 확인 필요"
                     : "저장 완료 · 본문 있음"
                 }
                 meta={sourceKindLabels[source.kind] + " · " + registeredAt(source.createdAt)}
               >
                 <p className={styles.preview}>
                   {needsMaterialText(source)
-                    ? "아직 읽은 본문이 없습니다. 원본과 대조해 내용을 확인해 주세요."
+                    ? awaitingAdoption.has(source.id)
+                      ? "판독 결과가 있습니다. 원본과 대조한 뒤 본문으로 채택해 주세요."
+                      : "아직 읽은 본문이 없습니다. 원본과 대조해 내용을 확인해 주세요."
                     : source.text.replace(/\s+/g, " ").trim().slice(0, 160)}
                 </p>
                 <span className={styles.help}>
@@ -206,7 +218,7 @@ export function GuidedMaterials({
                     : "본문 일부 미리보기 · 사실 확인은 별도"}
                 </span>
                 <div className={styles.cardActions}>
-                  <button type="button" disabled={locked} onClick={() => onReview(source)}>
+                  <button type="button" disabled={locked} onClick={() => openSource(source)}>
                     본문 확인·고치기<span className="sr-only"> · {source.name}</span>
                   </button>
                   {source.originalName && (
