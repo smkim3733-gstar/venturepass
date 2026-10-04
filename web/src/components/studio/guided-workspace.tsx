@@ -35,6 +35,8 @@ import {
 import { GuidedQuestionCard } from "./guided-question-card";
 import { GuidedSourceReview } from "./guided-source-review";
 import { useFileDropNavigationGuard } from "./guided-file-drop-zone";
+import { PublicEvidencePanel } from "./public-evidence-panel";
+import type { PublicEvidenceDraft } from "@/lib/studio-public-evidence";
 import { GuidedMaterials } from "./guided-materials";
 import { GuidedEvidenceSelection } from "./guided-evidence-selection";
 import {
@@ -125,6 +127,12 @@ export function GuidedWorkspace({
   const [sourceReviewDirty, setSourceReviewDirty] = useState(false);
   const [packagePlanId, setPackagePlanId] = useState<string | null>(null);
   const [packageUnsettled, setPackageUnsettled] = useState(false);
+  const [publicEvidenceOpen, setPublicEvidenceOpen] = useState(false);
+  const [publicEvidenceDirty, setPublicEvidenceDirty] = useState(false);
+  const [publicEvidenceUnsettled, setPublicEvidenceUnsettled] = useState(false);
+  const [supplementInitial, setSupplementInitial] = useState<
+    { sourceId: string; sectionKey: PublicEvidenceDraft["sectionKey"] } | undefined
+  >();
   const [supplementOpen, setSupplementOpen] = useState(false);
   const [supplementUnsettled, setSupplementUnsettled] = useState(false);
   const inFlight = useRef(false);
@@ -133,15 +141,24 @@ export function GuidedWorkspace({
   const editingDirty =
     Object.values(questionLinks).some((link) => link.sectionKey || link.sourceIds.length) ||
     sourceReviewDirty ||
+    publicEvidenceDirty ||
     (descriptionTouched && description !== company.profile.technologySummary) ||
     editingSection !== null ||
     Object.values(questionAnswers).some((value) => value.trim()) ||
     reason.trim().length > 0;
   useDirty(editingDirty, setDirty);
   useEffect(() => {
-    onUnsettledChange(unsettled || packageUnsettled || supplementUnsettled);
+    onUnsettledChange(
+      unsettled || packageUnsettled || supplementUnsettled || publicEvidenceUnsettled,
+    );
     return () => onUnsettledChange(false);
-  }, [unsettled, packageUnsettled, supplementUnsettled, onUnsettledChange]);
+  }, [
+    unsettled,
+    packageUnsettled,
+    supplementUnsettled,
+    publicEvidenceUnsettled,
+    onUnsettledChange,
+  ]);
   useEffect(() => {
     mounted.current = true;
     return () => {
@@ -548,7 +565,14 @@ export function GuidedWorkspace({
             key={item.id}
             className={styles.step}
             aria-current={step === item.id ? "step" : undefined}
-            disabled={!!busy || blocked || !!sourceReview || !!packagePlanId || supplementOpen}
+            disabled={
+              !!busy ||
+              blocked ||
+              !!sourceReview ||
+              !!packagePlanId ||
+              supplementOpen ||
+              publicEvidenceOpen
+            }
             onClick={() => goTo(item.id)}
           >
             <span className={styles.number}>{index + 1}</span>
@@ -561,13 +585,32 @@ export function GuidedWorkspace({
           {error}
         </div>
       )}
-      {supplementOpen ? (
+      {publicEvidenceOpen ? (
+        <PublicEvidencePanel
+          company={company}
+          blocked={blocked || unsettled || existingRunUnknown}
+          onCompany={onCompany}
+          onBusyChange={onBusyChange}
+          onDirtyChange={setPublicEvidenceDirty}
+          onUnsettledChange={setPublicEvidenceUnsettled}
+          onClose={() => setPublicEvidenceOpen(false)}
+          onSupplement={(sourceId, sectionKey) => {
+            setPublicEvidenceOpen(false);
+            setSupplementInitial({ sourceId, sectionKey });
+            setSupplementOpen(true);
+          }}
+        />
+      ) : supplementOpen ? (
         <PlanSupplementPanel
           company={company}
           onCompany={onCompany}
           onBusyChange={onBusyChange}
           onUnsettledChange={setSupplementUnsettled}
-          onClose={() => setSupplementOpen(false)}
+          initialSelection={supplementInitial}
+          onClose={() => {
+            setSupplementOpen(false);
+            setSupplementInitial(undefined);
+          }}
         />
       ) : packagePlanId ? (
         <PreparedPackagesPanel
@@ -705,6 +748,14 @@ export function GuidedWorkspace({
                   {hasDescription ? "회사 설명 고치기" : "자료 없이 회사 설명부터 시작"}
                 </button>
                 {company.sources.length > 0 && detailLink("자료 내용 확인·정리", "sources")}
+                <button
+                  type="button"
+                  className={styles.link}
+                  disabled={locked || editingDirty}
+                  onClick={() => setPublicEvidenceOpen(true)}
+                >
+                  공개 근거 보완
+                </button>
               </div>
               <p className={styles.helper}>
                 이 PC에 보관합니다. 외부 AI로 보낼 자료는 별도로 확인받습니다.
@@ -990,6 +1041,14 @@ export function GuidedWorkspace({
                 onClick={() => setSupplementOpen(true)}
               >
                 보완 자료로 수정안 만들기
+              </button>
+              <button
+                type="button"
+                className={styles.link}
+                disabled={locked || editingDirty}
+                onClick={() => setPublicEvidenceOpen(true)}
+              >
+                공개 근거 보완
               </button>
               {questions.length > 0 && (
                 <section className={styles.sheet} aria-label="우선 보완 질문">

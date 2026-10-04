@@ -27,6 +27,7 @@ type Props = {
   onBusyChange: (label: string) => void;
   onUnsettledChange: (value: boolean) => void;
   onClose: () => void;
+  initialSelection?: { sourceId: string; sectionKey: PlanSupplementInput["sectionKey"] };
 };
 export function PlanSupplementPanel({
   company,
@@ -34,12 +35,22 @@ export function PlanSupplementPanel({
   onBusyChange,
   onUnsettledChange,
   onClose,
+  initialSelection,
 }: Props) {
   const [status, setStatus] = useState<SupplementStatus | null>(null);
   const [pending, setPending] = useState<SupplementCommand | null>(null);
   const [questionIndex, setQuestionIndex] = useState(0);
-  const [sectionKey, setSectionKey] = useState<PlanSupplementInput["sectionKey"]>("development");
-  const [sourceIds, setSourceIds] = useState<string[]>([]);
+  const [sectionKey, setSectionKey] = useState<PlanSupplementInput["sectionKey"]>(
+    initialSelection?.sectionKey ?? "development",
+  );
+  const [sourceIds, setSourceIds] = useState<string[]>(() =>
+    initialSelection &&
+    company.sources.some(
+      (s) => s.id === initialSelection.sourceId && s.extraction !== "pending" && s.text.trim(),
+    )
+      ? [initialSelection.sourceId]
+      : [],
+  );
   const [preview, setPreview] = useState<{
     value: SupplementPreview;
     input: PlanSupplementInput;
