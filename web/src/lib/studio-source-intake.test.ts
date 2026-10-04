@@ -493,14 +493,26 @@ describe("durable source intake store", { timeout: 60_000 }, () => {
   });
   it("source reservations and history limits roll back without dropping records", () => {
     const record = store.get(company.id);
-    record.sourceIntakes = Array.from({ length: 4 }, () =>
-      newSourceIntakeBatch(command(0, 10)),
-    ).flat();
+    record.sources = [
+      {
+        id: randomUUID(),
+        name: "기존 합성 자료",
+        kind: "other",
+        text: "합성",
+        originalName: null,
+        mimeType: null,
+        extraction: "manual",
+        warnings: [],
+        createdAt: "2026-10-03T00:00:00.000Z",
+        updatedAt: "2026-10-03T00:00:00.000Z",
+      },
+    ];
+    record.sourceIntakes = Array.from({ length: 99 }, () => newSourceIntakeBatch(command())).flat();
     replace(record);
     expect(() => store.createSourceIntakeBatch(company.id, command())).toThrow(
       expect.objectContaining({ code: "SOURCE_LIMIT" }),
     );
-    expect(store.get(company.id).sourceIntakes).toHaveLength(40);
+    expect(store.get(company.id).sourceIntakes).toHaveLength(99);
     expect(() =>
       store.mutate(
         company.id,

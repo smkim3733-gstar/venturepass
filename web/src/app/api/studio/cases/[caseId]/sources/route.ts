@@ -1,3 +1,4 @@
+import { MAX_COMPANY_SOURCES, occupiedSourceSlots } from "@/lib/studio-source-limits";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { extractSource, SourceExtractionError, MAX_UPLOAD_BYTES } from "@/lib/studio-extract";
@@ -86,8 +87,12 @@ export function POST(request: Request, context: { params: Promise<{ caseId: stri
         409,
         "STALE_REVISION",
       );
-    if (record.sources.length >= 40)
-      throw new StudioError("기업별 자료는 40개까지 등록할 수 있습니다.", 413, "SOURCE_LIMIT");
+    if (occupiedSourceSlots(record) >= MAX_COMPANY_SOURCES)
+      throw new StudioError(
+        `저장된 자료와 원본 접수 대기는 기업별 합계 ${MAX_COMPANY_SOURCES}개까지 가능합니다.`,
+        413,
+        "SOURCE_LIMIT",
+      );
     const bytes = new Uint8Array(await file.arrayBuffer());
     const pending = metadata.extractionMode === "original-only";
     const mimeType = pending

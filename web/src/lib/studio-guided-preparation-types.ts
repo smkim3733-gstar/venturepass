@@ -1,3 +1,4 @@
+import { MAX_COMPANY_SOURCES } from "./studio-source-limits";
 import { z } from "zod";
 
 const uuid = z.string().uuid();
@@ -11,8 +12,8 @@ export const guidedPreparationApprovalSchema = z
     provider: z.literal("OpenAI"),
     model: z.string().min(1).max(200),
     inputFingerprint: hash,
-    sourceIds: z.array(uuid).max(40),
-    sourceNames: z.array(z.string().max(300)).max(40),
+    sourceIds: z.array(uuid).max(MAX_COMPANY_SOURCES),
+    sourceNames: z.array(z.string().max(300)).max(MAX_COMPANY_SOURCES),
     profileIncluded: z.literal(true),
     businessNumberIncluded: z.literal(false),
     originalFilesIncluded: z.literal(false),

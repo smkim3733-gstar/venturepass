@@ -1,5 +1,7 @@
 "use client";
 
+import { MAX_COMPANY_SOURCES, occupiedSourceSlots } from "@/lib/studio-source-limits";
+
 import { useEffect, useRef, useState } from "react";
 import {
   Download,
@@ -372,7 +374,11 @@ export function SourcesPanel({
       <PanelHeading
         title="기술과 사업의 근거를 모으세요"
         description="본문을 추출하거나 원본만 보관할 수 있습니다. 확인한 본문을 분석 근거로 사용합니다."
-        actions={<Badge variant="outline">{company.sources.length} / 40개 자료</Badge>}
+        actions={
+          <Badge variant="outline">
+            저장·접수 대기 {occupiedSourceSlots(company)} / {MAX_COMPANY_SOURCES}개
+          </Badge>
+        }
       />
       {blockedReason && <Notice tone="warning">{blockedReason}</Notice>}
       <fieldset
@@ -427,7 +433,11 @@ export function SourcesPanel({
             </div>
             <Button
               className="h-10"
-              disabled={!file || invalidOriginalOnlyFile || company.sources.length >= 40}
+              disabled={
+                !file ||
+                invalidOriginalOnlyFile ||
+                occupiedSourceSlots(company) >= MAX_COMPANY_SOURCES
+              }
               onClick={uploadFile}
             >
               <UploadCloud />
@@ -457,7 +467,7 @@ export function SourcesPanel({
           <Button
             className="mt-auto"
             variant="outline"
-            disabled={company.sources.length >= 40}
+            disabled={occupiedSourceSlots(company) >= MAX_COMPANY_SOURCES}
             onClick={() => openForm(null)}
           >
             <Plus />

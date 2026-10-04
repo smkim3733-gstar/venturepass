@@ -1,3 +1,4 @@
+import { MAX_COMPANY_SOURCES } from "./studio-source-limits";
 import { z } from "zod";
 import type { BusinessPlan } from "./studio-schema";
 
@@ -18,7 +19,7 @@ export const planReviewFindingSchema = z
     message: z.string().max(3000),
     action: z.string().max(3000),
     sectionKey: z.string().max(200).nullable(),
-    sourceIds: z.array(z.string().max(200)).max(40),
+    sourceIds: z.array(z.string().max(200)).max(MAX_COMPANY_SOURCES),
   })
   .strict();
 export const planReviewStatusLabels = {

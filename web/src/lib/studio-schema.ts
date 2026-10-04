@@ -1,3 +1,4 @@
+import { MAX_COMPANY_SOURCES } from "./studio-source-limits";
 import { z } from "zod";
 import { guidedPreparationRunSchema } from "./studio-guided-preparation-types";
 import {
@@ -373,7 +374,7 @@ export const caseSchema = z.object({
     .array(companyContactsRecordSchema)
     .max(companyContactsLimits.records)
     .default([]),
-  sources: z.array(sourceSchema).max(40),
+  sources: z.array(sourceSchema).max(MAX_COMPANY_SOURCES),
   analysis: analysisSchema.nullable(),
   selectedCandidateId: z.string().nullable(),
   candidateSelections: z

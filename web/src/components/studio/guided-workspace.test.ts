@@ -221,6 +221,8 @@ describe("일반 작업 화면의 실제 상태별 렌더링", () => {
     expect(html).toContain("저장된 자료 0개");
     expect(html).toContain("아직 저장된 자료가 없습니다");
     expect(html).toContain("워드(DOCX)");
+    expect(html).toContain("자료 첨부는 선택 사항입니다");
+    expect(html.replace(/<!--.*?-->/g, "")).toContain("저장된 자료와 접수 대기 0 / 100개");
   });
 
   it("이전 원고가 있어도 새 분석이 선택 대기면 새 신청 주제를 보여 준다", () => {

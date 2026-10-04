@@ -1,3 +1,4 @@
+import { MAX_COMPANY_SOURCES } from "./studio-source-limits";
 import { z } from "zod";
 
 export const preparationAutomationLimits = {
@@ -59,7 +60,7 @@ export const preparationAutomationBatchSchema = z
     settingVersion: revision,
     inputFingerprint: hash,
     eventIds: z.array(uuid).min(1).max(preparationAutomationLimits.events).refine(unique),
-    pendingSourceIds: z.array(uuid).max(40).refine(unique),
+    pendingSourceIds: z.array(uuid).max(MAX_COMPANY_SOURCES).refine(unique),
     agencyRecordIds: z.array(uuid).max(preparationAutomationLimits.events).refine(unique),
     status: z.enum([
       "running",

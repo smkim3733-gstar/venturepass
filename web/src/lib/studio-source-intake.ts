@@ -1,3 +1,4 @@
+import { MAX_COMPANY_SOURCES, occupiedSourceSlots } from "./studio-source-limits";
 import { createHash, randomUUID } from "node:crypto";
 import { StudioError } from "./studio-http";
 import {
@@ -102,12 +103,9 @@ export function assertIntakeCapacity(record: StudioCase) {
   if (record.sourceIntakes.length > sourceIntakeLimits.items) intakeError("INTAKE_LIMIT", 413);
   if (intakeRetainedCharacters(record.sourceIntakes) > sourceIntakeLimits.retainedText)
     intakeError("INTAKE_RESULT_LIMIT", 413);
-  const sourceIds = new Set(record.sources.map((source) => source.id));
-  for (const item of record.sourceIntakes)
-    if (item.phase !== "cancelled") sourceIds.add(item.sourceId);
-  if (sourceIds.size > 40)
+  if (occupiedSourceSlots(record) > MAX_COMPANY_SOURCES)
     throw new StudioError(
-      "등록 자료와 원본 접수 대기는 기업별 합계 40개까지 가능합니다.",
+      `등록 자료와 원본 접수 대기는 기업별 합계 ${MAX_COMPANY_SOURCES}개까지 가능합니다.`,
       413,
       "SOURCE_LIMIT",
     );

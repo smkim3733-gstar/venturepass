@@ -443,3 +443,96 @@ describe("본문 미추출 자료의 분석·검토 경계", () => {
     expect(JSON.stringify(request)).not.toContain(pdf.toString("base64"));
   });
 });
+
+function seedMaterials(count: number) {
+  const now = new Date().toISOString();
+  for (let index = 0; index < count; index++) {
+    company = state.store!.mutate(
+      company.id,
+      {
+        action: "source",
+        revision: company.revision,
+        source: sourceSchema.parse({
+          id: randomUUID(),
+          name: `합성 자료 ${index + 1}`,
+          kind: "other",
+          text: "합성 본문",
+          originalName: null,
+          mimeType: null,
+          extraction: "manual",
+          warnings: [],
+          createdAt: now,
+          updatedAt: now,
+        }),
+      },
+      () => [],
+    );
+  }
+}
+
+it("accepts the 100th original and rejects the 101st without changing saved materials", async () => {
+  seedMaterials(99);
+  const saved = await upload(request(), context());
+  expect(saved.status).toBe(201);
+  company = await saved.json();
+  expect(company.sources).toHaveLength(100);
+  const before = state.store!.get(company.id);
+  const files = storedFiles();
+  const rejected = await upload(request({ name: "101번째.pdf" }), context());
+  expect(rejected.status).toBe(413);
+  expect(await rejected.json()).toMatchObject({ code: "SOURCE_LIMIT" });
+  expect(state.store!.get(company.id)).toEqual(before);
+  expect(storedFiles()).toEqual(files);
+  expect(state.extract).not.toHaveBeenCalled();
+  expect(state.aiConstructor).not.toHaveBeenCalled();
+}, 15000);
+
+it("rejects reserved slot 101 before extraction and preserves restart/cancel/replay identity", async () => {
+  seedMaterials(99);
+  const command = {
+    action: "create" as const,
+    revision: company.revision,
+    clientRequestId: randomUUID(),
+    files: [
+      {
+        clientFileId: randomUUID(),
+        originalName: "reserved.txt",
+        kind: "other" as const,
+        sizeBytes: 3,
+      },
+    ],
+  };
+  const reserved = state.store!.createSourceIntakeBatch(company.id, command);
+  company = reserved.company;
+  const item = company.sourceIntakes[0];
+  const before = structuredClone(company);
+  state.store!.close();
+  state.store = new StudioStore(directory);
+  expect(state.store.get(company.id)).toEqual(before);
+  expect(state.store.createSourceIntakeBatch(company.id, command).company).toEqual(before);
+  const beforeFiles = storedFiles();
+  const blocked = await upload(request({ mode: "extract", allowAi: "true" }), context());
+  expect(blocked.status).toBe(413);
+  expect(await blocked.json()).toMatchObject({ code: "SOURCE_LIMIT" });
+  expect(state.extract).not.toHaveBeenCalled();
+  expect(state.aiConstructor).not.toHaveBeenCalled();
+  expect(state.store.get(company.id)).toEqual(before);
+  expect(storedFiles()).toEqual(beforeFiles);
+  company = state.store.cancelSourceIntakeItem(company.id, {
+    action: "cancel-awaiting-original",
+    confirmed: true,
+    revision: company.revision,
+    expectedItemVersion: item.version,
+    itemId: item.id,
+    clientRequestId: randomUUID(),
+  }).company;
+  const saved = await upload(request(), context());
+  expect(saved.status).toBe(201);
+  company = await saved.json();
+  expect(company.sources).toHaveLength(100);
+  expect(company.sourceIntakes[0].phase).toBe("cancelled");
+  expect(state.store.original(company.id, company.sources.at(-1)!.id).buffer).toEqual(pdf);
+  expect(state.store.createSourceIntakeBatch(company.id, command).company).toEqual(company);
+  expect(state.extract).not.toHaveBeenCalled();
+  expect(state.aiConstructor).not.toHaveBeenCalled();
+}, 20000);

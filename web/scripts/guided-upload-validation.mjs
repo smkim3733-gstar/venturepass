@@ -553,6 +553,72 @@ try {
   assert.match(await receipt().getByRole("status").innerText(), /전송하지 않음 1개/);
   assert.equal(requests.length, beforeEmpty);
   record("unsupported Word is explicit and empty-file preflight sends nothing");
+  // Extend the real stored set to the newly approved company boundary.
+  const beforeBulk = await (await api("/api/studio/cases/" + caseId)).json();
+  const bulk = [];
+  for (let index = 19; index <= 100; index++) {
+    bulk.push(
+      index % 2
+        ? {
+            name: "합성-대량-" + index + ".pdf",
+            mimeType: "application/pdf",
+            buffer: pdf("Synthetic bulk original " + index),
+          }
+        : {
+            name: "합성-대량-" + index + ".docx",
+            mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            buffer: await docx(index),
+          },
+    );
+  }
+  const beforeBulkPosts = requests.length;
+  const bulkTransfer = await dragFiles(bulk);
+  await dropZone().dispatchEvent("drop", { dataTransfer: bulkTransfer });
+  await bulkTransfer.dispose();
+  await page
+    .getByRole("heading", { name: "저장된 자료 100개", exact: true })
+    .waitFor({ timeout: 180000 });
+  assert.equal(requests.length, beforeBulkPosts + 82);
+  assert.match(await receipt().getByRole("status").innerText(), /저장 완료 82개 · 저장 실패 0개/);
+  assert.ok((await dropZone().innerText()).includes("추가 가능 0개"));
+  const full = await (await api("/api/studio/cases/" + caseId)).json();
+  assert.equal(full.sources.length, 100);
+  for (const source of beforeBulk.sources) {
+    assert.deepEqual(
+      full.sources.find((item) => item.id === source.id),
+      source,
+    );
+  }
+  for (const file of bulk) {
+    const source = full.sources.find((item) => item.originalName === file.name);
+    assert.ok(source);
+    const original = await (
+      await api("/api/studio/cases/" + caseId + "/sources/" + source.id)
+    ).body();
+    assert.deepEqual(original, file.buffer);
+    assert.ok(source.text.trim());
+  }
+  record("100 stored PDF/DOCX materials preserve prior sources and every added original byte");
+  const noRoom = await dragFiles([files[1]]);
+  await dropZone().dispatchEvent("drop", { dataTransfer: noRoom });
+  await noRoom.dispose();
+  await page.getByRole("alert").filter({ hasText: "회사별 100개" }).waitFor();
+  assert.equal(requests.length, beforeBulkPosts + 82, "101st source never leaves the browser");
+  assert.deepEqual(await (await api("/api/studio/cases/" + caseId)).json(), full);
+  await stop();
+  await start();
+  await reopen();
+  await page.getByRole("heading", { name: "저장된 자료 100개", exact: true }).waitFor();
+  assert.deepEqual(await (await api("/api/studio/cases/" + caseId)).json(), full);
+  await inventory().getByRole("searchbox", { name: "파일명·본문 검색" }).fill("합성-대량-100");
+  assert.equal(await inventory().getByRole("listitem").count(), 1);
+  assert.ok((await inventory().innerText()).includes("합성 워드 시험 100"));
+  await inventory().getByRole("searchbox", { name: "파일명·본문 검색" }).fill("");
+  assert.equal(await inventory().getByRole("listitem").count(), 12);
+  assert.equal(requests.length, beforeBulkPosts + 82, "Restart/search cannot upload again");
+  record(
+    "101st drag is rejected; all 100 sources survive owned server restart and remain searchable",
+  );
   await page.setViewportSize({ width: 390, height: 844 });
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - innerWidth);
   assert.ok(overflow <= 1, "mobile overflow: " + overflow);
@@ -574,7 +640,7 @@ try {
         checks,
         actualProviderCalls: 0,
         sourcePosts: requests.length,
-        savedSources: 18,
+        savedSources: 100,
         customerDataUsed: false,
       },
       null,

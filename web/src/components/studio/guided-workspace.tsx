@@ -1,5 +1,7 @@
 "use client";
 
+import { MAX_COMPANY_SOURCES, occupiedSourceSlots } from "@/lib/studio-source-limits";
+
 import { useEffect, useRef, useState } from "react";
 import { ArrowRight, FolderUp, LoaderCircle } from "lucide-react";
 import { toast } from "sonner";
@@ -387,11 +389,11 @@ export function GuidedWorkspace({
       files.map((file) => ({ name: file.name, size: file.size, state: "not-sent", detail: "" })),
     );
     if (
-      files.length + company.sources.length > 40 ||
+      files.length + occupiedSourceSlots(company) > MAX_COMPANY_SOURCES ||
       files.some((file) => !file.size || file.size > 12 * 1024 * 1024)
     ) {
       setError(
-        "자료는 회사별 40개, 파일당 12MB까지 올릴 수 있습니다. 내용이 있는 파일을 선택해 주세요.",
+        `자료는 접수 대기를 포함해 회사별 ${MAX_COMPANY_SOURCES}개, 파일당 12MB까지 올릴 수 있습니다. 내용이 있는 파일을 선택해 주세요.`,
       );
       return;
     }
@@ -773,8 +775,10 @@ export function GuidedWorkspace({
           ) : (
             <>
               {title(
-                company.sources.length ? "필요한 자료만 추가해 주세요" : "회사 자료만 올려 주세요",
-                "가진 자료부터 보관하고, AI가 사업계획서를 준비할 수 있도록 내용을 정리합니다.",
+                company.sources.length
+                  ? "필요한 자료만 추가해 주세요"
+                  : "자료 첨부는 선택 사항입니다",
+                "자료가 없어도 회사 설명으로 시작할 수 있습니다. 자료는 나중에 추가할 수 있습니다.",
               )}
               <GuidedFileDropZone
                 className={`${styles.sheet} ${styles.upload}`}
@@ -785,7 +789,12 @@ export function GuidedWorkspace({
                 <h3 className={styles.subheading}>사업자등록증 · 회사소개서 · 재무자료 등</h3>
                 <p className={styles.helper}>
                   PDF·워드(DOCX)·엑셀·이미지 등을 여러 개 선택할 수 있습니다. 파일당 12MB, 회사별
-                  40개까지 지원합니다. 이전 워드 형식(DOC)은 DOCX 또는 PDF로 저장해 주세요.
+                  {MAX_COMPANY_SOURCES}개까지 지원합니다. 이전 워드 형식(DOC)은 DOCX 또는 PDF로
+                  저장해 주세요.
+                </p>
+                <p className={styles.helper}>
+                  저장된 자료와 접수 대기 {occupiedSourceSlots(company)} / {MAX_COMPANY_SOURCES}개 ·
+                  추가 가능 {Math.max(0, MAX_COMPANY_SOURCES - occupiedSourceSlots(company))}개
                 </p>
                 {
                   <PrimaryAction disabled={locked} onClick={() => fileInput.current?.click()}>
@@ -826,7 +835,7 @@ export function GuidedWorkspace({
               {(hasSourceText || hasDescription) && (
                 <div className={styles.actions}>
                   <PrimaryAction disabled={locked} onClick={() => goTo("plan")}>
-                    자료 확인 후 다음 단계
+                    {company.sources.length ? "자료 확인 후 다음 단계" : "회사 설명으로 다음 단계"}
                   </PrimaryAction>
                 </div>
               )}

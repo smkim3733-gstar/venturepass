@@ -1,3 +1,4 @@
+import { MAX_COMPANY_SOURCES } from "./studio-source-limits";
 import { createHash, randomUUID } from "node:crypto";
 import { packageLimits } from "./studio-package-types";
 import {
@@ -414,8 +415,12 @@ function validateCapacity(record: StudioCase) {
   assertApplicationProcedureCapacity(record.applicationProcedures);
   assertSourceSuggestionCapacity(record.sourceSuggestionAdoptions);
   assertIntakeCapacity(record);
-  if (record.sources.length > 40)
-    throw new StudioError("기업별 자료는 40개까지 등록할 수 있습니다.", 413, "SOURCE_LIMIT");
+  if (record.sources.length > MAX_COMPANY_SOURCES)
+    throw new StudioError(
+      `기업별 자료는 ${MAX_COMPANY_SOURCES}개까지 등록할 수 있습니다.`,
+      413,
+      "SOURCE_LIMIT",
+    );
   if (record.plans.length > 100)
     throw new StudioError(
       "사업계획서는 기업별 100개 버전까지 저장할 수 있습니다.",
