@@ -2,6 +2,14 @@ import type { BusinessPlan, StudioCase } from "@/lib/studio-schema";
 
 export type GuidedQuestion = { id: string; question: string; reason: string };
 
+export function guidedQuestionKey(question: string) {
+  return question
+    .trim()
+    .replace(/^\[실무 준비 질문 · 기관 확정 질문 아님\]\s*/, "")
+    .replace(/\s+/g, " ")
+    .toLocaleLowerCase();
+}
+
 /** Combine actual questions without inventing a fixed checklist or a completion claim. */
 export function guidedQuestions(company: StudioCase, plan?: BusinessPlan): GuidedQuestion[] {
   const analysis = company.analysis?.questions ?? [];
@@ -21,10 +29,7 @@ export function guidedQuestions(company: StudioCase, plan?: BusinessPlan): Guide
   const seen = new Set<string>();
   return candidates.flatMap((item) => {
     const question = item.question.trim();
-    const key = question
-      .replace(/^\[실무 준비 질문 · 기관 확정 질문 아님\]\s*/, "")
-      .replace(/\s+/g, " ")
-      .toLocaleLowerCase();
+    const key = guidedQuestionKey(question);
     if (!key || seen.has(key)) return [];
     seen.add(key);
     return [{ id: `question:${key}`, question, reason: item.reason }];

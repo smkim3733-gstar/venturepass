@@ -25,7 +25,13 @@ import { candidateSelectionAcknowledged, candidateSelectionRequest } from "./can
 import { guidedPreparationResponse, guidedRequestRejected } from "./guided-preparation-ui";
 import { EvidenceList } from "./evidence";
 import { GuidedRepairSummary } from "./guided-repair-summary";
-import { guidedQuestions, type GuidedQuestion } from "./guided-questions";
+import {
+  guidedQuestionContexts,
+  guidedAnswerText,
+  type GuidedQuestionContext,
+  type GuidedQuestionLink,
+} from "./guided-question-context";
+import { GuidedQuestionCard } from "./guided-question-card";
 import { GuidedSourceReview } from "./guided-source-review";
 import { useFileDropNavigationGuard } from "./guided-file-drop-zone";
 import { GuidedMaterials } from "./guided-materials";
@@ -106,9 +112,11 @@ export function GuidedWorkspace({
   const [sectionVerified, setSectionVerified] = useState(false);
   const [questionAnswers, setQuestionAnswers] = useState<Record<string, string>>({});
   const [answering, setAnswering] = useState(false);
+  const [questionLinks, setQuestionLinks] = useState<Record<string, GuidedQuestionLink>>({});
+  const [answerSaved, setAnswerSaved] = useState(false);
   const [answerContext, setAnswerContext] = useState<{
     revision: number;
-    questions: GuidedQuestion[];
+    questions: GuidedQuestionContext[];
   } | null>(null);
   const [visibleQuestionCount, setVisibleQuestionCount] = useState(3);
   const [deferred, setDeferred] = useState(false);
@@ -120,6 +128,7 @@ export function GuidedWorkspace({
   const mounted = useRef(true);
   const pendingRequest = useRef<GuidedPreparationRequest | null>(null);
   const editingDirty =
+    Object.values(questionLinks).some((link) => link.sectionKey || link.sourceIds.length) ||
     sourceReviewDirty ||
     (descriptionTouched && description !== company.profile.technologySummary) ||
     editingSection !== null ||
@@ -161,7 +170,7 @@ export function GuidedWorkspace({
   const selection = selectedRecord?.candidateId === candidate?.id ? selectedRecord : null;
   const showPlan =
     !!latestPlan && !["awaiting_choice", "awaiting_materials"].includes(lastRun?.status ?? "");
-  const questions = guidedQuestions(company, showPlan ? latestPlan : undefined);
+  const questions = guidedQuestionContexts(company, showPlan ? latestPlan : undefined);
   const shownQuestions = (answering ? (answerContext?.questions ?? questions) : questions).slice(
     0,
     visibleQuestionCount,
@@ -446,27 +455,26 @@ export function GuidedWorkspace({
     else await preparePreview(next);
   }
   function openAnswers() {
+    setAnswerSaved(false);
     if (!answerContext) setAnswerContext({ revision: company.revision, questions });
     setAnswering(true);
   }
   async function saveAnswers() {
     if (locked || inFlight.current || answerContextChanged) return;
-    const answered = (answerContext?.questions ?? questions).filter((question) =>
-      questionAnswers[question.id]?.trim(),
-    );
-    if (!answered.length) {
-      setDeferred(true);
+    let answerText: string | null;
+    try {
+      answerText = guidedAnswerText(
+        company,
+        answerContext?.questions ?? questions,
+        questionAnswers,
+        questionLinks,
+      );
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "입력한 보완 내용을 확인해 주세요.");
       return;
     }
-    const answerText =
-      "담당자가 입력한 설명입니다. 별도 증빙 확인은 필요합니다.\n\n" +
-      answered
-        .map((question) => `${question.question}\n답변: ${questionAnswers[question.id].trim()}`)
-        .join("\n\n");
-    if (answerText.length > 100000) {
-      setError(
-        "질문과 답변을 합쳐 100,000자까지 저장할 수 있어요. 긴 내용을 줄여 주세요. 입력한 답변은 유지합니다.",
-      );
+    if (!answerText) {
+      setDeferred(true);
       return;
     }
     const now = new Date().toISOString();
@@ -487,10 +495,11 @@ export function GuidedWorkspace({
     });
     if (next) {
       setQuestionAnswers({});
+      setQuestionLinks({});
       setAnswerContext(null);
       setVisibleQuestionCount(3);
       setAnswering(false);
-      await preparePreview(next);
+      setAnswerSaved(true);
     }
   }
   async function saveSection() {
@@ -780,11 +789,20 @@ export function GuidedWorkspace({
                     <label htmlFor={`guided-answer-${index}`} className={styles.label}>
                       {question.question}
                     </label>
-                    <p className={`${styles.helper} mb-3`}>{question.reason}</p>
+                    <GuidedQuestionCard
+                      question={question}
+                      company={company}
+                      link={questionLinks[question.id]}
+                      disabled={locked || answerContextChanged}
+                      onLink={(link) =>
+                        setQuestionLinks((current) => ({ ...current, [question.id]: link }))
+                      }
+                    />
                     <textarea
                       id={`guided-answer-${index}`}
                       className={styles.textarea}
                       maxLength={5000}
+                      placeholder="아는 내용이나 짧은 메모를 남겨 주세요. 모르는 내용은 비워 두어도 됩니다."
                       value={questionAnswers[question.id] ?? ""}
                       onChange={(event) =>
                         setQuestionAnswers((current) => ({
@@ -811,6 +829,21 @@ export function GuidedWorkspace({
               {answerContextChanged && (
                 <div className={styles.notice} role="status">
                   <strong>자료가 바뀌어 입력한 답변을 보관하고 있어요</strong>
+                  <button
+                    type="button"
+                    className={styles.link}
+                    disabled={locked}
+                    onClick={() =>
+                      setAnswerContext((current) =>
+                        current
+                          ? { ...current, revision: company.revision }
+                          : { revision: company.revision, questions },
+                      )
+                    }
+                  >
+                    이전 질문·입력을 유지하고 현재 자료에 연결
+                  </button>
+
                   <p>
                     현재 질문과 다시 대조한 뒤 저장해 주세요. 입력 내용은 자동으로 지우지 않습니다.
                   </p>
@@ -820,13 +853,17 @@ export function GuidedWorkspace({
                     disabled={locked}
                     onClick={() => {
                       if (
-                        Object.values(questionAnswers).some((value) => value.trim()) &&
+                        (Object.values(questionAnswers).some((value) => value.trim()) ||
+                          Object.values(questionLinks).some(
+                            (link) => link.sectionKey || link.sourceIds.length,
+                          )) &&
                         !window.confirm(
                           "입력한 답변을 지우고 현재 질문을 다시 볼까요? 필요한 내용은 먼저 복사해 주세요.",
                         )
                       )
                         return;
                       setQuestionAnswers({});
+                      setQuestionLinks({});
                       setAnswerContext({ revision: company.revision, questions });
                       setVisibleQuestionCount(3);
                     }}
@@ -835,6 +872,18 @@ export function GuidedWorkspace({
                   </button>
                 </div>
               )}
+              <button
+                type="button"
+                className={styles.link}
+                disabled={locked}
+                onClick={() => setStep("materials")}
+              >
+                파일을 추가하고 돌아오기
+              </button>
+              <p className={styles.helper}>
+                답변은 사용자 진술 자료로 보관합니다. 원고 변경이나 AI 전송은 별도이며, 파일을
+                추가해도 입력한 답변은 이 화면에 유지됩니다.
+              </p>
               {deferred && (
                 <p className={styles.notice}>
                   답변이 필요한 항목을 남겨 두었습니다. 자료가 준비되면 이어서 답할 수 있습니다.
@@ -856,11 +905,12 @@ export function GuidedWorkspace({
                     disabled={
                       locked ||
                       answerContextChanged ||
-                      !Object.values(questionAnswers).some((answer) => answer.trim())
+                      (!Object.values(questionAnswers).some((answer) => answer.trim()) &&
+                        !Object.values(questionLinks).some((link) => link.sourceIds.length))
                     }
                     onClick={() => void saveAnswers()}
                   >
-                    {"답변 반영하기"}
+                    {"답변 보관하기"}
                   </PrimaryAction>
                 }
               </div>
@@ -922,6 +972,31 @@ export function GuidedWorkspace({
               </section>
               <GuidedPlanEvidence company={company} plan={latestPlan} />
               <GuidedRepairSummary company={company} run={lastRun} />
+              {questions.length > 0 && (
+                <section className={styles.sheet} aria-label="우선 보완 질문">
+                  <h3 className={styles.subheading}>먼저 보완하면 좋은 질문</h3>
+                  <p className={styles.helper}>
+                    처음 3개를 보여 드립니다. 모르는 내용은 남겨 두고 초안을 계속 검토할 수
+                    있습니다.
+                  </p>
+                  {questions.slice(0, 3).map((question) => (
+                    <article key={question.id} className="mt-4">
+                      <p className={styles.label}>{question.question}</p>
+                      <GuidedQuestionCard question={question} company={company} />
+                    </article>
+                  ))}
+                  <button
+                    type="button"
+                    className={styles.link}
+                    disabled={locked}
+                    onClick={openAnswers}
+                  >
+                    답변·메모·보완 자료 연결
+                    {questions.length > 3 ? ` · 전체 ${questions.length}개` : ""}
+                  </button>
+                </section>
+              )}
+
               {(needsReview.length > 0 || findings.length > 0 || aiFindings.length > 0) && (
                 <div className={styles.notice}>
                   <strong>확인할 내용이 남아 있어요</strong>
@@ -1230,6 +1305,12 @@ export function GuidedWorkspace({
                 </details>
               )}
             </>
+          )}
+          {answerSaved && (
+            <p role="status" className={styles.notice}>
+              보완 내용을 사용자 진술 자료로 보관했습니다. 기존 원고·인용·선택 범위는 그대로입니다.
+              AI에 사용할 때는 새 자료 선택과 전송 동의가 필요합니다.
+            </p>
           )}
           {!answering &&
             !editingSection &&
