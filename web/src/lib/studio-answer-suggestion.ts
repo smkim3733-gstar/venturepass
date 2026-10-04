@@ -285,11 +285,8 @@ export function buildLocalAnswerSuggestions(context: AnswerSuggestionContext) {
     null,
   );
 }
-export function validateAiAnswerSuggestions(
-  context: AnswerSuggestionContext,
-  raw: unknown,
-  model: string,
-) {
+/** Exact offsets/quotes only. Shared by answer excerpts and proposed plan supplements. */
+export function validateAnswerExcerptSelections(context: AnswerSuggestionContext, raw: unknown) {
   const parsed = answerSuggestionAiSelectionSchema.safeParse(raw);
   if (!parsed.success) answerSuggestionError("ANSWER_SUGGESTION_OUTPUT_INVALID", 422);
   const candidates: AnswerSuggestionCandidate[] = [];
@@ -305,5 +302,12 @@ export function validateAiAnswerSuggestions(
       answerSuggestionError("ANSWER_SUGGESTION_OUTPUT_INVALID", 422);
     candidates.push(exactCandidate(context, selected));
   }
-  return result(context, candidates, "ai", model);
+  return candidates;
+}
+export function validateAiAnswerSuggestions(
+  context: AnswerSuggestionContext,
+  raw: unknown,
+  model: string,
+) {
+  return result(context, validateAnswerExcerptSelections(context, raw), "ai", model);
 }
