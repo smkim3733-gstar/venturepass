@@ -487,6 +487,9 @@ describe("통보·확인서·수기 근거", () => {
           status: "preparing",
           completionBasis: "",
         });
+      // Application writers use the wall clock; keep this chronology fixture deterministic.
+      for (const record of [...value.applications, ...value.applicationEvents])
+        record.recordedAt = now;
       if (change === "current") {
         completed.recordedAt = "2026-09-27T18:00:00.000Z";
         expect(derive(value).action).toBeNull();

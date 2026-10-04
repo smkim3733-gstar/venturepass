@@ -1,4 +1,8 @@
 import {
+  validGuidedApplicationTarget,
+  type GuidedApplicationTarget,
+} from "./studio-guided-applications";
+import {
   isAgencyNoticeRecord,
   type AgencyNoticeRecord,
   type AgencyRequestRecord,
@@ -8,16 +12,18 @@ import type { StudioCase } from "./studio-schema";
 
 type TargetContext = { caseId: string; companyRevision: number };
 /** Navigation only. Never approves a mutation, an official action, or a newer record version. */
-export type GuidedWorkflowTarget = TargetContext &
-  (
-    | { kind: "response"; requestRecordId: string; requestVersionId: string }
-    | { kind: "notice"; noticeRecordId: string; noticeVersionId: string }
-    | { kind: "certificate"; noticeRecordId: string; noticeVersionId: string }
-    | { kind: "task"; taskId: string }
-  );
+export type GuidedWorkflowTarget =
+  | GuidedApplicationTarget
+  | (TargetContext &
+      (
+        | { kind: "response"; requestRecordId: string; requestVersionId: string }
+        | { kind: "notice"; noticeRecordId: string; noticeVersionId: string }
+        | { kind: "certificate"; noticeRecordId: string; noticeVersionId: string }
+        | { kind: "task"; taskId: string }
+      ));
 export type GuidedDeadlineStatus = "unknown" | "upcoming" | "today" | "overdue";
 export type GuidedFollowupItem = {
-  kind: GuidedWorkflowTarget["kind"];
+  kind: Exclude<GuidedWorkflowTarget["kind"], "application">;
   target: GuidedWorkflowTarget;
   title: string;
   description: string;
@@ -182,6 +188,8 @@ export function validateGuidedWorkflowTarget(
     ).length === 1
       ? { valid: true }
       : invalid;
+  if (target.kind === "application")
+    return validGuidedApplicationTarget(company, target) ? { valid: true } : invalid;
   if (target.kind === "notice" || target.kind === "certificate") {
     const matches = currentNotices(company).filter(
       (record) =>
@@ -355,6 +363,7 @@ export function deriveGuidedFollowup(
       (event) => event.kind === "submission-recorded" || event.kind === "submission-correction",
     );
   const timestamps = [
+    ...company.applications,
     ...company.agencyRecords,
     ...company.applicationEvents,
     ...company.stageHistory,

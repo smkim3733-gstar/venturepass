@@ -172,10 +172,19 @@ export function WorkflowPanel({
   const [visitDirty, setVisitDirty] = useState(false);
   const [certificateDirty, setCertificateDirty] = useState(false);
   useEffect(() => {
-    if (!entryValid || entryTarget?.kind !== "notice") return;
-    const element = document.getElementById(`agency-record-${entryTarget.noticeVersionId}`);
+    if (!entryValid || !entryTarget || !["notice", "application"].includes(entryTarget.kind))
+      return;
+    const destination =
+      entryTarget.kind === "application"
+        ? entryTarget.submissionVersionId
+          ? `application-submission-${entryTarget.submissionVersionId}`
+          : `application-cycle-${entryTarget.applicationId}`
+        : entryTarget.kind === "notice"
+          ? `agency-record-${entryTarget.noticeVersionId}`
+          : "";
+    const element = document.getElementById(destination);
     if (!element) {
-      toast.error("선택한 통보를 화면에서 찾지 못했습니다. 현재 안내를 다시 확인해 주세요.");
+      toast.error("선택한 기록을 화면에서 찾지 못했습니다. 현재 안내를 다시 확인해 주세요.");
       return;
     }
     let ancestor = element.parentElement;

@@ -49,6 +49,7 @@ import { GuidedBulkUpload } from "./guided-bulk-upload";
 import { PreparedPackagesPanel } from "./prepared-packages-panel";
 import { GuidedPlanEvidence } from "./guided-plan-evidence";
 import { GuidedVentureConnection } from "./guided-venture-connection";
+import { GuidedApplicationHistory } from "./guided-application-history";
 import { GuidedFollowupStatus } from "./guided-followup-status";
 import { useLocalDay } from "./case-attention";
 import type { GuidedWorkflowTarget } from "@/lib/studio-guided-followup";
@@ -1479,6 +1480,11 @@ export function GuidedWorkspace({
               </PrimaryAction>
             )}
           </div>
+          <GuidedApplicationHistory
+            company={company}
+            disabled={locked}
+            onNavigate={(target) => onDetails("workflow", target)}
+          />
           <details className={styles.details}>
             <summary>신청 이력·보완·공식 연결</summary>
             <div className={styles.support}>

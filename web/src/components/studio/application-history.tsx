@@ -904,7 +904,12 @@ function ApplicationHistoryEditor({ company, mutate, blockedReason, onDirtyChang
               );
             })}
             {submissions.map((submission) => (
-              <div key={submission.id} className="space-y-2">
+              <div
+                key={submission.id}
+                id={`application-submission-${submission.id}`}
+                tabIndex={-1}
+                className="scroll-mt-24 space-y-2"
+              >
                 <ApplicationSubmissionView submission={submission} company={company} />
                 <Button
                   type="button"
