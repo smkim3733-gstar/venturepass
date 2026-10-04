@@ -153,7 +153,7 @@ async function sourceLocations(
   }
   return results.length === 1 ? results[0] : null;
 }
-async function validateBinding(
+export async function validateBinding(
   company: StudioCase,
   input: AnswerSuggestionInput,
   binding: AnswerSuggestionBinding,

@@ -1,4 +1,5 @@
 "use client";
+import { PlanSupplementPanel } from "./plan-supplement-panel";
 
 import { useEffect, useRef, useState } from "react";
 import { ArrowRight, LoaderCircle } from "lucide-react";
@@ -124,6 +125,8 @@ export function GuidedWorkspace({
   const [sourceReviewDirty, setSourceReviewDirty] = useState(false);
   const [packagePlanId, setPackagePlanId] = useState<string | null>(null);
   const [packageUnsettled, setPackageUnsettled] = useState(false);
+  const [supplementOpen, setSupplementOpen] = useState(false);
+  const [supplementUnsettled, setSupplementUnsettled] = useState(false);
   const inFlight = useRef(false);
   const mounted = useRef(true);
   const pendingRequest = useRef<GuidedPreparationRequest | null>(null);
@@ -136,9 +139,9 @@ export function GuidedWorkspace({
     reason.trim().length > 0;
   useDirty(editingDirty, setDirty);
   useEffect(() => {
-    onUnsettledChange(unsettled || packageUnsettled);
+    onUnsettledChange(unsettled || packageUnsettled || supplementUnsettled);
     return () => onUnsettledChange(false);
-  }, [unsettled, packageUnsettled, onUnsettledChange]);
+  }, [unsettled, packageUnsettled, supplementUnsettled, onUnsettledChange]);
   useEffect(() => {
     mounted.current = true;
     return () => {
@@ -545,7 +548,7 @@ export function GuidedWorkspace({
             key={item.id}
             className={styles.step}
             aria-current={step === item.id ? "step" : undefined}
-            disabled={!!busy || blocked || !!sourceReview || !!packagePlanId}
+            disabled={!!busy || blocked || !!sourceReview || !!packagePlanId || supplementOpen}
             onClick={() => goTo(item.id)}
           >
             <span className={styles.number}>{index + 1}</span>
@@ -558,7 +561,15 @@ export function GuidedWorkspace({
           {error}
         </div>
       )}
-      {packagePlanId ? (
+      {supplementOpen ? (
+        <PlanSupplementPanel
+          company={company}
+          onCompany={onCompany}
+          onBusyChange={onBusyChange}
+          onUnsettledChange={setSupplementUnsettled}
+          onClose={() => setSupplementOpen(false)}
+        />
+      ) : packagePlanId ? (
         <PreparedPackagesPanel
           company={company}
           plan={company.plans.find((item) => item.id === packagePlanId)}
@@ -972,6 +983,14 @@ export function GuidedWorkspace({
               </section>
               <GuidedPlanEvidence company={company} plan={latestPlan} />
               <GuidedRepairSummary company={company} run={lastRun} />
+              <button
+                type="button"
+                className={styles.link}
+                disabled={locked || editingDirty}
+                onClick={() => setSupplementOpen(true)}
+              >
+                보완 자료로 수정안 만들기
+              </button>
               {questions.length > 0 && (
                 <section className={styles.sheet} aria-label="우선 보완 질문">
                   <h3 className={styles.subheading}>먼저 보완하면 좋은 질문</h3>
