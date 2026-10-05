@@ -155,6 +155,11 @@ export function inspectQualitySchema(db, { allowEmpty = false } = {}) {
       "SELECT type,name,tbl_name,sql FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name",
     )
     .all();
+  return inspectQualitySchemaRows(schema, { allowEmpty });
+}
+
+/** Same exact legacy schema audit for a recorded cutover prefix; no SQL execution. */
+export function inspectQualitySchemaRows(schema, { allowEmpty = false } = {}) {
   if (!schema.length) {
     if (!allowEmpty) fail("QUALITY_SCHEMA_UNSUPPORTED");
     return {
