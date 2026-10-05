@@ -421,3 +421,5 @@ export function lookupPublicComparisonNativeNonce(prefix:unknown,coverage:unknow
   if(old && old.inputDigest!==command.inputDigest) invalid("PUBLIC_COMPARISON_NONCE_CONFLICT");
   return {status:old?"replay" as const:"not-observed" as const,record:old?structuredClone(old.record):null,owner:null,authority:archive.authority};
 }
+
+export { dataOnly as assertPublicComparisonDataOnly };

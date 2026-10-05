@@ -334,3 +334,5 @@ export function createProviderContextReservation(
   result.status = "calculated-for-stated-conditions";
   return result;
 }
+
+export { highest as highestReservationRate, ceilRate as ceilReservationRate };
