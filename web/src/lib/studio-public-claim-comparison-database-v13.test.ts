@@ -22,7 +22,15 @@ import { publicClaimComparisonRequestPins } from "./studio-public-claim-comparis
 import * as transmissionRows from "../../scripts/local-data-quality-provider-transmission-database.mjs";
 import * as journalIO from "../../scripts/local-journal-io.mjs";
 import { randomUUID } from "node:crypto";
-import { copyFileSync, mkdtempSync, rmSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
+import {
+  copyFileSync,
+  mkdtempSync,
+  rmSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -59,6 +67,17 @@ import {
 } from "./studio-public-claim-comparison-reservation";
 import * as configuration from "./studio-plan-quality-provider-configuration";
 import { comparisonReservationTestFixture } from "./studio-public-claim-comparison-reservation-test-helpers";
+import { createIsolatedPublicComparisonExecution } from "./studio-public-claim-comparison-database-v11";
+import { endComparisonCompanyRead } from "./studio-public-comparison-company-guard";
+import {
+  createSyntheticComparisonDriver,
+  comparisonSyntheticWireKey,
+  type PublicComparisonTransportBoundary,
+  type SyntheticComparisonHooks,
+} from "./studio-public-claim-comparison-transport";
+import * as storageWitness22 from "./studio-public-comparison-storage-witness";
+import * as companyGuard22 from "./studio-public-comparison-company-guard";
+import * as databaseRows22 from "./studio-public-claim-comparison-database-rows";
 vi.mock("server-only", () => ({}));
 vi.mock(
   "./studio-plan-quality-provider-configuration-current",
@@ -1313,3 +1332,700 @@ it(
   },
   limit,
 );
+
+// 4I22 reuses the SQL13 fixtures above; this is synthetic lifetime observation only.
+function deferred22<T>() {
+  let resolve!: (value: T) => void, reject!: (error: Error) => void;
+  const promise = new Promise<T>((yes, no) => {
+    resolve = yes;
+    reject = no;
+  });
+  return { promise, resolve, reject };
+}
+function ownerFixture22() {
+  const g = setup13(),
+    input = input13(g);
+  vi.setSystemTime(fixture.at);
+  const { companyGuard: _guard, ...current } = input.current;
+  void _guard;
+  // Test-owned fixture teardown, never a product recovery operation or proof of settlement.
+  cleanups.push(() => {
+    if (g.db.isTransaction) g.db.exec("ROLLBACK");
+    endComparisonCompanyRead(g.cap);
+    try {
+      endComparisonStorageSession(g.session);
+    } catch (error) {
+      if (!(error instanceof Error) || !error.message.includes("STORAGE_SESSION_INVALID"))
+        throw error;
+    }
+  });
+  return { g, command: input.command, current };
+}
+function wire22(
+  boundary: PublicComparisonTransportBoundary,
+  signal = new AbortController().signal,
+) {
+  return {
+    method: "POST",
+    body: boundary.rawBody,
+    redirect: "error",
+    signal,
+    headers: {
+      authorization: "Bearer " + comparisonSyntheticWireKey,
+      "content-type": "application/json",
+      "x-stainless-retry-count": "0",
+    },
+  };
+}
+it(
+  "4I22 same lease start is synchronous under both locks; capture precedes retirement and keeps unknown usage hold",
+  async () => {
+    const { g, command, current } = ownerFixture22();
+    const ready = deferred22<void>(),
+      net = deferred22<unknown>(),
+      drain = deferred22<void>();
+    let hooks!: SyntheticComparisonHooks;
+    const startFake = vi.fn(() => {
+      expect(g.db.isTransaction).toBe(true);
+      expect(() => g.companyDb.exec("BEGIN IMMEDIATE")).toThrow(/locked/);
+      return net.promise;
+    });
+    const driver = createSyntheticComparisonDriver(async (b, h) => {
+      hooks = h;
+      expect(b).toMatchObject({ requestedTier: null, dispatchAllowed: false });
+      const body = JSON.parse(b.rawBody);
+      for (const key of ["service_tier", "truncation", "background", "stream"])
+        expect(body).not.toHaveProperty(key);
+      const wait = h.start(b.destination, wire22(b), startFake);
+      ready.resolve();
+      await wait;
+      await drain.promise;
+    });
+    const execution = createIsolatedPublicComparisonExecution(g.session, g.cap, driver);
+    const running = execution.execute(command, current);
+    await Promise.race([
+      ready.promise,
+      running.then((v) => {
+        throw Error("start not reached: " + JSON.stringify(v));
+      }),
+    ]);
+    expect(g.db.isTransaction).toBe(false);
+    g.companyDb.exec("BEGIN IMMEDIATE");
+    g.companyDb.exec("ROLLBACK");
+    expect(() => beginComparisonStorageSession(g.session)).toThrow(/BUSY/);
+    expect(() => hooks.start("", {}, startFake)).toThrow(/START_REFUSED/);
+    const trap = Object.defineProperty({}, "approvedReview", {
+      get() {
+        throw Error("must not read current");
+      },
+    });
+    expect((await execution.execute(command, trap)).phase).toBe("in-flight");
+    g.companyDb.prepare("DELETE FROM studio_cases WHERE id=?").run(fixture.company.id);
+    vi.setSystemTime(later);
+    net.resolve({ ...response, usage: undefined });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(execution.inspect()).toMatchObject({
+      capturePersisted: true,
+      promiseSettled: false,
+      retainedCaptureCount: 1,
+    });
+    expect(execution.retire().phase).toBe("draining");
+    drain.resolve();
+    expect(await running).toMatchObject({
+      phase: "closed",
+      owner: null,
+      runtimeObserved: false,
+      syntheticStartObserved: true,
+      capturePersisted: true,
+      promiseSettled: true,
+      retainedCaptureCount: 0,
+    });
+    expect(startFake).toHaveBeenCalledTimes(1);
+    const s = state13(g);
+    expect(s.reservation.archive.records.events.at(-1)!.payload.kind).toBe("response-captured");
+    result13(g);
+    const close = closeInput(g);
+    expect(
+      writeGuardedPublicComparisonV13(g.session, "settle-finalize", close.command, close.current)
+        .status,
+    ).toBe("blocked");
+  },
+  limit,
+);
+it(
+  "4I22 stored dispatch replay precedes driver and current and never creates a new owner",
+  async () => {
+    const { g, command, current } = ownerFixture22();
+    writeGuardedPublicComparisonV13(g.session, "approve-dispatch", command, {
+      ...current,
+      companyGuard: g.cap,
+    });
+    const trap = Object.defineProperty({}, "approvedReview", {
+      get() {
+        throw Error("read current");
+      },
+    });
+    const execution = createIsolatedPublicComparisonExecution(g.session, g.cap, {
+      kind: "synthetic-comparison-fixture",
+    }); // Forged driver must never be consulted on replay.
+    const before = snapshot(g.db);
+    expect(await execution.execute(command, trap)).toMatchObject({
+      phase: "replay",
+      owner: null,
+      dispatchCommitObserved: false,
+      startAttempted: false,
+    });
+    expect(snapshot(g.db)).toEqual(before);
+  },
+  limit,
+);
+
+for (const fault of [
+  "company-delete",
+  "same-revision-body",
+  "expired",
+  "clock-backward",
+  "wire-body",
+  "wire-option",
+  "wire-header",
+  "aborted",
+  "retired",
+  "monotonic-expired",
+  "company-revision",
+  "restore-marker",
+  "lease-revoked",
+  "policy-changed",
+  "request-changed",
+  "native-head-changed",
+  "budget-head-changed",
+] as const)
+  it(
+    "4I22 delayed boundary rejects " + fault + " without a start or hold release",
+    async () => {
+      const { g, command, current } = ownerFixture22();
+      const startFake = vi.fn(async () => response);
+      let revoked = false,
+        driverVerified = false;
+      if (fault === "lease-revoked") {
+        const acquire = journalIO.acquireJournalLease;
+        vi.spyOn(journalIO, "acquireJournalLease").mockImplementation((...args) => {
+          const real = acquire(...args);
+          return {
+            guard() {
+              if (revoked) throw Error("synthetic lease revoked");
+              real.guard();
+            },
+            close: real.close,
+          };
+        });
+      }
+      const driver = createSyntheticComparisonDriver(async (b, h) => {
+        await Promise.resolve(); // Guard belongs to the actual delayed hook.
+        const controller = new AbortController(),
+          wire: Record<string, unknown> = wire22(b, controller.signal);
+        if (fault === "company-delete")
+          g.companyDb.prepare("DELETE FROM studio_cases WHERE id=?").run(fixture.company.id);
+        if (fault === "restore-marker")
+          writeFileSync(join(g.paths.dataRoot, ".restore-pending"), "synthetic pending");
+        if (fault === "lease-revoked") revoked = true;
+        let restoreRows: (() => void) | undefined;
+        if (
+          [
+            "policy-changed",
+            "request-changed",
+            "native-head-changed",
+            "budget-head-changed",
+          ].includes(fault)
+        ) {
+          const read = databaseRows22.readPublicComparisonRows;
+          const spy = vi
+            .spyOn(databaseRows22, "readPublicComparisonRows")
+            .mockImplementation((...args) => {
+              const rows = read(...args);
+              if (fault === "policy-changed") {
+                const row = rows.transmissionRows.bindingRows.find(
+                  (r) => JSON.parse(r.body).recordVersion === 4,
+                )!;
+                const body = JSON.parse(row.body);
+                body.approvedReview.usagePolicy.requestedTier = "default";
+                row.body = JSON.stringify(body);
+                row.body_hash = digest(body);
+              }
+              if (fault === "request-changed") {
+                const row = rows.actualRows.runs.find((r) => r.id === command.runId)!;
+                const body = JSON.parse(row.body);
+                body.command.selection.companyRevision++;
+                row.body = JSON.stringify(body);
+                row.body_hash = digest(body);
+              }
+              if (fault === "native-head-changed")
+                rows.actualRows.events.find((r) => r.run_id === command.runId)!.revision++;
+              if (fault === "budget-head-changed") rows.actualRows.budget.at(-1)!.revision++;
+              return rows;
+            });
+          restoreRows = () => spy.mockRestore();
+        }
+        if (fault === "company-revision") {
+          const company = structuredClone(fixture.company);
+          company.revision++;
+          g.companyDb
+            .prepare("UPDATE studio_cases SET revision=?,body=? WHERE id=?")
+            .run(company.revision, JSON.stringify(company), company.id);
+        }
+        if (fault === "same-revision-body") {
+          const company = structuredClone(fixture.company);
+          company.sources[0].text += " changed";
+          g.companyDb
+            .prepare("UPDATE studio_cases SET body=? WHERE id=?")
+            .run(JSON.stringify(company), company.id);
+        }
+        if (fault === "expired") vi.setSystemTime(command.approval.expiresAt);
+        if (fault === "monotonic-expired")
+          vi.spyOn(performance, "now").mockReturnValue(Number.MAX_SAFE_INTEGER);
+        if (fault === "clock-backward") vi.setSystemTime(Date.parse(fixture.at) - 1);
+        if (fault === "wire-body") wire.body = b.rawBody + " ";
+        if (fault === "wire-option") wire.credentials = "include";
+        if (fault === "wire-header") wire.headers = { authorization: "Bearer wrong" };
+        if (fault === "aborted") controller.abort();
+        if (fault === "retired") execution.retire();
+        try {
+          await expect(
+            Promise.resolve().then(() => h.start(b.destination, wire, startFake)),
+          ).rejects.toThrow(/START_REFUSED/);
+        } finally {
+          restoreRows?.();
+        }
+        driverVerified = true;
+      });
+      const execution = createIsolatedPublicComparisonExecution(g.session, g.cap, driver);
+      const view = await execution.execute(command, current);
+      expect(driverVerified).toBe(true);
+      expect(view.phase).toBe("recovery-required");
+      expect(view.startAttempted).toBe(false);
+      expect(startFake).not.toHaveBeenCalled();
+      expect(state13(g).reservation.archive.financial.events).toHaveLength(1);
+      expect(() => beginComparisonStorageSession(g.session)).toThrow(/BUSY/);
+    },
+    limit,
+  );
+
+it(
+  "4I22 unknown then late capture keeps the original promise and immutable bytes after company deletion",
+  async () => {
+    const { g, command, current } = ownerFixture22();
+    const net = deferred22<unknown>();
+    let original: unknown;
+    const execution = createIsolatedPublicComparisonExecution(
+      g.session,
+      g.cap,
+      createSyntheticComparisonDriver(async (b, h) => {
+        const pending = h.start(b.destination, wire22(b), () => net.promise);
+        h.markUnknown();
+        const unknownRows = state13(g).reservation.archive.records.events;
+        expect(unknownRows.at(-1)!.payload.kind).toBe("dispatch-unknown");
+        h.markUnknown();
+        expect(state13(g).reservation.archive.records.events).toEqual(unknownRows);
+        g.companyDb.prepare("DELETE FROM studio_cases WHERE id=?").run(fixture.company.id);
+        vi.setSystemTime(later);
+        original = structuredClone(response);
+        net.resolve(original);
+        await pending;
+        h.markUnknown();
+      }),
+    );
+    expect(await execution.execute(command, current)).toMatchObject({
+      phase: "closed",
+      capturePersisted: true,
+    });
+    const events = state13(g).reservation.archive.records.events;
+    expect(events.slice(-2).map((e) => e.payload.kind)).toEqual([
+      "dispatch-unknown",
+      "response-captured",
+    ]);
+    expect(
+      state13(g).reservation.archive.records.artifacts.find((a) => a.key === "comparison-response")!
+        .body,
+    ).toBe(JSON.stringify(original));
+  },
+  limit,
+);
+
+for (const fault of [
+  "dispatch-commit-loss",
+  "dispatch-ack-loss",
+  "capture-commit-loss",
+  "capture-ack-loss",
+  "capture-insert",
+] as const)
+  it(
+    "4I22 " + fault + " retains lease; recovery never redispatches or reinserts uncertain rows",
+    async () => {
+      const { g, command, current } = ownerFixture22();
+      const exec = g.db.exec.bind(g.db);
+      let capturePhase = false,
+        hit = false;
+      const sql = vi.spyOn(g.db, "exec").mockImplementation((statement) => {
+        exec(statement);
+        if (
+          !hit &&
+          statement === "COMMIT" &&
+          ((fault === "dispatch-commit-loss" && !capturePhase) ||
+            (fault === "capture-commit-loss" && capturePhase))
+        ) {
+          hit = true;
+          throw Error("lost COMMIT response");
+        }
+      });
+      const io = vi
+        .spyOn(journalIO, "writeJournalJson")
+        .mockImplementation((file, value, ...args) => {
+          if (
+            (value as { payload: { type: string } }).payload.type === "ack" &&
+            ((fault === "dispatch-ack-loss" && !capturePhase) ||
+              (fault === "capture-ack-loss" && capturePhase))
+          ) {
+            hit = true;
+            throw Error("ack failure");
+          }
+          return originalWrite(file, value, ...args);
+        });
+      let insert: ReturnType<typeof injectInsert> | undefined;
+      const started = vi.fn(async () => {
+        capturePhase = true;
+        if (fault === "capture-insert") insert = injectInsert(g.db, 2);
+        return response;
+      });
+      const execution = createIsolatedPublicComparisonExecution(
+        g.session,
+        g.cap,
+        createSyntheticComparisonDriver(async (b, h) => {
+          await h.start(b.destination, wire22(b), started);
+        }),
+      );
+      const view = await execution.execute(command, current);
+      expect(view.phase).toBe("recovery-required");
+      expect(view.capturePersisted).toBe(false);
+      expect(view.retainedCaptureCount).toBe(capturePhase ? 1 : 0);
+      sql.mockRestore();
+      io.mockRestore();
+      insert?.mockRestore();
+      const before = snapshot(g.db);
+      const recovered = execution.recover({
+        runId: command.runId,
+        dispatchCommandDigest: digest(command),
+      });
+      expect(snapshot(g.db)).toEqual(before);
+      if (fault.startsWith("dispatch")) {
+        expect(started).not.toHaveBeenCalled();
+        expect(recovered).toMatchObject({
+          syntheticStartObserved: false,
+          phase: "recovery-required",
+        });
+      } else if (fault === "capture-insert") {
+        expect(recovered.phase).toBe("recovery-required");
+        expect(recovered.retainedCaptureCount).toBe(1);
+      } else
+        expect(recovered).toMatchObject({
+          phase: "closed",
+          capturePersisted: true,
+          retainedCaptureCount: 0,
+        });
+      expect(() =>
+        execution.recover({
+          runId: command.runId,
+          dispatchCommandDigest: digest(command),
+          response,
+        }),
+      ).toThrow();
+      expect(started.mock.calls.length).toBeLessThanOrEqual(1);
+    },
+    limit,
+  );
+
+for (const mode of ["reject", "malformed", "refusal", "incomplete"] as const)
+  it(
+    "4I22 " + mode + " distinguishes no capture from retained provider JSON",
+    async () => {
+      const { g, command, current } = ownerFixture22();
+      const execution = createIsolatedPublicComparisonExecution(
+        g.session,
+        g.cap,
+        createSyntheticComparisonDriver(async (b, h) => {
+          await h.start(b.destination, wire22(b), async () => {
+            if (mode === "reject") throw Error("secret SDK detail must never escape");
+            if (mode === "malformed")
+              return {
+                output: [
+                  {
+                    get text() {
+                      throw Error("not plain");
+                    },
+                  },
+                ],
+              };
+            return {
+              ...response,
+              status: mode === "incomplete" ? "incomplete" : "completed",
+              output:
+                mode === "refusal"
+                  ? [{ type: "message", content: [{ type: "refusal", refusal: "No" }] }]
+                  : [],
+            };
+          });
+        }),
+      );
+      const result = await execution.execute(command, current);
+      expect(result.phase).toBe(
+        mode === "reject" || mode === "malformed" ? "recovery-required" : "closed",
+      );
+      expect(result.capturePersisted).toBe(mode === "refusal" || mode === "incomplete");
+      expect(JSON.stringify(result)).not.toMatch(
+        /secret SDK|authorization|rawBody|synthetic-capture/,
+      );
+      expect(execution.retire().capturePersisted).toBe(result.capturePersisted);
+    },
+    limit,
+  );
+
+for (const fault of ["read-rollback", "lease-close", "capture-ack-and-rollback"] as const)
+  it(
+    "4I22 " + fault + " preserves first capture and only the same owner completes cleanup",
+    async () => {
+      const { g, command, current } = ownerFixture22();
+      let capturePhase = false;
+      const exec = g.db.exec.bind(g.db);
+      const sql = vi.spyOn(g.db, "exec").mockImplementation((statement) => {
+        if (capturePhase && statement === "ROLLBACK" && fault !== "lease-close")
+          throw Error("cleanup failure");
+        exec(statement);
+      });
+      const io = vi
+        .spyOn(journalIO, "writeJournalJson")
+        .mockImplementation((file, value, ...args) => {
+          if (
+            capturePhase &&
+            fault === "capture-ack-and-rollback" &&
+            (value as { payload: { type: string } }).payload.type === "ack"
+          )
+            throw Error("ack failure");
+          return originalWrite(file, value, ...args);
+        });
+      let restoreEnd: (() => void) | undefined;
+      const execution = createIsolatedPublicComparisonExecution(
+        g.session,
+        g.cap,
+        createSyntheticComparisonDriver(async (b, h) => {
+          await h.start(b.destination, wire22(b), () => {
+            if (fault === "read-rollback") capturePhase = true;
+            if (fault === "lease-close") {
+              const end = vi
+                .spyOn(storageWitness22, "endComparisonStorageSession")
+                .mockImplementation(() => {
+                  throw Error("lease cleanup");
+                });
+              restoreEnd = () => end.mockRestore();
+            }
+            // Inject the ack failure only after the final read transactions have closed.
+            return Promise.resolve().then(() => {
+              capturePhase = true;
+              return response;
+            });
+          });
+        }),
+      );
+      const observed = await execution.execute(command, current);
+      expect(observed).toMatchObject({
+        phase: "recovery-required",
+        promiseSettled: true,
+        retainedCaptureCount: 1,
+        syntheticStartObserved: true,
+      });
+      expect(() => beginComparisonStorageSession(g.session)).toThrow(/BUSY/);
+      sql.mockRestore();
+      io.mockRestore();
+      restoreEnd?.();
+      expect(
+        execution.recover({ runId: command.runId, dispatchCommandDigest: digest(command) }),
+      ).toMatchObject({ phase: "closed", retainedCaptureCount: 0, capturePersisted: true });
+      expect(execution.retire().phase).toBe("closed");
+    },
+    limit,
+  );
+
+it(
+  "4I22 an unresolved original promise keeps lease even after capture and retire",
+  async () => {
+    const { g, command, current } = ownerFixture22();
+    const net = deferred22<unknown>(),
+      driverDrain = deferred22<void>(),
+      seen = deferred22<void>();
+    const execution = createIsolatedPublicComparisonExecution(
+      g.session,
+      g.cap,
+      createSyntheticComparisonDriver(async (b, h) => {
+        const waiting = h.start(b.destination, wire22(b), () => net.promise);
+        h.markUnknown();
+        seen.resolve();
+        await waiting;
+        await driverDrain.promise;
+      }),
+    );
+    const running = execution.execute(command, current);
+    await seen.promise;
+    expect(execution.retire()).toMatchObject({
+      phase: "draining",
+      promiseSettled: false,
+      capturePersisted: false,
+    });
+    expect(() => beginComparisonStorageSession(g.session)).toThrow(/BUSY/);
+    net.resolve(response);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(execution.inspect()).toMatchObject({
+      capturePersisted: true,
+      promiseSettled: false,
+      retainedCaptureCount: 1,
+    });
+    driverDrain.resolve();
+    expect((await running).phase).toBe("closed");
+  },
+  limit,
+);
+
+it(
+  "4I22 driver completion cannot be used as a delayed new start capability",
+  async () => {
+    const { g, command, current } = ownerFixture22();
+    let boundary!: PublicComparisonTransportBoundary, hooks!: SyntheticComparisonHooks;
+    const execution = createIsolatedPublicComparisonExecution(
+      g.session,
+      g.cap,
+      createSyntheticComparisonDriver(async (b, h) => {
+        boundary = b;
+        hooks = h;
+      }),
+    );
+    expect(await execution.execute(command, current)).toMatchObject({
+      phase: "recovery-required",
+      promiseSettled: true,
+      startAttempted: false,
+    });
+    const startFake = vi.fn(async () => response);
+    expect(() => hooks.start(boundary.destination, wire22(boundary), startFake)).toThrow(
+      /START_REFUSED/,
+    );
+    expect(startFake).not.toHaveBeenCalled();
+    expect(
+      execution.recover({ runId: command.runId, dispatchCommandDigest: digest(command) }).phase,
+    ).toBe("recovery-required");
+  },
+  limit,
+);
+it(
+  "4I22 observed dispatch COMMIT followed by failed company release has no send owner",
+  async () => {
+    const { g, command, current } = ownerFixture22();
+    const originalEnd = companyGuard22.endComparisonCompanyRead;
+    const release = vi
+      .spyOn(companyGuard22, "endComparisonCompanyRead")
+      .mockImplementationOnce((cap) => {
+        originalEnd(cap);
+        throw Error("release observation lost");
+      });
+    const callback = vi.fn(async () => {});
+    const execution = createIsolatedPublicComparisonExecution(
+      g.session,
+      g.cap,
+      createSyntheticComparisonDriver(callback),
+    );
+    expect(await execution.execute(command, current)).toMatchObject({
+      phase: "recovery-required",
+      dispatchCommitObserved: true,
+      startAttempted: false,
+    });
+    release.mockRestore();
+    const before = snapshot(g.db);
+    execution.recover({ runId: command.runId, dispatchCommandDigest: digest(command) });
+    expect(callback).not.toHaveBeenCalled();
+    expect(snapshot(g.db)).toEqual(before);
+  },
+  limit,
+);
+
+for (const fault of ["input", "company", "driver"] as const)
+  it(
+    "4I22 unchanged predispatch " + fault + " rejection releases only its unused lease",
+    async () => {
+      const { g, command, current } = ownerFixture22();
+      const before = snapshot(g.db);
+      const callback = vi.fn(async () => {});
+      if (fault === "company")
+        g.companyDb.prepare("DELETE FROM studio_cases WHERE id=?").run(fixture.company.id);
+      const driver =
+        fault === "driver"
+          ? { kind: "synthetic-comparison-fixture" as const }
+          : createSyntheticComparisonDriver(callback);
+      const execution = createIsolatedPublicComparisonExecution(g.session, g.cap, driver);
+      expect(
+        await execution.execute(
+          command,
+          fault === "input" ? { ...current, unexpected: true } : current,
+        ),
+      ).toMatchObject({
+        phase: "start-refused",
+        dispatchCommitObserved: false,
+        startAttempted: false,
+        cleanupRequired: false,
+      });
+      expect(snapshot(g.db)).toEqual(before);
+      expect(callback).not.toHaveBeenCalled();
+      beginComparisonStorageSession(g.session);
+      endComparisonStorageSession(g.session);
+    },
+    limit,
+  );
+
+for (const mode of ["sync-start-throw", "driver-throw-after-start"] as const)
+  it(
+    "4I22 " + mode + " preserves the attempt and original pending response without another start",
+    async () => {
+      const { g, command, current } = ownerFixture22();
+      const ready = deferred22<void>(),
+        net = deferred22<unknown>();
+      const started = vi.fn(() => {
+        if (mode === "sync-start-throw") throw Error("private synthetic transport detail");
+        return net.promise;
+      });
+      const execution = createIsolatedPublicComparisonExecution(
+        g.session,
+        g.cap,
+        createSyntheticComparisonDriver(async (b, h) => {
+          const waiting = h.start(b.destination, wire22(b), started);
+          ready.resolve();
+          if (mode === "driver-throw-after-start") throw Error("private driver detail");
+          await waiting;
+        }),
+      );
+      const running = execution.execute(command, current);
+      await ready.promise;
+      if (mode === "driver-throw-after-start") {
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        expect(execution.inspect()).toMatchObject({
+          startAttempted: true,
+          promiseSettled: false,
+          capturePersisted: false,
+        });
+        expect(state13(g).reservation.archive.records.events.at(-1)!.payload.kind).toBe(
+          "dispatch-unknown",
+        );
+        net.resolve(response);
+      }
+      const result = await running;
+      expect(result).toMatchObject({
+        phase: mode === "sync-start-throw" ? "recovery-required" : "closed",
+        startAttempted: true,
+      });
+      expect(started).toHaveBeenCalledTimes(1);
+      expect(JSON.stringify(result)).not.toMatch(/private synthetic|private driver/);
+    },
+    limit,
+  );

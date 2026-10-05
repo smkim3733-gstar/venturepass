@@ -39,7 +39,7 @@ import {
   planPreparedComparisonStorageCommand,
   inspectedComparisonStorageCommand,
 } from "./studio-public-claim-comparison-reservation";
-import { comparisonPlanAuthority } from "./studio-public-claim-comparison-financial";
+import { comparisonPlanAuthority, comparisonSha } from "./studio-public-claim-comparison-financial";
 import type { PublicComparisonCoverage } from "./studio-public-claim-comparison-budget";
 
 import {
@@ -47,6 +47,9 @@ import {
   publicComparisonV12InsertGates,
 } from "./studio-public-claim-comparison-database-v12-schema";
 import {
+  comparisonTransmissionCore,
+  comparisonUnknownCommandSchema,
+  comparisonCaptureCommandSchema,
   inspectComparisonTransmissionState,
   prepareComparisonTransmissionStorageCommand,
   inspectedComparisonTransmissionStorageCommand,
@@ -55,12 +58,25 @@ import {
 } from "./studio-public-claim-comparison-transmission";
 import { publicComparisonV13InsertGates } from "./studio-public-claim-comparison-database-v13-schema";
 import {
+  comparisonDispatchV2CommandSchema,
+  type ComparisonTransmissionV2Review,
   inspectComparisonTransmissionV4State,
   prepareComparisonV4StorageCommand,
   inspectedComparisonV4StorageCommand,
   planPreparedComparisonV4StorageCommand,
   type ComparisonV4StorageOperation,
 } from "./studio-public-claim-comparison-transmission-v4";
+import { randomUUID } from "node:crypto";
+import { captureProviderResponse } from "../../scripts/local-data-quality-provider-usage.mjs";
+import { inspectPublicClaimComparisonRequest } from "./studio-public-claim-comparison-request";
+import { validateComparisonUsagePolicy } from "./studio-public-claim-comparison-usage";
+import { snapshotProviderSdkWire } from "./studio-plan-quality-provider-sdk-wire";
+import {
+  preparePublicComparisonTransportBoundary,
+  requireSyntheticComparisonDriver,
+  comparisonSyntheticWireKey,
+  type SyntheticComparisonDriver,
+} from "./studio-public-claim-comparison-transport";
 type Version = 11 | 12 | 13;
 function witnessVersion(version: Version) {
   return version === 11 ? 1 : version === 12 ? 2 : 3;
@@ -1078,8 +1094,15 @@ function migrateGuardedDatabase(session: ComparisonStorageSession, version: 12 |
     }
   }
 }
-function reconcileVersionedWitness(session: ComparisonStorageSession, version: 12 | 13) {
-  const { db, selection } = beginComparisonStorageSession(session);
+function reconcileVersionedWitness(
+  session: ComparisonStorageSession,
+  version: 12 | 13,
+  ownedLease?: OwnedComparisonLease,
+) {
+  const active = ownedLease ? ownedComparisonLeases.get(ownedLease) : undefined;
+  if (ownedLease && (!active || active.session !== session || version !== 13))
+    fail("PUBLIC_COMPARISON_OWNER_REQUIRED");
+  const { db, selection } = active ?? beginComparisonStorageSession(session);
   enter(db);
   try {
     db.exec("BEGIN IMMEDIATE");
@@ -1123,7 +1146,7 @@ function reconcileVersionedWitness(session: ComparisonStorageSession, version: 1
     return rollback(db, e, false);
   } finally {
     busy.delete(db);
-    endComparisonStorageSession(session);
+    if (!active) endComparisonStorageSession(session);
   }
 }
 
@@ -1170,4 +1193,572 @@ export function writeGuardedPublicComparisonV13(
   )
     fail();
   return guardedWrite(session, operation, command, current, 13);
+}
+
+// This composition is deliberately isolated: no production runtime, credential lookup or SDK.
+type OwnedComparisonLease = object;
+const ownedComparisonLeases = new WeakMap<
+  OwnedComparisonLease,
+  {
+    session: ComparisonStorageSession;
+    db: DatabaseSync;
+    selection: PublicComparisonDatabaseSelection;
+  }
+>();
+type ExecutionPhase =
+  | "replay"
+  | "dispatch-recorded"
+  | "start-refused"
+  | "in-flight"
+  | "unknown"
+  | "capture-retained"
+  | "capture-persisted"
+  | "draining"
+  | "recovery-required"
+  | "closed";
+
+export function createIsolatedPublicComparisonExecution(
+  session: ComparisonStorageSession,
+  companyGuard: ComparisonCompanyGuard,
+  driver: SyntheticComparisonDriver,
+) {
+  const lease = Object.freeze({});
+  let phase: ExecutionPhase = "closed",
+    retired = false,
+    executing = false,
+    leaseActive = false;
+  let dispatchCommitObserved = false,
+    witnessMatched = false,
+    startAttempted = false;
+  let capturePersisted = false,
+    promiseSettled = false,
+    cleanupRequired = false;
+  let driverDone = false,
+    networkDone = false,
+    hookEntered = false,
+    syntheticStartObserved = false;
+  let command: z.infer<typeof comparisonDispatchV2CommandSchema> | undefined;
+  let postCheckpoint: ReturnType<typeof checkpoint> | undefined;
+  let preDispatchCheckpoint: ReturnType<typeof checkpoint> | undefined;
+  let boundary: ReturnType<typeof preparePublicComparisonTransportBoundary> | undefined;
+  let retained: ReturnType<typeof captureProviderResponse> | undefined;
+  let network: Promise<void> | undefined;
+  let companyReadOpen = false;
+  let pending:
+    | { operation: "mark-unknown" | "persist-capture"; command: unknown; current: unknown }
+    | undefined;
+  let dispatchUncertain = false;
+  // Only this private object, created below after fresh write+ack, can enter the start boundary.
+  const owners = new WeakMap<
+    object,
+    { bindingDigest: string; expiresAt: number; issuedAt: number; deadline: number }
+  >();
+  const owner = Object.freeze({});
+  const inspect = () =>
+    Object.freeze({
+      source: "synthetic-comparison-execution" as const,
+      phase,
+      owner: null,
+      runtimeObserved: false,
+      syntheticStartObserved,
+      dispatchCommitObserved,
+      witnessMatched,
+      startAttempted,
+      capturePersisted,
+      promiseSettled,
+      cleanupRequired,
+      retainedCaptureCount: retained ? 1 : 0,
+      authority: comparisonPlanAuthority,
+    });
+  function connection() {
+    const active = ownedComparisonLeases.get(lease);
+    if (!active || !leaseActive || active.session !== session)
+      fail("PUBLIC_COMPARISON_OWNER_REQUIRED");
+    return active;
+  }
+  function readOwned() {
+    const { db, selection } = connection();
+    enter(db);
+    try {
+      db.exec("BEGIN IMMEDIATE");
+      const audit = inspectTransaction(db, selection, 13);
+      const cp = checkpoint(db, { ...audit, state: audit.inspection.state }, audit.inspection);
+      db.exec("ROLLBACK");
+      if (db.isTransaction) fail("PUBLIC_COMPARISON_RECOVERY_REQUIRED");
+      return { audit, cp };
+    } catch (error) {
+      return rollback(db, error, false);
+    } finally {
+      busy.delete(db);
+    }
+  }
+  function closeLease() {
+    endComparisonStorageSession(session);
+    ownedComparisonLeases.delete(lease);
+    leaseActive = false;
+  }
+  function finish() {
+    promiseSettled = driverDone && (!network || networkDone);
+    if (!leaseActive || !capturePersisted || !promiseSettled || pending || dispatchUncertain)
+      return;
+    try {
+      const { db } = connection();
+      if (companyReadOpen || db.isTransaction) fail("PUBLIC_COMPARISON_RECOVERY_REQUIRED");
+      const { cp } = readOwned();
+      checkComparisonWitness(session, cp, 3);
+      closeLease();
+      owners.delete(owner);
+      retained = undefined;
+      boundary = undefined;
+      postCheckpoint = undefined;
+      cleanupRequired = false;
+      phase = "closed";
+    } catch {
+      cleanupRequired = true;
+      phase = "recovery-required";
+    }
+  }
+  function cleanOwnedReads() {
+    const { db } = connection();
+    if (companyReadOpen) {
+      endComparisonCompanyRead(companyGuard);
+      companyReadOpen = false;
+    }
+    if (db.isTransaction) {
+      db.exec("ROLLBACK");
+      if (db.isTransaction) fail("PUBLIC_COMPARISON_RECOVERY_REQUIRED");
+    }
+    busy.delete(db);
+  }
+  function persistPending(first: boolean) {
+    if (!pending) return;
+    const { db, selection } = connection();
+    if (!first) {
+      // A failed write is never retried. Audit rows and repair only the original acknowledgement.
+      reconcileVersionedWitness(session, 13, lease);
+      const { audit } = readOwned();
+      const replay = prepareComparisonV4StorageCommand(
+        audit.transmission!.state,
+        pending.operation,
+        pending.command,
+      );
+      if (replay.status !== "replay") fail("PUBLIC_COMPARISON_CAPTURE_RECOVERY_REQUIRED");
+    } else {
+      const stored = write(
+        db,
+        selection,
+        pending.operation,
+        pending.command,
+        pending.current,
+        session,
+        13,
+      );
+      if (!stored.witnessMatched || stored.status === "blocked")
+        fail("PUBLIC_COMPARISON_CAPTURE_RECOVERY_REQUIRED");
+    }
+    if (pending.operation === "persist-capture") {
+      capturePersisted = true;
+      phase = "capture-persisted";
+    } else phase = "unknown";
+    pending = undefined;
+    witnessMatched = true;
+  }
+  function continuation(operation: "mark-unknown" | "persist-capture") {
+    if (!command || pending || capturePersisted) return;
+    const { audit, cp } = readOwned();
+    checkComparisonWitness(session, cp, 3);
+    const state = audit.transmission!.state;
+    const binding = state.transmissionBindings.find((b) => b.runId === command!.runId);
+    if (!binding || !owners.has(owner)) fail("PUBLIC_COMPARISON_OWNER_REQUIRED");
+    const events = state.reservation.archive.records.events.filter(
+      (e) => e.runId === command!.runId,
+    );
+    if (
+      operation === "mark-unknown" &&
+      events.some(
+        (e) => e.payload.kind === "dispatch-unknown" || e.payload.kind === "response-captured",
+      )
+    )
+      return;
+    const base = {
+      commandVersion: 1,
+      purpose: "compare-public-claim",
+      clientRequestId: randomUUID(),
+      runId: command.runId,
+      transmissionBindingDigest: binding.recordDigest,
+      dispatchEventDigest: binding.dispatchEventDigest,
+      expectedRunHead: comparisonTransmissionCore.runHead(state, command.runId),
+    };
+    const at = new Date().toISOString(),
+      eventId = randomUUID();
+    if (operation === "persist-capture") {
+      if (!retained) fail("PUBLIC_COMPARISON_CAPTURE_REQUIRED");
+      pending = {
+        operation,
+        command: comparisonCaptureCommandSchema.parse({
+          ...base,
+          kind: "persist-public-comparison-capture",
+          responseArtifactSha256: comparisonSha(JSON.stringify(retained)),
+          sizeBytes: Buffer.byteLength(JSON.stringify(retained)),
+        }),
+        current: { at, eventId, capture: retained },
+      };
+    } else
+      pending = {
+        operation,
+        command: comparisonUnknownCommandSchema.parse({
+          ...base,
+          kind: "mark-public-comparison-unknown",
+          reason: startAttempted ? "transport-unknown" : "not-started-unconfirmed",
+        }),
+        current: { at, eventId },
+      };
+    persistPending(true);
+  }
+  function retainResponse(raw: unknown) {
+    if (retained || capturePersisted) fail("PUBLIC_COMPARISON_CAPTURE_ALREADY_RETAINED");
+    // First canonical copy precedes any DB access or projection, and is never overwritten.
+    retained = captureProviderResponse(raw);
+    phase = cleanupRequired || pending ? "recovery-required" : "capture-retained";
+    try {
+      if (!cleanupRequired && !pending) continuation("persist-capture");
+    } catch {
+      cleanupRequired = true;
+      phase = "recovery-required";
+    }
+  }
+  function unknown() {
+    if (capturePersisted || retained || pending || !owners.has(owner)) return;
+    hookEntered = true; // An unknown outcome never permits a later first/replacement start.
+    try {
+      continuation("mark-unknown");
+    } catch {
+      cleanupRequired = true;
+      phase = "recovery-required";
+    }
+  }
+  function start(
+    url: unknown,
+    input: unknown,
+    startFake: (wire: RequestInit) => Promise<unknown>,
+  ): Promise<void> {
+    if (hookEntered || !owners.has(owner) || retired || driverDone || cleanupRequired)
+      fail("PUBLIC_COMPARISON_START_REFUSED");
+    hookEntered = true;
+    const activeOwner = owners.get(owner)!;
+    const { db, selection } = connection();
+    try {
+      if (!boundary || !command || !postCheckpoint || typeof startFake !== "function") fail();
+      const wire = snapshotProviderSdkWire(
+        boundary.rawBody,
+        comparisonSyntheticWireKey,
+        url,
+        input,
+      );
+      const before = Date.now(),
+        monotonic = performance.now();
+      if (
+        before < activeOwner.issuedAt ||
+        before >= activeOwner.expiresAt ||
+        monotonic >= activeOwner.deadline ||
+        wire.signal?.aborted
+      )
+        fail("PUBLIC_COMPARISON_START_EXPIRED");
+      enter(db);
+      db.exec("BEGIN IMMEDIATE");
+      const audit = inspectTransaction(db, selection, 13),
+        cp = checkpoint(db, { ...audit, state: audit.inspection.state }, audit.inspection);
+      checkComparisonWitness(session, cp, 3);
+      if (digest(cp) !== digest(postCheckpoint)) fail("PUBLIC_COMPARISON_START_CHANGED");
+      const state = audit.transmission!.state;
+      const binding = state.transmissionBindings.find((b) => b.runId === command!.runId);
+      if (
+        !binding ||
+        binding.recordVersion !== 4 ||
+        binding.recordDigest !== activeOwner.bindingDigest ||
+        digest(binding.command) !== digest(command) ||
+        comparisonTransmissionCore.runHead(state, command.runId).headDigest !==
+          binding.dispatchEventDigest ||
+        cp.budgetRevision !== command.expectedBudgetHead.revision ||
+        cp.budgetHead !== command.expectedBudgetHead.headDigest
+      )
+        fail("PUBLIC_COMPARISON_START_CHANGED");
+      const original = comparisonTransmissionCore.original(state, command.runId);
+      const review = binding.approvedReview as ComparisonTransmissionV2Review; // Fully rebuilt by the inspector above.
+      checkComparisonWitnessCompany(session, companyGuard, 3);
+      const company = beginComparisonCompanyRead(
+        companyGuard,
+        original.run.command.selection.companyId,
+      );
+      companyReadOpen = true;
+      inspectPublicClaimComparisonRequest(company, original.run.command, original.run.identity);
+      const at = new Date(before).toISOString();
+      comparisonTransmissionCore.validateBasis(review.basis, state, command.runId, at);
+      validateComparisonUsagePolicy(
+        review.usagePolicy,
+        original.review.financialBasis,
+        original.run.identity,
+        review.basis,
+        state.reservation.prefix.environment,
+        at,
+      );
+      checkComparisonCompanyRead(companyGuard, company.id);
+      checkComparisonWitness(session, cp, 3);
+      const after = Date.now();
+      if (
+        retired ||
+        after < before ||
+        after >= activeOwner.expiresAt ||
+        performance.now() >= activeOwner.deadline ||
+        wire.signal?.aborted
+      )
+        fail("PUBLIC_COMPARISON_START_EXPIRED");
+      startAttempted = true;
+      // Synchronous start and rejection handler installation occur inside both SELECT locks.
+      const started = startFake(wire);
+      syntheticStartObserved = true;
+      network = Promise.resolve(started)
+        .then(
+          (raw) => {
+            try {
+              retainResponse(raw);
+            } catch {
+              cleanupRequired = true;
+              phase = "recovery-required";
+            }
+          },
+          () => {
+            unknown();
+          },
+        )
+        .then(() => {
+          networkDone = true;
+          finish();
+        });
+      phase = "in-flight";
+    } catch {
+      phase = startAttempted ? "recovery-required" : "start-refused";
+      cleanupRequired = startAttempted;
+      // The network promise, if acquired, remains owned even when lock cleanup fails.
+    } finally {
+      try {
+        cleanOwnedReads();
+      } catch {
+        cleanupRequired = true;
+        phase = "recovery-required";
+      }
+    }
+    if (!network) return Promise.reject(Error("PUBLIC_COMPARISON_START_REFUSED"));
+    return network;
+  }
+  async function execute(rawCommand: unknown, current: unknown) {
+    if (executing || retired) fail("PUBLIC_COMPARISON_EXECUTION_BUSY");
+    if (leaseActive) {
+      const { audit } = readOwned();
+      const replay = prepareComparisonV4StorageCommand(
+        audit.transmission!.state,
+        "approve-dispatch",
+        rawCommand,
+      );
+      if (replay.status !== "replay" || !command || digest(replay.command) !== digest(command))
+        fail("PUBLIC_COMPARISON_EXECUTION_BUSY");
+      return inspect(); // An in-progress observation, never a new send capability.
+    }
+    executing = true;
+    try {
+      const active = beginComparisonStorageSession(session);
+      leaseActive = true;
+      ownedComparisonLeases.set(lease, { ...active, session });
+      const { audit, cp } = readOwned();
+      preDispatchCheckpoint = cp;
+      const prepared = prepareComparisonV4StorageCommand(
+        audit.transmission!.state,
+        "approve-dispatch",
+        rawCommand,
+      );
+      if (prepared.status === "replay") {
+        const stored = write(
+          active.db,
+          active.selection,
+          "approve-dispatch",
+          rawCommand,
+          undefined,
+          session,
+          13,
+        );
+        witnessMatched = stored.witnessMatched;
+        phase = witnessMatched ? "replay" : "recovery-required";
+        closeLease();
+        return inspect();
+      }
+      if (command) {
+        closeLease();
+        fail("PUBLIC_COMPARISON_EXECUTION_RETIRED");
+      }
+      command = comparisonDispatchV2CommandSchema.parse(rawCommand);
+      // Current inputs and the driver are deliberately untouched until the original nonce audit.
+      assertPublicComparisonDataOnly(current, 8 * 1024 * 1024);
+      const cur = z
+        .object({
+          approvedReview: z.unknown(),
+          basis: z.unknown(),
+          usagePolicy: z.unknown(),
+          at: z.unknown(),
+          eventId: z.unknown(),
+        })
+        .strict()
+        .parse(current);
+      const fixture = requireSyntheticComparisonDriver(driver);
+      const issuedAt = Date.now(),
+        startedAt = performance.now();
+      dispatchUncertain = true;
+      let stored: ReturnType<typeof write>;
+      try {
+        stored = write(
+          active.db,
+          active.selection,
+          "approve-dispatch",
+          command,
+          { ...cur, companyGuard },
+          session,
+          13,
+        );
+      } catch (error) {
+        // Observation only. A failed private call can never mint the send capability.
+        dispatchCommitObserved =
+          error instanceof Error && "commitObserved" in error && error.commitObserved === true;
+        throw error;
+      }
+      if (stored.status !== "committed" || !stored.commitObserved || !stored.witnessMatched) fail();
+      dispatchCommitObserved = true;
+      const post = readOwned();
+      checkComparisonWitness(session, post.cp, 3);
+      const state = post.audit.transmission!.state;
+      const binding = state.transmissionBindings.find((b) => b.runId === command!.runId);
+      if (
+        !binding ||
+        binding.recordVersion !== 4 ||
+        digest(binding.command) !== digest(command) ||
+        comparisonTransmissionCore.runHead(state, command.runId).headDigest !==
+          binding.dispatchEventDigest ||
+        post.cp.budgetRevision !== command.expectedBudgetHead.revision ||
+        post.cp.budgetHead !== command.expectedBudgetHead.headDigest
+      )
+        fail();
+      const run = comparisonTransmissionCore.original(state, command.runId).run;
+      const context = state.reservation.archive.records.artifacts.find(
+        (a) => a.runId === run.id && a.key === "comparison-context",
+      );
+      if (!context) fail();
+      boundary = preparePublicComparisonTransportBoundary({
+        command: run.command,
+        identity: run.identity,
+        context: context.body,
+      });
+      const review = binding.approvedReview as ComparisonTransmissionV2Review;
+      const expiresAt = Date.parse(review.expiresAt);
+      postCheckpoint = post.cp;
+      if (retired) fail("PUBLIC_COMPARISON_EXECUTION_RETIRED");
+      owners.set(owner, {
+        bindingDigest: binding.recordDigest,
+        expiresAt,
+        issuedAt,
+        deadline: startedAt + Math.max(0, expiresAt - issuedAt),
+      });
+      dispatchUncertain = false;
+      witnessMatched = true;
+      phase = "dispatch-recorded";
+      executing = false;
+      try {
+        await fixture(boundary, Object.freeze({ start, markUnknown: unknown }));
+      } catch {
+        unknown();
+      } finally {
+        driverDone = true;
+        if (network) await network;
+        promiseSettled = true;
+        if (!retained && !capturePersisted) {
+          unknown();
+          phase = "recovery-required";
+        }
+        finish();
+      }
+      return inspect();
+    } catch {
+      let unchangedBeforeDispatch =
+        !dispatchUncertain && !dispatchCommitObserved && !owners.has(owner);
+      if (
+        leaseActive &&
+        dispatchUncertain &&
+        !dispatchCommitObserved &&
+        !owners.has(owner) &&
+        preDispatchCheckpoint
+      ) {
+        try {
+          const unchanged = readOwned();
+          checkComparisonWitness(session, unchanged.cp, 3);
+          unchangedBeforeDispatch = digest(unchanged.cp) === digest(preDispatchCheckpoint);
+        } catch {
+          /* An intent, changed row or uncertain transaction must retain its lease. */
+        }
+      }
+      if (leaseActive && unchangedBeforeDispatch) {
+        try {
+          cleanOwnedReads();
+          closeLease();
+        } catch {
+          /* Keep cleanup responsibility. */
+        }
+      }
+      cleanupRequired = leaseActive;
+      phase = leaseActive ? "recovery-required" : "start-refused";
+      return inspect();
+    } finally {
+      executing = false;
+    }
+  }
+  function recover(raw: unknown) {
+    assertPublicComparisonDataOnly(raw, 1024);
+    const selected = z
+      .object({
+        runId: z.string().uuid(),
+        dispatchCommandDigest: z.string().regex(/^[a-f0-9]{64}$/),
+      })
+      .strict()
+      .parse(raw);
+    if (
+      !command ||
+      command.runId !== selected.runId ||
+      digest(command) !== selected.dispatchCommandDigest ||
+      !leaseActive
+    )
+      fail("PUBLIC_COMPARISON_OWNER_REQUIRED");
+    try {
+      cleanOwnedReads();
+      if (pending) persistPending(false);
+      else reconcileVersionedWitness(session, 13, lease);
+      cleanupRequired = false;
+      if (retained && !capturePersisted && !pending) continuation("persist-capture");
+      if (!retained && !capturePersisted && promiseSettled && owners.has(owner)) {
+        unknown();
+        phase = "recovery-required";
+      }
+      finish();
+    } catch {
+      cleanupRequired = true;
+      phase = "recovery-required";
+    }
+    return inspect();
+  }
+  return Object.freeze({
+    execute,
+    recover,
+    inspect,
+    retire() {
+      retired = true;
+      if (leaseActive) phase = "draining";
+      finish();
+      return inspect();
+    },
+  });
 }
