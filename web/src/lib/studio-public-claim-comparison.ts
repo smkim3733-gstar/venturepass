@@ -1,7 +1,6 @@
 import "server-only";
 import { createHash } from "node:crypto";
 import { z } from "zod";
-import { STUDIO_AI_INPUT_CHARACTER_LIMIT } from "./studio-ai-input";
 import { claimReviewInputDigest } from "./studio-claim-review";
 import {
   claimReviewInputSchema,
@@ -13,101 +12,14 @@ import { readManualPublicEvidence } from "./studio-public-evidence-export";
 import { planSchema, sourceSchema, type StudioCase } from "./studio-schema";
 import { StudioError } from "./studio-http";
 
-// Internal, synchronous preparation/validation only. No store, SDK, key, file or network access.
-export const publicClaimComparisonLimits = Object.freeze({
-  selectionBytes: 8 * 1024,
-  inputCharacters: STUDIO_AI_INPUT_CHARACTER_LIMIT,
-  responseCharacters: 240000,
-  sources: claimReviewLimits.sources,
-  quoteCharacters: 1500,
-  quotesPerSource: 3,
-});
-const boundaries = Object.freeze({
-  scope: "selected-public-excerpts" as const,
-  evidenceOrigin: "manual-unverified" as const,
-  factVerified: false,
-  officialProvenanceVerified: false,
-  companyApplicabilityVerified: false,
-  fullOriginalVerified: false,
-  currentValidityVerified: false,
-  semanticTruthVerified: false,
-  humanAccepted: false,
-  transmissionAllowed: false,
-  databaseChanged: false,
-});
-const uuid = z.string().uuid();
-const digest = z.string().regex(/^[a-f0-9]{64}$/);
-const nonblank = (max: number) =>
-  z
-    .string()
-    .min(1)
-    .max(max)
-    .refine((value) => Boolean(value.trim()));
-const distinctIds = z
-  .array(uuid)
-  .max(publicClaimComparisonLimits.sources)
-  .refine((ids) => new Set(ids).size === ids.length);
-export const publicClaimComparisonSelectionSchema = z
-  .object({
-    companyId: uuid,
-    companyRevision: z.number().int().nonnegative().safe(),
-    claimRecordId: uuid,
-    claimVersion: z.number().int().min(1).max(claimReviewLimits.versions),
-    claimInputDigest: digest,
-    sourceIds: distinctIds.refine((ids) => ids.length > 0),
-  })
-  .strict();
-export type PublicClaimComparisonSelection = z.infer<typeof publicClaimComparisonSelectionSchema>;
-
-const relation = z.enum([
-  "provided-text-support",
-  "provided-text-conflict",
-  "insufficient",
-  "undetermined",
-]);
-const sourceOpinion = z
-  .object({
-    sourceId: uuid,
-    relation,
-    quotes: z
-      .array(nonblank(publicClaimComparisonLimits.quoteCharacters))
-      .max(publicClaimComparisonLimits.quotesPerSource)
-      .refine((quotes) => new Set(quotes).size === quotes.length),
-    reason: nonblank(2000),
-    nextCheck: z.string().max(2000),
-  })
-  .strict()
-  .refine(
-    (value) =>
-      !["provided-text-support", "provided-text-conflict"].includes(value.relation) ||
-      value.quotes.length > 0,
-  );
-export const publicClaimComparisonResponseSchema = z
-  .object({
-    preparationDigest: digest,
-    claimQuote: nonblank(publicClaimComparisonLimits.quoteCharacters),
-    overall: z.object({ relation, reason: nonblank(2000) }).strict(),
-    evidence: z.array(sourceOpinion).min(1).max(publicClaimComparisonLimits.sources),
-    checks: z
-      .array(
-        z
-          .object({
-            dimension: z.enum([
-              "period",
-              "unit",
-              "population",
-              "company-applicability",
-              "provenance",
-              "other",
-            ]),
-            sourceIds: distinctIds,
-            message: nonblank(1000),
-          })
-          .strict(),
-      )
-      .max(10),
-  })
-  .strict();
+export * from "./studio-public-claim-comparison-types";
+import {
+  publicClaimComparisonLimits,
+  publicClaimComparisonBoundaries as boundaries,
+  publicClaimComparisonSelectionSchema,
+  publicClaimComparisonResponseSchema,
+  type PublicClaimComparisonSelection,
+} from "./studio-public-claim-comparison-types";
 
 function fail(code: string, message: string, status = 409): never {
   throw new StudioError(message, status, code);

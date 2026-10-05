@@ -18,6 +18,7 @@ import {
   type ClaimReviewInput,
   type ClaimReviewRecord,
 } from "@/lib/studio-claim-review-types";
+import { PublicClaimPreview } from "./public-claim-preview";
 import { AppealEvidenceEditor } from "./appeal-preparation";
 import { Notice, formatDate, selectClass, useDirty, type PanelProps } from "./shared";
 
@@ -767,6 +768,11 @@ function ClaimReviewsPanel({
         완료·신청 단계를 자동 변경하지 않습니다.
       </Notice>
       {blockedReason && <Notice tone="warning">{blockedReason}</Notice>}
+      <PublicClaimPreview
+        key={blocked || !!editor ? "blocked" : "available"}
+        company={company}
+        blocked={blocked || !!editor}
+      />
       {atLimit && (
         <Notice tone="warning">
           주장 검토 {claimReviewLimits.versions}개 버전 한도입니다. 과거 이력을 보존하며 새 버전
