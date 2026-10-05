@@ -1528,9 +1528,9 @@ async function inspectVentureSession(
 }
 
 /** Read only the already-open MY page. Never refresh authentication, navigate or persist status. */
-export async function readVentureMyStatus(
+async function readOwnedVentureMyStatus(
   caseId: string,
-  input: { sessionStartedAt: string; accountRevision: number; businessNumber: string },
+  input: { sessionStartedAt: string; accountRevision: number; businessNumber: string; applicationNumber: string | null },
   assertCurrent: () => void,
 ) {
   const requested = { ...input };
@@ -1572,8 +1572,8 @@ export async function readVentureMyStatus(
     check();
     const observation = await collectVentureMyStatus(page, {
       businessNumber: requested.businessNumber,
-      // Local receipt numbers are not authenticated official application numbers.
-      applicationNumber: null,
+      // This is a literal manual target, never a receipt-number inference.
+      applicationNumber: requested.applicationNumber,
     }, check);
     check();
     return { observation, documentRevision };
@@ -1587,4 +1587,18 @@ export async function readVentureMyStatus(
   } finally {
     session.operationInProgress = false;
   }
+}
+
+export function readVentureMyStatus(caseId: string,
+  input: { sessionStartedAt: string; accountRevision: number; businessNumber: string },
+  assertCurrent: () => void,
+) {
+  return readOwnedVentureMyStatus(caseId, { sessionStartedAt: input.sessionStartedAt,
+    accountRevision: input.accountRevision, businessNumber: input.businessNumber, applicationNumber: null }, assertCurrent);
+}
+export function readVentureBoundMyStatus(caseId: string,
+  input: { sessionStartedAt: string; accountRevision: number; businessNumber: string; applicationNumber: string },
+  assertCurrent: () => void,
+) {
+  return readOwnedVentureMyStatus(caseId, { ...input }, assertCurrent);
 }

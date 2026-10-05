@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { VentureinBoundMyStatusPanel } from "./venturein-bound-my-status-panel";
 import { Button } from "@/components/ui/button";
 import type { StudioCase } from "@/lib/studio-schema";
 import type { VentureConnectionStatus } from "@/lib/venturein-schema";
@@ -16,8 +17,12 @@ export function VentureinMyStatusPanel({ company, connection, workflow, blocked 
   // A new company/version/session or competing operation cannot inherit an old result.
   const key = JSON.stringify([context, company.id, company.revision, connection.account.revision,
     connection.session.state, connection.session.startedAt, workflow.revision, blocked]);
-  return <CurrentMyStatus key={key} context={context} blocked={blocked}
-    companyName={company.profile.companyName} maskedLoginId={connection.account.maskedLoginId} />;
+  return <div className="min-w-0 space-y-4">
+    <CurrentMyStatus key={key} context={context} blocked={blocked}
+      companyName={company.profile.companyName} maskedLoginId={connection.account.maskedLoginId} />
+    <VentureinBoundMyStatusPanel key={"bound:" + key} company={company} context={context} blocked={blocked}
+      maskedLoginId={connection.account.maskedLoginId} />
+  </div>;
 }
 function CurrentMyStatus({ context, blocked, companyName, maskedLoginId }: {
   context: VentureMyReadContext | null; blocked: boolean; companyName: string; maskedLoginId: string | null;

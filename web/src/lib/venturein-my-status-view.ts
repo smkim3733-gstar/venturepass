@@ -10,9 +10,9 @@ export const readCurrentMyStatusSchema = z.object({
   accountRevision: revision, workflowRevision: revision,
   sessionStartedAt: z.string().datetime(), confirmed: z.literal(true),
 }).strict();
-const contextSchema = readCurrentMyStatusSchema.omit({ action: true, confirmed: true })
+export const ventureMyReadContextSchema = readCurrentMyStatusSchema.omit({ action: true, confirmed: true })
   .extend({ caseId: z.string().uuid() }).strict();
-export type VentureMyReadContext = z.infer<typeof contextSchema>;
+export type VentureMyReadContext = z.infer<typeof ventureMyReadContextSchema>;
 export function ventureMyReadContext(
   company: Pick<StudioCase, "id" | "revision">,
   connection: VentureConnectionStatus,
@@ -24,17 +24,17 @@ export function ventureMyReadContext(
     workflow.session.startedAt !== connection.session.startedAt ||
     (workflow.snapshot && workflow.snapshot.caseId !== company.id) ||
     (workflow.draft && workflow.draft.caseId !== company.id)) return null;
-  const value = contextSchema.safeParse({ caseId: company.id, companyRevision: company.revision,
+  const value = ventureMyReadContextSchema.safeParse({ caseId: company.id, companyRevision: company.revision,
     accountRevision: connection.account.revision, workflowRevision: workflow.revision,
     sessionStartedAt: connection.session.startedAt });
   return value.success ? value.data : null;
 }
 export function ventureMyReadCommand(context: VentureMyReadContext) {
-  const { caseId, ...versions } = contextSchema.parse(context); void caseId;
+  const { caseId, ...versions } = ventureMyReadContextSchema.parse(context); void caseId;
   return readCurrentMyStatusSchema.parse({ ...versions, action: "read-current-my-status", confirmed: true });
 }
 const text = z.string().min(1).max(ventureMyStatusLimits.cellChars).nullable();
-const application = z.object({ applicationNumber: ventureMyIdentitySchema,
+export const ventureMyApplicationSchema = z.object({ applicationNumber: ventureMyIdentitySchema,
   applicationDateText: text, notifiedDateText: text, resultText: text }).strict();
 const certificate = z.object({ certificateNumber: ventureMyIdentitySchema,
   typeText: text, issuedDateText: text, validityText: text, firstConfirmedDateText: text,
@@ -47,12 +47,12 @@ function rows<T extends z.ZodType>(row: T) {
       reason: z.enum(["ambiguous-structure", "observation-limit", "unsupported-content"]) }).strict(),
   ]);
 }
-const responseSchema = contextSchema.extend({
+const responseSchema = ventureMyReadContextSchema.extend({
   format: z.literal("venturepass-my-status-read-v1"), documentRevision: revision,
   scope: z.literal("company-screen"), applicationAttribution: z.literal("unavailable-no-application-number"),
   observation: z.object({ origin: z.literal("page-observation"), screenId: z.string().min(1).max(100),
     observedAt: z.string().datetime(), url: z.literal(ventureMyStatusUrl), companyNumberMatched: z.literal(true),
-    applications: rows(application), certificates: rows(certificate),
+    applications: rows(ventureMyApplicationSchema), certificates: rows(certificate),
     target: z.object({ applicationNumber: z.null(), state: z.literal("not-requested"), row: z.null() }).strict(),
     progressAttribution: z.literal("unverified"), certificateApplicationLink: z.literal("unverified"),
     officialStatusChecked: z.literal(false), receiptVerified: z.literal(false),
@@ -61,7 +61,7 @@ const responseSchema = contextSchema.extend({
 }).strict();
 export type VentureMyReadResult = z.infer<typeof responseSchema>;
 export function readVentureMyResult(value: unknown, expected: VentureMyReadContext): VentureMyReadResult {
-  const context = contextSchema.parse(expected);
+  const context = ventureMyReadContextSchema.parse(expected);
   const result = responseSchema.safeParse(value);
   const fail = (): never => { throw Error("현재 회사와 원래 읽기 요청에 맞는 결과인지 확인하지 못했습니다."); };
   if (!result.success) return fail();
