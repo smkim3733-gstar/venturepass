@@ -1,6 +1,8 @@
 import { z } from "zod";
 import { publicResearchTopics, publicStatisticsSearch } from "./studio-public-research";
 
+export const publicResearchIdentifierSchema = z.string().regex(/^[A-Za-z0-9_-]{1,40}$/);
+
 const topicSchema = z.enum(publicResearchTopics().map((t) => t.id));
 export const publicResearchCommandSchema = z.object({ topic: topicSchema }).strict();
 export const publicResearchCandidateSchema = z
@@ -47,8 +49,8 @@ export function publicResearchTableUrl(raw: string, organizationId: string, tabl
       u.searchParams.getAll("tblId").length !== 1 ||
       u.searchParams.get("orgId") !== organizationId ||
       u.searchParams.get("tblId") !== tableId ||
-      !/^[A-Za-z0-9_-]{1,40}$/.test(organizationId) ||
-      !/^[A-Za-z0-9_-]{1,40}$/.test(tableId)
+      !publicResearchIdentifierSchema.safeParse(organizationId).success ||
+      !publicResearchIdentifierSchema.safeParse(tableId).success
     )
       return null;
     const safe = new URL("https://kosis.kr/statHtml/statHtml.do");
