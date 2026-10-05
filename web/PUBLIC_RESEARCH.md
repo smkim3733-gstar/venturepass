@@ -1,5 +1,13 @@
 # 공개 통계 후보 조회와 근거 보관
 
+## 2026-10-06: 4I15 — 비교 전송 동의·응답 영속 캡처 계약
+
+고정20개 기능 기준15/20=75%, 미완료5/20=25%, 직전 대비+0%p. 이번4I15는 비교 전송 승인·불명 상태·응답 영속 캡처 연결 계약 점검1건이며 제품 소스 변경0개다. 신규 제품 시험0/0(미실행), 기존 회귀 재실행0·새 HTTP/브라우저/lint/typecheck/빌드0회다. 과거4I14 신규50+기존223=273/273·a21HeF는 재실행/합산하지 않는다. 백업27개 DESTINATION_REPOSITORY 제한은 미해결·이번 미실행이다. 실환경1/5=20%는 과거 사용자 직접 인증/접근이며 앱 자동실행 성공0단계·KOSIS 실제0/1이다. 필수 결정0개, 다음4I16 비교 승인/dispatch·unknown/캡처의 순수 행 계획과 binding3 감사3~6시간(잠정), 전체 완료시간 미정, 자동후속 ACTIVE.
+
+세부 계약: [4I15 전송 승인·캡처](../기획/공개주장_전송승인_영속캡처_연결명세_20261006.md). native4에 새 승인 event를 넣지 않고 명시 동의와 dispatch-recorded/영수증·기존 transmission 표 binding3를 같은3행 계획으로 묶는다. unknown2행/캡처3행은 원래 명령·run/binding·artifact에서 전체 명령을 대조한다. 후속 SQL12 gate와 witness2 전환·잔여 기록 공간, 실제 fetch 안의 회사 재대조/새 COMMIT owner 및 최초 capture 유지 계약을 정했다. 이번 제품 변경/시험/빌드0이며 실제 SDK/전송·DB전환이나 가격/사람동의 인증이 아니다.
+
+다음4I16은 기획/공개주장_전송승인_영속캡처_연결명세_20261006.md의 전체 완료 조건에 따라 전송 검토안·승인과 dispatch를 묶은 strict 명령, 기존 transmission 표의 비교 binding recordVersion3, unknown/response-captured 행 계획과 전체 감사를 한 순수 구현 단위로 만든다. native4/schema3/manifest1·요청v1·예약binding3/기존 금액 fold와 원래 nonce 우선은 유지한다. 동의+dispatch event/receipt/binding3의3행, unknown2행, 캡처 artifact/event/receipt3행을 기존 원문 계약에 연결하고 별도 승인 이벤트/nonce 원장을 만들지 않는다. 순수 결과는 supplied-transmission-plan·owner:null·실행/가격/사람동의/DB 권한false다. 현재 회사/가격 만료 이후 원래 캡처 보관, unknown 뒤 late capture, 전체 명령 재구성·stale/용량·과거 bytes를 합성 검증한다. 실제 SQL12 migration/writer·witness2 파일 전환·runtime/SDK·route/UI·운영 DB/키/공식 가격·실제 전송은 열지 않는다. 기존 stored native4 응답/예산 파서를 재구현하거나 generation/review로 cast하지 않는다. 백업27개 경로 제한을 재실행/우회하지 않는다. 필수 결정0개·다음3~6시간 잠정·전체 완료시간 미정·자동후속 ACTIVE.
+
 ## 2026-10-06: 4I14 — 회사 SELECT 잠금·목적별 복원 증인
 
 고정20개 기능 기준15/20=75%, 미완료5/20=25%, 직전 대비+0%p. 이번4I14 신규50/50+기존223/223=273/273개 통과다. 기존223개는 v11 DB49+v10 DB54+순수 예약60+StudioStore20+운영 journal40개이며, 실패 보완 후 각 시험의 마지막 결과만 집계했다. 중간37개/선택13개/212개 및 영향7개는 재합산하지 않는다. 전체 lint·첫 typecheck·격리빌드a21HeF 통과, 변경 앱12개 SHA 일치·env 부재다. 새 HTTP/브라우저·실제 외부/고객자료/SDK/AI0이다. 과거4I12 199/199·hNZtP8와 백업27개 DESTINATION_REPOSITORY 제한은 별도이며 백업 제한은 미해결·이번 미실행이다. 실환경1/5=20%는 과거 사용자 직접 인증/접근이며 앱 자동실행 성공0단계·KOSIS 실제0/1이다. 필수 결정0개, 다음4I15 비교 전송 승인·응답 영속 캡처 연결 계약 점검1~3시간(잠정), 전체 완료시간 미정, 자동후속 ACTIVE.
