@@ -1,18 +1,12 @@
+import { readJournalJson, writeJournalJson, acquireJournalLease } from "./local-journal-io.mjs";
 import { randomUUID } from "node:crypto";
 import {
-  closeSync,
-  constants,
-  fstatSync,
-  fsyncSync,
   lstatSync,
   mkdirSync,
-  openSync,
   readdirSync,
-  rmdirSync,
-  writeSync,
 } from "node:fs";
 import path from "node:path";
-import { readSafe, safePath, samePath, sha, within } from "./local-data-files.mjs";
+import { safePath, samePath, sha, within } from "./local-data-files.mjs";
 import {
   createAdditionalValidationApproval,
   inspectAdditionalValidationRecords,
@@ -105,41 +99,10 @@ function profilePaths(profile) {
   };
 }
 function read(file) {
-  const bytes = readSafe(file, maxBytes, null, true).bytes;
-  let value;
-  try {
-    value = JSON.parse(bytes.toString("utf8"));
-  } catch {
-    fail("JOURNAL_INVALID");
-  }
-  // Require our exact encoding: trailing/partial data or silent truncation is not repaired.
-  if (!bytes.equals(Buffer.from(json(value) + "\n"))) fail("JOURNAL_INVALID");
-  return value;
+  return readJournalJson(file, maxBytes, fail);
 }
 function write(file, value) {
-  const bytes = Buffer.from(json(value) + "\n");
-  if (bytes.length > maxBytes) fail("JOURNAL_INVALID");
-  safePath(path.dirname(file), "directory");
-  const fd = openSync(file, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, 0o600);
-  try {
-    let offset = 0;
-    while (offset < bytes.length) {
-      const sent = writeSync(fd, bytes, offset, bytes.length - offset);
-      if (sent <= 0) fail("IO_UNCONFIRMED");
-      offset += sent;
-    }
-    fsyncSync(fd);
-    const opened = fstatSync(fd, { bigint: true }),
-      current = safePath(file);
-    if (
-      opened.dev !== current.dev ||
-      opened.ino !== current.ino ||
-      current.size !== BigInt(bytes.length)
-    )
-      fail("IO_UNCONFIRMED");
-  } finally {
-    closeSync(fd);
-  }
+  return writeJournalJson(file, value, maxBytes, fail);
 }
 function pair(paths, name, value) {
   // The independent witness is durable before the database-side copy and any DB mutation.
@@ -300,25 +263,8 @@ export function acquireAdditionalValidationJournal(profile) {
 }
 function acquireJournal(profile, additional) {
   const paths = profilePaths(profile);
-  safePath(path.dirname(paths.control), "directory");
-  try {
-    mkdirSync(paths.lock, { mode: 0o700 });
-  } catch (error) {
-    if (error.code === "EEXIST") fail("BUSY");
-    throw error;
-  }
-  const lockIdentity = safePath(paths.lock, "directory");
-  let closed = false;
-  function guard() {
-    if (closed) fail("CLOSED");
-    const current = safePath(paths.lock, "directory");
-    if (
-      current.dev !== lockIdentity.dev ||
-      current.ino !== lockIdentity.ino ||
-      current.birthtimeNs !== lockIdentity.birthtimeNs
-    )
-      fail("BUSY");
-  }
+  const lease = acquireJournalLease(paths.lock, fail);
+  const guard = lease.guard;
   function state() {
     guard();
     return readState(paths, true, additional);
@@ -448,10 +394,7 @@ function acquireJournal(profile, additional) {
       append(stage, "receipt", copy);
     },
     close() {
-      if (closed) return;
-      guard();
-      rmdirSync(paths.lock); // no recursive cleanup; unexpected lease contents stay quarantined
-      closed = true;
+      lease.close();
     },
   };
 }

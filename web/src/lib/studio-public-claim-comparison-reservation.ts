@@ -502,17 +502,77 @@ function money(
     payload,
   });
 }
-/** Replay checks the complete original command before even examining current input. */
-export function planComparisonReservation(stateRaw: unknown, raw: unknown, currentRaw?: unknown) {
-  const c = parse(comparisonReserveCommandSchema, raw);
+/** Opaque, detached full-audit result. Fresh planning consumes it once; callers cannot supply an audit. */
+type PreparedCommand = Readonly<{ kind: "comparison-prepared-command" }>;
+const preparedCommands = new WeakMap<
+  PreparedCommand,
+  {
+    operation: "reserve" | "cancel";
+    command: Reserve | Cancel;
+    inspected: ReturnType<typeof inspectComparisonReservationState>;
+  }
+>();
+export function prepareComparisonStorageCommand(
+  stateRaw: unknown,
+  operation: "reserve" | "cancel",
+  raw: unknown,
+) {
+  const c =
+    operation === "reserve"
+      ? parse(comparisonReserveCommandSchema, raw)
+      : parse(comparisonCancelCommandSchema, raw);
   const inspected = inspectComparisonReservationState(stateRaw),
     s = inspected.state;
-  const existing = s.bindings.find((b) => b.clientRequestId === c.clientRequestId);
+  const existing =
+    operation === "reserve"
+      ? s.bindings.find((b) => b.clientRequestId === c.clientRequestId)
+      : inspected.cancellations.find((x) => x.clientRequestId === c.clientRequestId);
   if (existing) {
-    same(existing.command, c);
-    return { ...authorityResult, status: "replay" as const, binding: existing, rows: null };
+    if ("command" in existing) {
+      same(existing.command, c);
+      return { ...authorityResult, status: "replay" as const, binding: existing, rows: null };
+    }
+    same(existing, c);
+    return { ...authorityResult, status: "replay" as const, command: existing, rows: null };
   }
   freeNonce(s, c.clientRequestId);
+  const ticket = Object.freeze({ kind: "comparison-prepared-command" as const });
+  preparedCommands.set(ticket, { operation, command: c, inspected });
+  return { status: "not-observed" as const, ticket, command: structuredClone(c) };
+}
+export function inspectedComparisonStorageCommand(ticket: PreparedCommand) {
+  const p = preparedCommands.get(ticket);
+  if (!p) fail("PUBLIC_COMPARISON_PREPARED_COMMAND_INVALID");
+  return structuredClone(p.inspected);
+}
+export function planPreparedComparisonStorageCommand(
+  ticket: PreparedCommand,
+  currentRaw?: unknown,
+) {
+  const prepared = preparedCommands.get(ticket);
+  if (!prepared) fail("PUBLIC_COMPARISON_PREPARED_COMMAND_INVALID");
+  preparedCommands.delete(ticket);
+  return prepared.operation === "reserve"
+    ? planReserved(prepared.inspected, prepared.command as Reserve, currentRaw)
+    : planCancelled(prepared.inspected, prepared.command as Cancel, currentRaw);
+}
+/** Replay checks the complete original command before even examining current input. */
+export function planComparisonReservation(stateRaw: unknown, raw: unknown, currentRaw?: unknown) {
+  const result = prepareComparisonStorageCommand(stateRaw, "reserve", raw);
+  if (result.status === "replay") {
+    if (!("binding" in result) || !result.binding) fail();
+    return { ...authorityResult, status: "replay" as const, binding: result.binding, rows: null };
+  }
+  const p = preparedCommands.get(result.ticket)!;
+  preparedCommands.delete(result.ticket);
+  return planReserved(p.inspected, p.command as Reserve, currentRaw);
+}
+function planReserved(
+  inspected: ReturnType<typeof inspectComparisonReservationState>,
+  c: Reserve,
+  currentRaw?: unknown,
+) {
+  const s = inspected.state;
   const cur = parse(
     z
       .object({
@@ -635,15 +695,21 @@ export function planComparisonReservation(stateRaw: unknown, raw: unknown, curre
   };
 }
 export function planComparisonCancellation(stateRaw: unknown, raw: unknown, currentRaw?: unknown) {
-  const c = parse(comparisonCancelCommandSchema, raw);
-  const inspected = inspectComparisonReservationState(stateRaw),
-    s = inspected.state;
-  const existing = inspected.cancellations.find((x) => x.clientRequestId === c.clientRequestId);
-  if (existing) {
-    same(existing, c);
-    return { ...authorityResult, status: "replay" as const, command: existing, rows: null };
+  const result = prepareComparisonStorageCommand(stateRaw, "cancel", raw);
+  if (result.status === "replay") {
+    if (!("command" in result) || !result.command) fail();
+    return { ...authorityResult, status: "replay" as const, command: result.command, rows: null };
   }
-  freeNonce(s, c.clientRequestId);
+  const p = preparedCommands.get(result.ticket)!;
+  preparedCommands.delete(result.ticket);
+  return planCancelled(p.inspected, p.command as Cancel, currentRaw);
+}
+function planCancelled(
+  inspected: ReturnType<typeof inspectComparisonReservationState>,
+  c: Cancel,
+  currentRaw?: unknown,
+) {
+  const s = inspected.state;
   const binding = s.bindings.find((b) => b.runId === c.runId);
   const run = s.archive.records.runs.find((r) => r.id === c.runId);
   const summary = inspected.view.native.runs.find((r) => r.runId === c.runId);

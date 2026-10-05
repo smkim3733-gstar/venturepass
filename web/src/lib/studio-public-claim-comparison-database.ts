@@ -274,6 +274,21 @@ export function readPublicComparisonDatabaseSnapshot(
   if (digest(cutover.selection) !== digest(selectionSchema.parse(expectedSelection)))
     fail("PUBLIC_COMPARISON_IDENTITY_MISMATCH");
   const rows = readPublicComparisonRows(db, cutover.originalSchema, version === 11);
+  const rawRowsDigest = createHash("sha256")
+    .update(
+      JSON.stringify(
+        {
+          rows,
+          coverageRow: db
+            .prepare("SELECT id,body,body_hash FROM quality_provider_purpose_coverage ORDER BY id")
+            .all(),
+          schema: schemaRows(db),
+        },
+        (_key, value) =>
+          value instanceof Uint8Array ? { blob: Buffer.from(value).toString("base64") } : value,
+      ),
+    )
+    .digest("hex");
   const { past, next } = splitActual(rows.actualRows, cutover.originalActualKeys);
   const bindingRows =
     version === 11
@@ -325,6 +340,7 @@ export function readPublicComparisonDatabaseSnapshot(
     bindings,
     nativeRawOverheadBytes,
     bindingRawOverheadBytes,
+    rawRowsDigest,
   };
 }
 function inspectInTransaction(

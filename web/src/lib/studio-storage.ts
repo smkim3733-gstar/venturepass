@@ -1,3 +1,9 @@
+import { projectStoredCompany } from "./studio-company-read-projection";
+import {
+  issueComparisonCompanyGuard,
+  revokeComparisonCompanyGuards,
+  recordComparisonCompanyConnection,
+} from "./studio-comparison-company-capability";
 import {
   planSupplementAdoptionCommandSchema,
   type PlanSupplementAdoptionCommand,
@@ -568,6 +574,7 @@ export class StudioStore {
     this.root = resolve(directory);
     mkdirSync(this.root, { recursive: true });
     this.db = new DatabaseSync(join(this.root, "studio.sqlite"));
+    recordComparisonCompanyConnection(this.db, this.root);
     this.db.exec(
       "PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON; CREATE TABLE IF NOT EXISTS studio_cases (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, evidence_revision INTEGER NOT NULL, body TEXT NOT NULL); CREATE TABLE IF NOT EXISTS venture_accounts (case_id TEXT PRIMARY KEY REFERENCES studio_cases(id) ON DELETE CASCADE, encrypted_payload BLOB, masked_login_id TEXT, revision INTEGER NOT NULL CHECK (revision > 0), updated_at TEXT NOT NULL, CHECK ((encrypted_payload IS NULL AND masked_login_id IS NULL) OR (encrypted_payload IS NOT NULL AND masked_login_id IS NOT NULL)));",
     );
@@ -578,7 +585,11 @@ export class StudioStore {
       "CREATE TABLE IF NOT EXISTS studio_prepared_packages (id TEXT PRIMARY KEY, case_id TEXT NOT NULL REFERENCES studio_cases(id) ON DELETE CASCADE, version INTEGER NOT NULL CHECK(version > 0), client_request_id TEXT NOT NULL, request_digest TEXT NOT NULL, body TEXT NOT NULL, body_sha256 TEXT NOT NULL, archive BLOB NOT NULL, UNIQUE(case_id, version), UNIQUE(case_id, client_request_id))",
     );
   }
+  comparisonCompanyGuard() {
+    return issueComparisonCompanyGuard(this.db, this.root);
+  }
   close() {
+    revokeComparisonCompanyGuards(this.db);
     this.db.close();
   }
   private readPreparedPackageRow(
@@ -761,11 +772,7 @@ export class StudioStore {
   }
   get(id: string): StudioCase {
     const row = this.row(id);
-    const record = caseSchema.parse(JSON.parse(row.body));
-    refreshDiagnosisStaleness(record);
-    refreshPreparationStaleness(record);
-    refreshPlanReviewStaleness(record, row.evidence_revision);
-    return withApplicationCriteriaContexts(record);
+    return projectStoredCompany(row);
   }
   list(): CaseSummary[] {
     return (

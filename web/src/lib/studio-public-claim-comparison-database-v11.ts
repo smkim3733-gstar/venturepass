@@ -1,4 +1,25 @@
 import "server-only";
+import { z } from "zod";
+import { assertPublicComparisonDataOnly } from "./studio-public-claim-comparison-budget";
+import {
+  beginComparisonCompanyRead,
+  checkComparisonCompanyRead,
+  endComparisonCompanyRead,
+  type ComparisonCompanyGuard,
+} from "./studio-public-comparison-company-guard";
+import {
+  beginComparisonStorageSession,
+  endComparisonStorageSession,
+  initializeComparisonWitness,
+  checkComparisonWitness,
+  checkComparisonWitnessCompany,
+  recordComparisonWitnessIntent,
+  acknowledgeComparisonWitness,
+  checkComparisonWitnessPending,
+  comparisonWitnessInventory,
+  comparisonWitnessRow,
+  type ComparisonStorageSession,
+} from "./studio-public-comparison-storage-witness";
 import type { DatabaseSync, SQLInputValue } from "node:sqlite";
 import { providerDigest as digest } from "../../scripts/local-data-quality-provider.mjs";
 import {
@@ -14,6 +35,9 @@ import {
   inspectComparisonReservationState,
   planComparisonReservation,
   planComparisonCancellation,
+  prepareComparisonStorageCommand,
+  planPreparedComparisonStorageCommand,
+  inspectedComparisonStorageCommand,
 } from "./studio-public-claim-comparison-reservation";
 import { comparisonPlanAuthority } from "./studio-public-claim-comparison-financial";
 import type { PublicComparisonCoverage } from "./studio-public-claim-comparison-budget";
@@ -82,6 +106,7 @@ function readStateTransaction(db: DatabaseSync, selection: PublicComparisonDatab
     source: "local-comparison-reservation-database-read" as const,
     storageVersion: 11 as const,
     cutoverDigest: snap.cutover.cutoverDigest,
+    rawRowsDigest: snap.rawRowsDigest,
     cutoverBytes: snap.cutoverBytes,
     nativeRawOverheadBytes: snap.nativeRawOverheadBytes,
     bindingRawOverheadBytes: snap.bindingRawOverheadBytes,
@@ -262,30 +287,126 @@ function persist(db: DatabaseSync, plan: NewPlan) {
   }
   return rows.length;
 }
+function checkpoint(
+  db: DatabaseSync,
+  snapshot: ReturnType<typeof readStateTransaction>,
+  inspection: ReturnType<typeof inspectComparisonReservationState>,
+) {
+  return {
+    rawRowsDigest: snapshot.rawRowsDigest,
+    inventoryDigest: comparisonWitnessInventory(db),
+    cutoverDigest: snapshot.cutoverDigest,
+    coverageDigest: snapshot.state.coverage.coverageDigest,
+    archiveDigest: inspection.view.archiveDigest,
+    budgetRevision: inspection.view.native.revision,
+    budgetHead: inspection.view.native.headDigest,
+  };
+}
+/** Predict the existing SQL reader's ORDER BY on detached native vectors only.
+ * No event filtering, revision/hash rewriting, legacy reordering, or persisted byte changes. */
+function expectedSqlArchiveDigest(plan: NewPlan) {
+  const s = plan.next,
+    archive = structuredClone(s.archive);
+  const cmp = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
+  archive.records.events.sort((a, b) => cmp(a.runId, b.runId) || a.revision - b.revision);
+  archive.records.artifacts.sort((a, b) => cmp(a.runId, b.runId) || cmp(a.key, b.key));
+  archive.records.receipts.sort((a, b) => cmp(a.clientRequestId, b.clientRequestId));
+  archive.financial.events.sort((a, b) => cmp(a.scopeId, b.scopeId) || a.revision - b.revision);
+  archive.financial.receipts.sort(
+    (a, b) => cmp(a.scopeId, b.scopeId) || a.budgetRevision - b.budgetRevision,
+  );
+  // runs and bindings retain their original SQL insertion order.
+  return digest({ coverageDigest: s.coverage.coverageDigest, archive, bindings: s.bindings });
+}
+function observedError(code: string, commitObserved: boolean) {
+  return Object.assign(Error(code), { commitObserved, recoveryRequired: true });
+}
 function write(
   db: DatabaseSync,
   selection: PublicComparisonDatabaseSelection,
   operation: "reserve" | "cancel",
   command: unknown,
   current?: unknown,
+  session?: ComparisonStorageSession,
 ) {
   enter(db);
-  let commitAttempted = false;
+  let commitAttempted = false,
+    commitObserved = false;
+  let companyGuard: ComparisonCompanyGuard | undefined;
+  let companyId: string | undefined;
   try {
     registerGate(db);
     db.exec("BEGIN IMMEDIATE");
     const before = readStateTransaction(db, selection);
-    // The planner resolves exact original nonces before touching supplied current/company inputs.
-    const plan =
-      operation === "reserve"
-        ? planComparisonReservation(before.state, command, current)
-        : planComparisonCancellation(before.state, command, current);
+    let plan: Plan;
+    if (session) {
+      const prepared = prepareComparisonStorageCommand(before.state, operation, command);
+      if (prepared.status === "replay") plan = prepared;
+      else {
+        const audited = inspectedComparisonStorageCommand(prepared.ticket);
+        const beforeCheckpoint = checkpoint(db, before, audited);
+        checkComparisonWitness(session, beforeCheckpoint);
+        let actualCurrent = current;
+        if (operation === "reserve") {
+          // Only after original-nonce audit. No caller getter/callback or supplied company snapshot.
+          assertPublicComparisonDataOnly(current, 8 * 1024 * 1024);
+          const cur = z
+            .object({
+              companyGuard: z.unknown(),
+              approvedReview: z.unknown(),
+              evidence: z.unknown(),
+              at: z.unknown(),
+              runId: z.unknown(),
+              eventId: z.unknown(),
+              budgetEventId: z.unknown(),
+            })
+            .strict()
+            .parse(current);
+          const cap = cur.companyGuard as ComparisonCompanyGuard;
+          checkComparisonWitnessCompany(session, cap);
+          companyId = "companyId" in prepared.command ? prepared.command.companyId : undefined;
+          if (!companyId) fail();
+          const company = beginComparisonCompanyRead(cap, companyId);
+          companyGuard = cap;
+          const { companyGuard: _cap, ...inputs } = cur;
+          void _cap;
+          actualCurrent = { ...inputs, company };
+        }
+        plan = planPreparedComparisonStorageCommand(prepared.ticket, actualCurrent);
+        const rows = inserts(plan);
+        const runId = plan.operation === "reserve" ? plan.rows.run.id : plan.rows.events[0].runId;
+        recordComparisonWitnessIntent(session, beforeCheckpoint, {
+          operation,
+          nonce: prepared.command.clientRequestId,
+          commandDigest: digest(prepared.command),
+          runId,
+          expectedArchiveDigest: expectedSqlArchiveDigest(plan),
+          rows: rows.map((r) => comparisonWitnessRow(r.table, r.values)),
+        });
+      }
+    } else {
+      plan =
+        operation === "reserve"
+          ? planComparisonReservation(before.state, command, current)
+          : planComparisonCancellation(before.state, command, current);
+    }
     if (plan.status === "replay") {
       const inspection = inspectTransaction(db, selection);
+      let witnessMatched = false;
+      if (session) {
+        try {
+          checkComparisonWitness(session, checkpoint(db, before, inspection.inspection));
+          witnessMatched = true;
+        } catch {
+          /* Original DB record remains a structure-only replay; never creates an ack or new rows. */
+        }
+      }
       commitAttempted = true;
       db.exec("COMMIT");
       if (db.isTransaction) fail("PUBLIC_COMPARISON_COMMIT_OBSERVATION_UNKNOWN");
       return {
+        witnessMatched,
+        companyLockObserved: false,
         source: "local-comparison-reservation-database-write" as const,
         status: "replay" as const,
         result: plan,
@@ -330,10 +451,43 @@ function write(
       plan.operation === "reserve"
         ? { ...common, binding: binding! }
         : { ...common, command: cancellation! };
+    if (companyGuard) checkComparisonCompanyRead(companyGuard, companyId!);
+    if (session) {
+      const nonce =
+        plan.operation === "reserve"
+          ? plan.rows.binding.clientRequestId
+          : plan.rows.receipts[0].clientRequestId;
+      checkComparisonWitnessPending(session, nonce, digest(command));
+    }
     commitAttempted = true;
     db.exec("COMMIT");
     if (db.isTransaction) fail("PUBLIC_COMPARISON_COMMIT_OBSERVATION_UNKNOWN");
+    commitObserved = true;
+    if (companyGuard) {
+      endComparisonCompanyRead(companyGuard);
+      companyGuard = undefined;
+    }
+    if (session) {
+      // File acknowledgement is separate from the SQL COMMIT. Re-read the durable rows first.
+      try {
+        db.exec("BEGIN IMMEDIATE");
+        const durable = readStateTransaction(db, selection),
+          audit = inspectComparisonReservationState(durable.state);
+        acknowledgeComparisonWitness(
+          session,
+          checkpoint(db, durable, audit),
+          audit.state,
+          audit.cancellations,
+        );
+        db.exec("COMMIT");
+        if (db.isTransaction) fail("PUBLIC_COMPARISON_COMMIT_OBSERVATION_UNKNOWN");
+      } catch {
+        throw observedError("PUBLIC_COMPARISON_WITNESS_ACK_REQUIRED", true);
+      }
+    }
     return {
+      witnessMatched: !!session,
+      companyLockObserved: !!session && operation === "reserve",
       source: "local-comparison-reservation-database-write" as const,
       status: "committed" as const,
       result: replay,
@@ -345,10 +499,32 @@ function write(
       authority: comparisonPlanAuthority,
     };
   } catch (e) {
+    if (commitObserved) {
+      if (db.isTransaction) {
+        try {
+          db.exec("ROLLBACK");
+        } catch {
+          throw observedError("PUBLIC_COMPARISON_RECOVERY_REQUIRED", true);
+        }
+      }
+      throw observedError(
+        e instanceof Error && e.message === "PUBLIC_COMPARISON_COMPANY_CLEANUP_REQUIRED"
+          ? e.message
+          : "PUBLIC_COMPARISON_WITNESS_ACK_REQUIRED",
+        true,
+      );
+    }
     return rollback(db, e, commitAttempted);
   } finally {
     permits.delete(db);
     busy.delete(db);
+    if (companyGuard) {
+      try {
+        endComparisonCompanyRead(companyGuard);
+      } catch {
+        throw observedError("PUBLIC_COMPARISON_COMPANY_CLEANUP_REQUIRED", commitObserved);
+      }
+    }
   }
 }
 export function reservePublicComparisonDatabase(
@@ -366,4 +542,103 @@ export function cancelPublicComparisonDatabase(
   current?: unknown,
 ) {
   return write(db, selection, "cancel", command, current);
+}
+
+/** Explicit internal server composition. No route/UI/dispatcher, no actual-price or consent authority. */
+function guardedWrite(
+  session: ComparisonStorageSession,
+  operation: "reserve" | "cancel",
+  command: unknown,
+  current?: unknown,
+) {
+  const { db, selection } = beginComparisonStorageSession(session);
+  let commitObserved = false;
+  try {
+    const result = write(db, selection, operation, command, current, session);
+    commitObserved = result.commitObserved;
+    return result;
+  } catch (error) {
+    commitObserved = !!(
+      error &&
+      typeof error === "object" &&
+      "commitObserved" in error &&
+      error.commitObserved === true
+    );
+    throw error;
+  } finally {
+    try {
+      endComparisonStorageSession(session);
+    } catch {
+      throw observedError("PUBLIC_COMPARISON_LEASE_CLEANUP_REQUIRED", commitObserved);
+    }
+  }
+}
+export function reserveGuardedPublicComparison(
+  session: ComparisonStorageSession,
+  command: unknown,
+  current?: unknown,
+) {
+  return guardedWrite(session, "reserve", command, current);
+}
+export function cancelGuardedPublicComparison(
+  session: ComparisonStorageSession,
+  command: unknown,
+  current?: unknown,
+) {
+  return guardedWrite(session, "cancel", command, current);
+}
+export function initializePublicComparisonStorageWitness(
+  session: ComparisonStorageSession,
+  company: ComparisonCompanyGuard,
+) {
+  const { db, selection } = beginComparisonStorageSession(session);
+  enter(db);
+  try {
+    db.exec("BEGIN IMMEDIATE");
+    const snapshot = readStateTransaction(db, selection),
+      audit = inspectComparisonReservationState(snapshot.state);
+    const result = initializeComparisonWitness(
+      session,
+      checkpoint(db, snapshot, audit),
+      audit.state,
+      company,
+    );
+    db.exec("COMMIT");
+    if (db.isTransaction) fail("PUBLIC_COMPARISON_COMMIT_OBSERVATION_UNKNOWN");
+    return result;
+  } catch (e) {
+    return rollback(db, e, false);
+  } finally {
+    busy.delete(db);
+    endComparisonStorageSession(session);
+  }
+}
+export function reconcilePublicComparisonStorageWitness(session: ComparisonStorageSession) {
+  const { db, selection } = beginComparisonStorageSession(session);
+  enter(db);
+  try {
+    db.exec("BEGIN IMMEDIATE");
+    const snapshot = readStateTransaction(db, selection),
+      audit = inspectComparisonReservationState(snapshot.state);
+    const cp = checkpoint(db, snapshot, audit);
+    let repairedFilesOnly = false;
+    try {
+      checkComparisonWitness(session, cp);
+    } catch {
+      acknowledgeComparisonWitness(session, cp, audit.state, audit.cancellations);
+      repairedFilesOnly = true;
+    }
+    db.exec("COMMIT");
+    if (db.isTransaction) fail("PUBLIC_COMPARISON_COMMIT_OBSERVATION_UNKNOWN");
+    return {
+      source: "local-comparison-witness-reconciliation" as const,
+      repairedFilesOnly,
+      dispatchAllowed: false,
+    };
+  } catch (e) {
+    return rollback(db, e, false);
+  } finally {
+    busy.delete(db);
+    endComparisonStorageSession(session);
+  }
 }
