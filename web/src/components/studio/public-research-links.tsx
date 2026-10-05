@@ -8,6 +8,10 @@ import {
   type PublicResearchResult,
 } from "@/lib/studio-public-research-result";
 import { jsonBody, studioFetch } from "./shared";
+import type {
+  PublicSelectedCellCommand,
+  PublicSelectedCellResult,
+} from "@/lib/studio-public-selected-cell";
 import { PublicSelectedCell } from "./public-selected-cell";
 import { PublicTableMetadata } from "./public-table-metadata";
 import styles from "./guided-workspace.module.css";
@@ -15,9 +19,13 @@ export function PublicResearchLinks({
   disabled,
   canFill = false,
   onCandidate,
+  canFillCell = false,
+  onCellEvidence,
 }: {
   disabled: boolean;
   canFill?: boolean;
+  canFillCell?: boolean;
+  onCellEvidence?: (result: PublicSelectedCellResult, command: PublicSelectedCellCommand) => void;
   onCandidate?: (candidate: PublicResearchCandidate) => void;
 }) {
   const [topic, setTopic] = useState("");
@@ -186,6 +194,8 @@ export function PublicResearchLinks({
                   )}
                   {c.originalUrl && (
                     <PublicSelectedCell
+                      canFillEvidence={canFillCell}
+                      onEvidence={onCellEvidence}
                       key={JSON.stringify([result.retrievedAt, c])}
                       candidate={c}
                       searchResult={result}

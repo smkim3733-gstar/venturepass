@@ -13,6 +13,10 @@ import { jsonBody, studioFetch, useDirty } from "./shared";
 import styles from "./guided-workspace.module.css";
 import { PublicResearchLinks } from "./public-research-links";
 import { publicResearchCandidateFields } from "@/lib/studio-public-research-result";
+import {
+  applyPublicCellEvidence,
+  canFillPublicCellEvidence,
+} from "@/lib/studio-public-cell-evidence";
 import { isPublicDiscoveryPage } from "@/lib/studio-public-research";
 export function PublicEvidencePanel({
   company,
@@ -219,6 +223,29 @@ export function PublicEvidencePanel({
           <PublicResearchLinks
             disabled={working || blocked || !!pending || changed}
             canFill={!draft.title && !draft.url}
+            canFillCell={canFillPublicCellEvidence(draft)}
+            onCellEvidence={(result, command) => {
+              if (
+                flight.current ||
+                working ||
+                blocked ||
+                pending ||
+                saved ||
+                changed ||
+                !mounted.current
+              )
+                throw Error("현재 입력에 옮길 수 없습니다.");
+              const next = applyPublicCellEvidence(
+                draft,
+                result,
+                command,
+                base,
+                currentCompany.current,
+              );
+              setDraft(next);
+              setConfirmed(false);
+              setError("");
+            }}
             onCandidate={(candidate) => {
               if (working || blocked || pending || changed || draft.title || draft.url) return;
               const fields = publicResearchCandidateFields(candidate);

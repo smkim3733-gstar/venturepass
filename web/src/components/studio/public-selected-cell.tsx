@@ -8,7 +8,9 @@ import {
   publicSelectedCellCommandSchema,
   readPublicSelectedCellResult,
   type PublicSelectedCellResult,
+  type PublicSelectedCellCommand,
 } from "@/lib/studio-public-selected-cell";
+import { publicCellEvidenceFields } from "@/lib/studio-public-cell-evidence";
 import { jsonBody, studioFetch } from "./shared";
 import styles from "./guided-workspace.module.css";
 
@@ -71,9 +73,13 @@ export function PublicSelectedCellResultView({ result }: { result: PublicSelecte
 export function PublicSelectedCell({
   candidate,
   searchResult,
+  canFillEvidence = false,
+  onEvidence,
 }: {
   candidate: PublicResearchCandidate;
   searchResult: PublicResearchResult;
+  canFillEvidence?: boolean;
+  onEvidence?: (result: PublicSelectedCellResult, command: PublicSelectedCellCommand) => void;
 }) {
   const [itemId, setItemId] = useState("");
   const [classifications, setClassifications] = useState([""]);
@@ -82,6 +88,7 @@ export function PublicSelectedCell({
   const [confirmed, setConfirmed] = useState(false);
   const [result, setResult] = useState<PublicSelectedCellResult | null>(null);
   const [error, setError] = useState("");
+  const [transferMessage, setTransferMessage] = useState("");
   const [loading, setLoading] = useState(false);
   const details = useRef<HTMLDetailsElement | null>(null);
   const flight = useRef<AbortController | null>(null);
@@ -91,6 +98,7 @@ export function PublicSelectedCell({
     flight.current = null;
     setLoading(false);
     setResult(null);
+    setTransferMessage("");
     setError("");
     setConfirmed(false);
   }
@@ -116,6 +124,7 @@ export function PublicSelectedCell({
         flight.current = null;
         setLoading(false);
         setResult(null);
+        setTransferMessage("");
         setError("");
         setConfirmed(false);
       }
@@ -142,6 +151,7 @@ export function PublicSelectedCell({
     flight.current = controller;
     setLoading(true);
     setResult(null);
+    setTransferMessage("");
     setError("");
     setConfirmed(false);
     try {
@@ -173,6 +183,38 @@ export function PublicSelectedCell({
         flight.current = null;
         if (mounted.current) setLoading(false);
       }
+    }
+  }
+  let transferable = false;
+  if (result && prepared.success) {
+    try {
+      publicCellEvidenceFields(result, prepared.data);
+      transferable = true;
+    } catch {
+      /* Keep unsupported or oversized text visible without truncation. */
+    }
+  }
+  function transfer() {
+    if (
+      !onEvidence ||
+      !canFillEvidence ||
+      !prepared.success ||
+      !result ||
+      flight.current ||
+      !mounted.current ||
+      !visible()
+    )
+      return;
+    try {
+      publicCellEvidenceFields(result, prepared.data);
+      onEvidence(result, prepared.data);
+      setTransferMessage(
+        "조회 기록을 아래 입력칸에 옮겼습니다. 내용을 검토하고 읽은 날짜와 별도 보관 동의를 확인해 주세요.",
+      );
+    } catch {
+      setTransferMessage(
+        "조회 기록을 옮기지 않았습니다. 회사 자료와 기존 입력, 제목·발췌 길이를 확인해 주세요. 내용을 자동으로 자르지 않습니다.",
+      );
     }
   }
   const inputClass = "mt-1 block w-full min-w-0 rounded border bg-white p-2 text-sm";
@@ -321,6 +363,24 @@ export function PublicSelectedCell({
           </p>
         )}
         {result && <PublicSelectedCellResultView result={result} />}
+        {onEvidence && result?.status === "matched" && (
+          <div className="grid min-w-0 gap-2">
+            <button
+              type="button"
+              className={styles.link}
+              disabled={!canFillEvidence || !transferable || loading}
+              onClick={transfer}
+            >
+              수치·선택조건을 아래 빈 입력칸에 넣기
+            </button>
+            <p className={styles.helper}>
+              제목·주소·발췌·기준 기간이 모두 비어 있을 때만 옮깁니다. 제목 120자·발췌 50,000자를
+              넘거나 형식이 맞지 않으면 직접 기록해 주세요. 기존 입력을 자르거나 덮어쓰지 않습니다.
+              발행처·발행일·읽은 날짜·관련성·보관 동의는 채우지 않습니다.
+            </p>
+          </div>
+        )}
+        {transferMessage && <p role="status">{transferMessage}</p>}
         <p className={styles.helper}>
           자료 저장·AI 전송·원고 반영은 하지 않습니다. 입력 변경·닫기·화면 이동 시 결과와 조회 확인
           체크를 지웁니다. 입력 내용은 새로고침 뒤 복원하지 않습니다.
