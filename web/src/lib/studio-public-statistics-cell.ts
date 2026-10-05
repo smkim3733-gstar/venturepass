@@ -65,15 +65,29 @@ const rowSchema = z
   })
   .strict();
 
-export type PublicStatisticsCell = {
-  tableName: string;
-  itemName: string | null;
-  classifications: { code: string; dimensionName: string | null; valueName: string | null }[];
-  unitId: string | null;
-  unitName: string | null;
-  value: string;
-  lastChangedText: string | null;
-};
+export const publicStatisticsCellSchema = z
+  .object({
+    tableName: z.string().min(1).max(300),
+    itemName: z.string().max(3000).nullable(),
+    classifications: z
+      .array(
+        z
+          .object({
+            code: publicResearchIdentifierSchema,
+            dimensionName: z.string().max(3000).nullable(),
+            valueName: z.string().max(3000).nullable(),
+          })
+          .strict(),
+      )
+      .min(1)
+      .max(8),
+    unitId: z.string().max(40).nullable(),
+    unitName: z.string().max(1000).nullable(),
+    value: z.string().max(100),
+    lastChangedText: z.string().max(10).nullable(),
+  })
+  .strict();
+export type PublicStatisticsCell = z.infer<typeof publicStatisticsCellSchema>;
 export const publicStatisticsReadLimits = {
   wholeTableRead: false,
   factChecked: false,

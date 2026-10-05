@@ -4,7 +4,10 @@ import {
   createKosisReadTransport,
   type KosisReadDependencies,
 } from "./studio-kosis-read-transport";
-import { createPublicResearchService } from "./studio-public-research-service";
+import {
+  createPublicResearchService,
+  requireCurrentPublicTableCandidate,
+} from "./studio-public-research-service";
 import {
   decodePublicTableMetadata,
   publicTableMetadataCommandSchema,
@@ -45,17 +48,7 @@ export function createPublicTableMetadataService(deps: KosisReadDependencies) {
           },
           command,
         );
-      const candidate = current.candidates.find(
-        (c) =>
-          c.organizationId === command.candidate.organizationId &&
-          c.tableId === command.candidate.tableId,
-      );
-      if (!candidate || JSON.stringify(candidate) !== JSON.stringify(command.candidate))
-        throw new StudioError(
-          "검색 후보가 바뀌었거나 선택한 표를 확인할 수 없습니다. 후보를 다시 조회해 주세요.",
-          409,
-          "PUBLIC_TABLE_SELECTION_CHANGED",
-        );
+      const candidate = requireCurrentPublicTableCandidate(current, command.candidate);
       // These metadata responses do not echo org/table IDs. Scope comes from this fixed request.
       const response = await read(
         "metadata",

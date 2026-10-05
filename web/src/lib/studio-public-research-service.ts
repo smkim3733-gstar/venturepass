@@ -11,6 +11,7 @@ import {
   publicResearchTableUrl,
   readPublicResearchResult,
   type PublicResearchResult,
+  type PublicResearchCandidate,
 } from "./studio-public-research-result";
 
 // Official search metadata contract (2026-10-05); not statistical values.
@@ -90,3 +91,20 @@ export const searchPublicResearch = createPublicResearchService({
   fetch: (...args) => globalThis.fetch(...args),
   now: () => new Date().toISOString(),
 });
+
+/** Both explicit table reads require the complete candidate in the fresh bounded search. */
+export function requireCurrentPublicTableCandidate(
+  current: PublicResearchResult,
+  expected: PublicResearchCandidate,
+) {
+  const candidate = current.candidates.find(
+    (c) => c.organizationId === expected.organizationId && c.tableId === expected.tableId,
+  );
+  if (!candidate || JSON.stringify(candidate) !== JSON.stringify(expected))
+    throw new StudioError(
+      "검색 후보가 바뀌었거나 선택한 표를 확인할 수 없습니다. 후보를 다시 조회해 주세요.",
+      409,
+      "PUBLIC_TABLE_SELECTION_CHANGED",
+    );
+  return candidate;
+}

@@ -1,3 +1,5 @@
+import { publicSelectedCellCommandSchema } from "@/lib/studio-public-selected-cell";
+import { readSelectedPublicStatisticsCell } from "@/lib/studio-public-selected-cell-service";
 import { StudioError, jsonResponse, readBoundedBody, studioRoute } from "@/lib/studio-http";
 import { publicResearchCommandSchema } from "@/lib/studio-public-research-result";
 import { searchPublicResearch } from "@/lib/studio-public-research-service";
@@ -14,6 +16,18 @@ export function POST(request: Request) {
       throw new StudioError("JSON 형식으로 요청해 주세요.", 415, "CONTENT_TYPE");
     const body = await readBoundedBody(request, 8192);
     const raw: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(body));
+    if (
+      raw &&
+      typeof raw === "object" &&
+      "action" in raw &&
+      raw.action === "read-selected-statistics-cell"
+    )
+      return jsonResponse(
+        await readSelectedPublicStatisticsCell(
+          publicSelectedCellCommandSchema.parse(raw),
+          request.signal,
+        ),
+      );
     if (raw && typeof raw === "object" && Object.hasOwn(raw, "action"))
       return jsonResponse(
         await readSelectedPublicTableMetadata(
