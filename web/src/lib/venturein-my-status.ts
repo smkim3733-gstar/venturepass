@@ -35,6 +35,7 @@ export type VentureMyTable = z.infer<typeof ventureMyTableSchema>;
 const identity = z.string().min(1).max(200).refine(
   (value) => value === value.trim() && !/[\u0000-\u001f\u007f*\u2022\u25cf\u2026]/u.test(value),
 );
+export const ventureMyIdentitySchema = identity;
 const expectedSchema = z.object({
   businessNumber: z.string().max(100),
   applicationNumber: identity.nullable(),

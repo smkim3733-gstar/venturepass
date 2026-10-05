@@ -6,15 +6,8 @@ import { getVentureAccountStatus } from "./venturein-vault";
 import { getVentureSession, readVentureMyStatus } from "./venturein-runner";
 import { withVentureLock } from "./venturein-service";
 
-const revision = z.number().int().nonnegative().safe();
-export const readCurrentMyStatusSchema = z.object({
-  action: z.literal("read-current-my-status"),
-  companyRevision: revision,
-  accountRevision: revision,
-  workflowRevision: revision,
-  sessionStartedAt: z.string().datetime(),
-  confirmed: z.literal(true),
-}).strict();
+import { readCurrentMyStatusSchema } from "./venturein-my-status-view";
+export { readCurrentMyStatusSchema } from "./venturein-my-status-view";
 
 /** Ephemeral company-scoped observation. No inference from receipt numbers or manual ledgers. */
 export async function readCurrentVentureMyStatus(caseId: string, command: unknown) {

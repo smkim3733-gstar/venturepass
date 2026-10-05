@@ -21,6 +21,7 @@ import { VentureinExecutionPanel } from "./venturein-execution-panel";
 import { VentureinJourneyPanel } from "./venturein-journey-panel";
 
 import { VentureinDisclosure } from "./venturein-disclosure";
+import { VentureinMyStatusPanel } from "./venturein-my-status-panel";
 import { VentureinGuidedEntry } from "./venturein-guided-entry";
 import type { VentureOverview } from "@/lib/venturein-overview-types";
 
@@ -484,6 +485,8 @@ export function VentureinWorkflowPanel({
             열린 Edge 창의 신청 화면을 읽고, 입력할 원고와 첨부할 원본을 이 PC에서 연결합니다.
             저장한 연결은 제출 전 점검과 검토용 다운로드에 사용합니다.
           </Notice>
+          <VentureinMyStatusPanel company={company} connection={connection} workflow={workflow}
+            blocked={executionBlocked || dirty || !!busy || executionBusy || !!error || !!requestError} />
           <VentureinJourneyPanel
             journey={workflow.journey}
             currentSnapshotId={screen?.id ?? null}

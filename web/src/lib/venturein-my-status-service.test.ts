@@ -16,6 +16,7 @@ vi.mock("@/lib/venturein-vault", async (original) => ({
   ...(await original<typeof import("./venturein-vault")>()), readVentureAccount: state.decrypt,
 }));
 import * as route from "@/app/api/studio/cases/[caseId]/venturein/my-status/route";
+import { readVentureMyResult } from "./venturein-my-status-view";
 import * as collector from "./venturein-my-status-collector";
 import { readCurrentVentureMyStatus } from "./venturein-my-status-service";
 import { getVentureSession } from "./venturein-runner";
@@ -84,6 +85,7 @@ it("reads real synthetic DOM through API/session/collector without DB, DOM, auth
   const before = rows(), html = await page.content(), originalSession = getVentureSession(caseId);
   const response = await read(), value = await response.json();
   expect(response.status).toBe(200);
+  expect(readVentureMyResult(value, { caseId, companyRevision: 0, accountRevision: 1, workflowRevision: 1, sessionStartedAt: session.status.startedAt! })).toEqual(value);
   expect(response.headers.get("cache-control")).toContain("no-store");
   expect(value).toMatchObject({ caseId, accountRevision: 1, companyRevision: 0, workflowRevision: 1,
     documentRevision: 1, scope: "company-screen", applicationAttribution: "unavailable-no-application-number",
