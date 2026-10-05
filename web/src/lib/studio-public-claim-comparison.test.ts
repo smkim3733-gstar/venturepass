@@ -1,156 +1,22 @@
-import { createHash, randomUUID } from "node:crypto";
+import { publicClaimComparisonFixture as fixture } from "./studio-public-claim-comparison-test-helpers";
+import { randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve, relative, isAbsolute } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { caseSchema, emptyProfile } from "./studio-schema";
-import { buildClaimReview, claimReviewInputDigest } from "./studio-claim-review";
-import { claimReviewContext, type ClaimReviewInput } from "./studio-claim-review-types";
-import { emptyPublicEvidence, preparePublicEvidence } from "./studio-public-evidence";
+import { claimReviewContext } from "./studio-claim-review-types";
 import { StudioStore } from "./studio-storage";
 import {
   preparePublicClaimComparison as prepare,
   validatePublicClaimComparison as validate,
   publicClaimComparisonLimits as limits,
-  type PublicClaimComparisonSelection,
 } from "./studio-public-claim-comparison";
 vi.mock("server-only", () => ({}));
 const now = "2026-10-05T10:00:00.000Z";
 const error = (code: string) => expect.objectContaining({ code });
 afterEach(() => vi.unstubAllGlobals());
 
-function fixture(
-  count = 1,
-  excerpt = "  2023년 산업 표본: 0, 1,200.50 및 - 수치.\r\n회사 적용은 미확인.  ",
-) {
-  const company = caseSchema.parse({
-    id: randomUUID(),
-    profile: { ...emptyProfile(), companyName: "PRIVATE_PROFILE" },
-    sources: [],
-    analysis: null,
-    selectedCandidateId: null,
-    tasks: [],
-    stage: "preparing",
-    revision: 7,
-    createdAt: now,
-    updatedAt: now,
-    plans: [
-      {
-        id: randomUUID(),
-        version: 3,
-        mode: "manual",
-        candidateId: "synthetic",
-        generatedAt: now,
-        sourceRevision: 1,
-        confirmedAt: now,
-        content: {
-          title: "PRIVATE_TITLE",
-          summary: "PRIVATE_SUMMARY",
-          sections: [
-            {
-              key: "market",
-              title: "시장",
-              content: "  2023년 산업 표본 수치가 있다. 우리 회사 적용 여부는 확인하지 않았다.  ",
-              evidence: [],
-              needsConfirmation: true,
-            },
-            {
-              key: "technology",
-              title: "PRIVATE_SECTION_TITLE",
-              content: "PRIVATE_SECTION",
-              evidence: [],
-              needsConfirmation: false,
-            },
-          ],
-          actionItems: [],
-          interviewQuestions: [],
-        },
-        review: [],
-      },
-    ],
-  });
-  const input: ClaimReviewInput = {
-    claimId: null,
-    previousVersionId: null,
-    planId: company.plans[0].id,
-    planVersion: 3,
-    sectionKey: "market",
-    claimQuote: "2023년 산업 표본 수치가 있다.",
-    nature: "current-claim",
-    references: [],
-    contextNote: "PRIVATE_CONTEXT_NOTE",
-    owner: "PRIVATE_OWNER",
-    dueOn: "",
-    nextCheck: "",
-    method: "unreviewed",
-    externalCheck: { target: "", content: "", occurredOn: "" },
-    judgement: { state: "unreviewed", reviewer: "", reason: "", checkedOn: "" },
-    numericReferences: [],
-    planReviewReferences: [],
-  };
-  for (let n = 0; n < count; n++) {
-    const source = preparePublicEvidence(
-      company,
-      {
-        ...emptyPublicEvidence,
-        title: "합성 보고서 " + n,
-        url: "https://example.invalid/report/" + n,
-        publisher: "",
-        publishedOn: "",
-        period: "2023년 산업 표본",
-        readOn: "2026-10-05",
-        quote: excerpt,
-        relevance: "담당자 가정",
-        conflicts: "조회 날짜가 발행일은 아님",
-      },
-      randomUUID(),
-      now,
-      true,
-    ).command.source;
-    company.sources.push(source);
-    input.references.push({
-      sourceId: source.id,
-      sourceUpdatedAt: now,
-      quote: excerpt.slice(0, 30),
-      locator: "공개 발췌",
-    });
-  }
-  const reader = vi.fn((id: string) => {
-    const source = company.sources.find((s) => s.id === id)!;
-    const buffer = Buffer.from("synthetic original");
-    return { source, buffer, sha256: createHash("sha256").update(buffer).digest("hex") };
-  });
-  const build = (value = input) =>
-    buildClaimReview(
-      company,
-      value,
-      {
-        id: randomUUID(),
-        clientRequestId: randomUUID(),
-        inputDigest: claimReviewInputDigest(value),
-        recordedAt: now,
-      },
-      reader,
-    );
-  const capture = () => {
-    company.claimReviews = [];
-    company.claimReviews.push(build());
-  };
-  capture();
-  const select = (index = 0): PublicClaimComparisonSelection => {
-    const record = company.claimReviews[index];
-    return {
-      companyId: company.id,
-      companyRevision: company.revision,
-      claimRecordId: record.id,
-      claimVersion: record.version,
-      claimInputDigest: record.inputDigest,
-      sourceIds: record.references.map((r) => r.sourceId),
-    };
-  };
-  return { company, input, reader, build, capture, select };
-}
 type Fixture = ReturnType<typeof fixture>;
 function response(f: Fixture, selection = f.select()) {
   const p = prepare(f.company, selection);
