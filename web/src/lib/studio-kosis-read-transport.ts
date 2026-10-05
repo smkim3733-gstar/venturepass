@@ -6,6 +6,7 @@ const MAX_BYTES = 512 * 1024;
 const endpoints = {
   search: "/openapi/statisticsSearch.do",
   cell: "/openapi/Param/statisticsParameterData.do",
+  metadata: "/openapi/statisticsData.do",
 } as const;
 export function createKosisReadGate() {
   let busy = false;

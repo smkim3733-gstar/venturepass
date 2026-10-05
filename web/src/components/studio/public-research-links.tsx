@@ -8,6 +8,7 @@ import {
   type PublicResearchResult,
 } from "@/lib/studio-public-research-result";
 import { jsonBody, studioFetch } from "./shared";
+import { PublicTableMetadata } from "./public-table-metadata";
 import styles from "./guided-workspace.module.css";
 export function PublicResearchLinks({
   disabled,
@@ -175,6 +176,13 @@ export function PublicResearchLinks({
                   ) : (
                     <p>통계표 주소를 확인하지 못했습니다. KOSIS에서 직접 찾아 주세요.</p>
                   )}
+                  {c.originalUrl && (
+                    <PublicTableMetadata
+                      key={JSON.stringify([result.retrievedAt, c])}
+                      candidate={c}
+                      searchResult={result}
+                    />
+                  )}
                   {onCandidate && (
                     <button
                       type="button"
@@ -199,8 +207,8 @@ export function PublicResearchLinks({
           통계표에서 대상·단위·기준 기간을 확인한 뒤, 아래에 원문 주소와 발췌를 기록해 주세요.
         </p>
         <p className={styles.helper}>
-          앱 안 조회는 검색 후보만 가져옵니다. 자료 보관·사실 확인·AI 전송은 하지 않습니다. 찾지
-          못했거나 시점이 맞지 않으면 미확인으로 남기고 회사에 필요한 자료를 요청해 주세요.
+          검색 후보와 명시 선택한 표 정보만 읽습니다. 자료 보관·사실 확인·AI 전송은 하지 않습니다.
+          찾지 못했거나 시점이 맞지 않으면 미확인으로 남기고 회사에 필요한 자료를 요청해 주세요.
         </p>
       </div>
     </details>
