@@ -54,6 +54,9 @@ export type ProviderResponseMetadata = {
     reasoningOutputTokens: number | null;
   };
 };
+export type ProviderReportedResponseMetadata = Omit<
+  ProviderResponseMetadata, "configuredModel" | "requestedTier"
+>;
 export type ProviderUsageAssessment = {
   status: "known" | "unknown";
   kind: "usage-based-cost";
@@ -84,6 +87,9 @@ export const providerObservationLimits: Readonly<{
 }>;
 export function captureProviderResponse(raw: unknown): ProviderCapturedResponse;
 export function freezeProviderValue<T>(value: T): T;
+export function reportedProviderResponseMetadata(
+  response: ProviderCapturedResponse,
+): ProviderReportedResponseMetadata;
 export function providerResponseMetadata(
   response: ProviderCapturedResponse,
   input: { configuredModel: string; requestedTier?: "default" },

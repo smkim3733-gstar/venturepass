@@ -182,12 +182,14 @@ export function captureProviderResponse(raw) {
 const record = (v) => (v && typeof v === "object" && !Array.isArray(v) ? v : {});
 const number = (v) => (count.safeParse(v).success ? v : null);
 const string = (v, max) => (typeof v === "string" && v.length > 0 && v.length <= max ? v : null);
-export function providerResponseMetadata(response, { configuredModel, requestedTier = "default" }) {
+const reportedMetadataSchema = providerResponseMetadataSchema.omit({
+  configuredModel: true, requestedTier: true,
+});
+/** Reported fields only. Does not infer request options, billing or transport provenance. */
+export function reportedProviderResponseMetadata(response) {
   const r = record(response),
     u = record(r.usage);
-  return providerResponseMetadataSchema.parse({
-    configuredModel,
-    requestedTier,
+  return reportedMetadataSchema.parse({
     responseId: string(r.id, 500),
     requestId: string(r._request_id, 500),
     responseModel: string(r.model, 200),
@@ -200,6 +202,11 @@ export function providerResponseMetadata(response, { configuredModel, requestedT
       cachedInputTokens: number(record(u.input_tokens_details).cached_tokens),
       reasoningOutputTokens: number(record(u.output_tokens_details).reasoning_tokens),
     },
+  });
+}
+export function providerResponseMetadata(response, { configuredModel, requestedTier = "default" }) {
+  return providerResponseMetadataSchema.parse({
+    configuredModel, requestedTier, ...reportedProviderResponseMetadata(response),
   });
 }
 const getPath = (value, keys) => keys.reduce((v, key) => own(v, key), value);
