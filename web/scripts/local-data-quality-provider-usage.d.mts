@@ -55,7 +55,8 @@ export type ProviderResponseMetadata = {
   };
 };
 export type ProviderReportedResponseMetadata = Omit<
-  ProviderResponseMetadata, "configuredModel" | "requestedTier"
+  ProviderResponseMetadata,
+  "configuredModel" | "requestedTier"
 >;
 export type ProviderUsageAssessment = {
   status: "known" | "unknown";
@@ -103,4 +104,38 @@ export function assessProviderUsage(input: {
   policy: ProviderUsagePolicy;
   financialBasis: ProviderContextReservationBasis;
   phase: "generation" | "review";
+}): ProviderUsageAssessment;
+
+export type ProviderUsageRate = { units: string; perTokens: number };
+export type ProviderUsageRateBand = {
+  uncachedInput: ProviderUsageRate;
+  cacheReadInput: ProviderUsageRate | { applicability: "not-applicable" };
+  cacheWriteInput: ProviderUsageRate | { applicability: "not-applicable" };
+  outputIncludingReasoning: ProviderUsageRate;
+};
+export type ProviderUsageScalarPricing = {
+  shortContext: ProviderUsageRateBand;
+  longContext: ProviderUsageRateBand | { applicability: "not-applicable" };
+};
+export type ProviderUsageNormalizationPolicy = Pick<
+  ProviderUsagePolicy,
+  "inputPartition" | "bandSelection"
+>;
+export const providerUsageInputPartitionSchema: z.ZodType<ProviderUsagePolicy["inputPartition"]>;
+export const providerUsageBandSelectionSchema: z.ZodType<ProviderUsagePolicy["bandSelection"]>;
+export function assertProviderUsageRateRules(
+  policy: ProviderUsageNormalizationPolicy,
+  pricing: ProviderUsageScalarPricing,
+  context: { contextWindowTokens: number },
+): void;
+export function assessProviderUsageScalars(input: {
+  response: ProviderCapturedResponse;
+  policy: ProviderUsageNormalizationPolicy & { responseModels: string[]; responseTiers: string[] };
+  pricing: ProviderUsageScalarPricing;
+  context: { contextWindowTokens: number; maxOutputTokens: number };
+  reservedUnits: string;
+  policyDigest: string;
+  financialBasisDigest: string;
+  currency: string;
+  unitScale: number;
 }): ProviderUsageAssessment;

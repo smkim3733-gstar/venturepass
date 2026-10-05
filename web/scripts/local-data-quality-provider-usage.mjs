@@ -183,7 +183,8 @@ const record = (v) => (v && typeof v === "object" && !Array.isArray(v) ? v : {})
 const number = (v) => (count.safeParse(v).success ? v : null);
 const string = (v, max) => (typeof v === "string" && v.length > 0 && v.length <= max ? v : null);
 const reportedMetadataSchema = providerResponseMetadataSchema.omit({
-  configuredModel: true, requestedTier: true,
+  configuredModel: true,
+  requestedTier: true,
 });
 /** Reported fields only. Does not infer request options, billing or transport provenance. */
 export function reportedProviderResponseMetadata(response) {
@@ -206,7 +207,9 @@ export function reportedProviderResponseMetadata(response) {
 }
 export function providerResponseMetadata(response, { configuredModel, requestedTier = "default" }) {
   return providerResponseMetadataSchema.parse({
-    configuredModel, requestedTier, ...reportedProviderResponseMetadata(response),
+    configuredModel,
+    requestedTier,
+    ...reportedProviderResponseMetadata(response),
   });
 }
 const getPath = (value, keys) => keys.reduce((v, key) => own(v, key), value);
@@ -252,13 +255,75 @@ export function validateProviderUsagePolicy(raw, financialBasis) {
     pricing.unitScale !== f.costs.unitScale
   )
     invalid();
+  assertProviderUsageRateRules(p, pricing, f.evidence.context);
+  return p;
+}
+
+/** No pricing fetch, token inference, current-clock lookup or billing claim. */
+export function assessProviderUsage({ response, policy: rawPolicy, financialBasis, phase }) {
+  const policy = validateProviderUsagePolicy(rawPolicy, financialBasis);
+  const result = {
+    status: "unknown",
+    kind: "usage-based-cost",
+    units: null,
+    currency: financialBasis?.costs?.currency ?? null,
+    unitScale: financialBasis?.costs?.unitScale ?? null,
+    normalized: null,
+    reasons: [],
+    violations: [],
+    policyDigest: providerDigest(policy),
+    financialBasisDigest: providerDigest(financialBasis),
+  };
+  const unknown = (reason) => {
+    result.reasons.push(reason);
+    return providerUsageAssessmentSchema.parse(result);
+  };
+  const f = financialBasis,
+    pricing = f?.evidence?.pricing,
+    context = f?.evidence?.context;
+  if (
+    !["generation", "review"].includes(phase) ||
+    !pricing ||
+    !context ||
+    !f.costs ||
+    f.status !== "calculated-for-stated-conditions" ||
+    f.model !== policy.configuredModel ||
+    f.evidenceMode !== policy.provenance ||
+    result.financialBasisDigest !== policy.financialBasisDigest ||
+    !Number.isFinite(Date.parse(f.calculatedAt)) ||
+    Date.parse(policy.authority.reviewedAt) > Date.parse(f.calculatedAt) ||
+    Date.parse(policy.authority.validUntil) <= Date.parse(f.calculatedAt) ||
+    pricing.rateMeaning !== "all-in-replacement-rates-not-additive-surcharges"
+  )
+    return unknown("POLICY_SCOPE_MISMATCH");
+  return assessProviderUsageScalars({
+    response,
+    policy: { ...policy, responseTiers: [policy.responseTier] },
+    pricing,
+    context,
+    reservedUnits: f.costs[phase].totalUnits,
+    policyDigest: result.policyDigest,
+    financialBasisDigest: result.financialBasisDigest,
+    currency: result.currency,
+    unitScale: result.unitScale,
+  });
+}
+
+export const providerUsageInputPartitionSchema = providerUsagePolicySchema.shape.inputPartition;
+export const providerUsageBandSelectionSchema = providerUsagePolicySchema.shape.bandSelection;
+
+/** Scalar normalization rules only; no purpose, approval, clock, DB or transport. */
+export function assertProviderUsageRateRules(p, pricing, context) {
+  const invalid = () => {
+    throw new Error("PROVIDER_USAGE_POLICY_INVALID");
+  };
   const bands = [pricing.shortContext];
   if (p.bandSelection.kind === "short-only") {
     if (pricing.longContext.applicability !== "not-applicable") invalid();
   } else {
     if (
       pricing.longContext.applicability === "not-applicable" ||
-      p.bandSelection.threshold >= f.evidence.context.contextWindowTokens
+      p.bandSelection.threshold >= context.contextWindowTokens
     )
       invalid();
     bands.push(pricing.longContext);
@@ -303,50 +368,40 @@ export function validateProviderUsagePolicy(raw, financialBasis) {
         invalid();
     }
   }
-  return p;
 }
 
-/** No pricing fetch, token inference, current-clock lookup or billing claim. */
-export function assessProviderUsage({ response, policy: rawPolicy, financialBasis, phase }) {
-  const policy = validateProviderUsagePolicy(rawPolicy, financialBasis);
+/** Shared arithmetic on already scope-validated policy/rates. Not an authorization API. */
+export function assessProviderUsageScalars({
+  response,
+  policy,
+  pricing,
+  context,
+  reservedUnits,
+  policyDigest,
+  financialBasisDigest,
+  currency,
+  unitScale,
+}) {
   const result = {
     status: "unknown",
     kind: "usage-based-cost",
     units: null,
-    currency: financialBasis?.costs?.currency ?? null,
-    unitScale: financialBasis?.costs?.unitScale ?? null,
+    currency,
+    unitScale,
     normalized: null,
     reasons: [],
     violations: [],
-    policyDigest: providerDigest(policy),
-    financialBasisDigest: providerDigest(financialBasis),
+    policyDigest,
+    financialBasisDigest,
   };
   const unknown = (reason) => {
     result.reasons.push(reason);
     return providerUsageAssessmentSchema.parse(result);
   };
-  const f = financialBasis,
-    pricing = f?.evidence?.pricing,
-    context = f?.evidence?.context;
-  if (
-    !["generation", "review"].includes(phase) ||
-    !pricing ||
-    !context ||
-    !f.costs ||
-    f.status !== "calculated-for-stated-conditions" ||
-    f.model !== policy.configuredModel ||
-    f.evidenceMode !== policy.provenance ||
-    result.financialBasisDigest !== policy.financialBasisDigest ||
-    !Number.isFinite(Date.parse(f.calculatedAt)) ||
-    Date.parse(policy.authority.reviewedAt) > Date.parse(f.calculatedAt) ||
-    Date.parse(policy.authority.validUntil) <= Date.parse(f.calculatedAt) ||
-    pricing.rateMeaning !== "all-in-replacement-rates-not-additive-surcharges"
-  )
-    return unknown("POLICY_SCOPE_MISMATCH");
-  const meta = providerResponseMetadata(response, policy);
+  const meta = reportedProviderResponseMetadata(response);
   if (!meta.responseModel || !policy.responseModels.includes(meta.responseModel))
     return unknown("RESPONSE_MODEL_UNOBSERVED_OR_UNMAPPED");
-  if (meta.responseTier !== policy.responseTier)
+  if (!policy.responseTiers.includes(meta.responseTier))
     return unknown("RESPONSE_TIER_UNOBSERVED_OR_MISMATCHED");
   const u = meta.usage;
   if (u.inputTokens === null || u.outputTokens === null || u.totalTokens === null)
@@ -424,6 +479,6 @@ export function assessProviderUsage({ response, policy: rawPolicy, financialBasi
   if (u.outputTokens > 16000 || u.outputTokens > context.maxOutputTokens)
     result.violations.push("OUTPUT_LIMIT_EXCEEDED");
   if (u.totalTokens > context.contextWindowTokens) result.violations.push("CONTEXT_LIMIT_EXCEEDED");
-  if (cost > BigInt(f.costs[phase].totalUnits)) result.violations.push("RESERVATION_EXCEEDED");
+  if (cost > BigInt(reservedUnits)) result.violations.push("RESERVATION_EXCEEDED");
   return providerUsageAssessmentSchema.parse(result);
 }

@@ -53,6 +53,10 @@ export type ComparisonTransmissionState = {
   reservation: ComparisonReservationState;
   transmissionBindings: ComparisonTransmissionBinding[];
 };
+export type ComparisonTransmissionCoreState<B extends { runId: string } = { runId: string }> = {
+  reservation: ComparisonReservationState;
+  transmissionBindings: B[];
+};
 const outerSchema = z
   .object({
     reservation: z.unknown(),
@@ -68,7 +72,7 @@ function parse<T>(schema: z.ZodType<T>, raw: unknown, limit = 8192): T {
 function same(a: unknown, b: unknown) {
   if (digest(a) !== digest(b)) fail("PUBLIC_COMPARISON_TRANSMISSION_CHANGED");
 }
-function view(s: ComparisonTransmissionState, reservation: ReservationInspection) {
+function view(s: ComparisonTransmissionCoreState, reservation: ReservationInspection) {
   const transmissionBindingBytes = s.transmissionBindings.reduce((n, b) => n + bytes(b), 0);
   const totalExposureBytes =
     reservation.view.capacity.totalExposureBytes + transmissionBindingBytes;
@@ -87,7 +91,7 @@ function view(s: ComparisonTransmissionState, reservation: ReservationInspection
     capacity: { ...reservation.view.capacity, transmissionBindingBytes, totalExposureBytes },
   };
 }
-function original(s: ComparisonTransmissionState, runId: string) {
+function original(s: ComparisonTransmissionCoreState, runId: string) {
   const run = s.reservation.archive.records.runs.find((r) => r.id === runId);
   const binding = s.reservation.bindings.find((b) => b.runId === runId);
   if (!run || !binding) fail("PUBLIC_COMPARISON_RESERVATION_REQUIRED");
@@ -95,12 +99,17 @@ function original(s: ComparisonTransmissionState, runId: string) {
   const review = binding.approvedReview as ComparisonReservationReview;
   return { run, binding, review };
 }
-function runHead(s: ComparisonTransmissionState, runId: string) {
+function runHead(s: ComparisonTransmissionCoreState, runId: string) {
   const e = s.reservation.archive.records.events.filter((e) => e.runId === runId).at(-1);
   if (!e) fail();
   return { revision: e.revision, headDigest: e.eventDigest };
 }
-function validateBasis(raw: unknown, s: ComparisonTransmissionState, runId: string, at: string) {
+function validateBasis(
+  raw: unknown,
+  s: ComparisonTransmissionCoreState,
+  runId: string,
+  at: string,
+) {
   const b = parse(comparisonTransmissionBasisSchema, raw, 64 * 1024);
   const { run, review } = original(s, runId);
   if (
@@ -150,7 +159,7 @@ function validateBasis(raw: unknown, s: ComparisonTransmissionState, runId: stri
   return b;
 }
 function reviewFor(
-  s: ComparisonTransmissionState,
+  s: ComparisonTransmissionCoreState,
   inspected: ReservationInspection,
   runId: string,
   raw: unknown,
@@ -226,8 +235,8 @@ function reviewFor(
 }
 export type ComparisonTransmissionReview = ReturnType<typeof reviewFor>;
 function validateCommand(
-  c: ComparisonDispatchCommand,
-  r: ComparisonTransmissionReview,
+  c: Omit<ComparisonDispatchCommand, "commandVersion">,
+  r: Omit<ComparisonTransmissionReview, "reviewVersion">,
   at: string,
 ) {
   same(c.expectedRunHead, r.runHead);
@@ -249,14 +258,15 @@ function validateCommand(
   )
     fail("PUBLIC_COMPARISON_TRANSMISSION_APPROVAL");
 }
-function bindingFor(
-  c: ComparisonDispatchCommand,
-  review: ComparisonTransmissionReview,
+function bindingBodyFor(
+  c: Omit<ComparisonDispatchCommand, "commandVersion"> & { commandVersion: number },
+  review: Omit<ComparisonTransmissionReview, "reviewVersion"> & { reviewVersion: number },
   e: PublicComparisonNativeEvent,
   receipt: Receipt,
+  recordVersion: 3 | 4,
 ) {
   const body = {
-    recordVersion: 3 as const,
+    recordVersion,
     kind: "public-comparison-transmission-binding" as const,
     purpose: "compare-public-claim" as const,
     clientRequestId: c.clientRequestId,
@@ -276,13 +286,26 @@ function bindingFor(
     recordedAt: e.recordedAt,
     dispatchAllowed: false as const,
   };
+  return body;
+}
+function bindingFor(
+  c: ComparisonDispatchCommand,
+  review: ComparisonTransmissionReview,
+  e: PublicComparisonNativeEvent,
+  receipt: Receipt,
+) {
+  const body = bindingBodyFor(c, review, e, receipt, 3);
   const b = comparisonTransmissionBindingSchema.parse({ ...body, recordDigest: digest(body) });
   if (bytes(b) > 64 * 1024) fail("PUBLIC_COMPARISON_PLAN_LIMIT");
   return b;
 }
 /** Restore only the original complete-run prefix and this run's initial reservation.
  * Financial revision/hash bytes are never changed or filtered inside a run. */
-function beforeDispatch(s: ComparisonTransmissionState, index: number, overhead: number) {
+function beforeDispatch<B extends { runId: string }>(
+  s: ComparisonTransmissionCoreState<B>,
+  index: number,
+  overhead: number,
+) {
   const state = s.reservation,
     run = state.archive.records.runs[index];
   const earlier = new Set(state.archive.records.runs.slice(0, index).map((r) => r.id));
@@ -324,8 +347,8 @@ function beforeDispatch(s: ComparisonTransmissionState, index: number, overhead:
   };
 }
 function continuationFrom(
-  s: ComparisonTransmissionState,
-  binding: ComparisonTransmissionBinding,
+  s: ComparisonTransmissionCoreState,
+  binding: Pick<ComparisonTransmissionBinding, "recordDigest" | "dispatchEventDigest">,
   event: PublicComparisonNativeEvent,
 ) {
   const receipt = s.reservation.archive.records.receipts.find(
@@ -473,7 +496,7 @@ function replay(
   return null;
 }
 function addEvent(
-  s: ComparisonTransmissionState,
+  s: ComparisonTransmissionCoreState,
   nonce: string,
   eventId: string,
   at: string,
@@ -586,12 +609,7 @@ export function planComparisonUnknown(state: unknown, raw: unknown, currentRaw?:
 }
 function planUnknownInspected(a: Inspection, c: ComparisonUnknownCommand, currentRaw?: unknown) {
   continuation(a, c);
-  const cur = parse(z.object({ at: time, eventId: uuid }).strict(), currentRaw);
-  const rows = addEvent(a.state, c.clientRequestId, cur.eventId, cur.at, c.runId, {
-    kind: "dispatch-unknown",
-    dispatchEventDigest: c.dispatchEventDigest,
-    reason: c.reason,
-  });
+  const rows = unknownRowsFor(a.state, c, currentRaw);
   return result(a.state, { ...rows, binding: null, artifact: null }, "mark-unknown");
 }
 export function planComparisonCapture(state: unknown, raw: unknown, currentRaw?: unknown) {
@@ -603,34 +621,7 @@ export function planComparisonCapture(state: unknown, raw: unknown, currentRaw?:
 }
 function planCaptureInspected(a: Inspection, c: ComparisonCaptureCommand, currentRaw?: unknown) {
   continuation(a, c);
-  const cur = parse(
-    z.object({ at: time, eventId: uuid, capture: z.unknown() }).strict(),
-    currentRaw,
-    8 * MiB,
-  );
-  // A supplied canonical copy, not a runtime-owned network capture.
-  const capture = captureProviderResponse(cur.capture),
-    body = JSON.stringify(capture);
-  same(cur.capture, capture);
-  const artifact: Artifact = {
-    runId: c.runId,
-    key: "comparison-response",
-    body,
-    sha256: sha(body),
-    sizeBytes: Buffer.byteLength(body, "utf8"),
-  };
-  if (
-    artifact.sizeBytes > 4 * MiB ||
-    artifact.sha256 !== c.responseArtifactSha256 ||
-    artifact.sizeBytes !== c.sizeBytes
-  )
-    fail("PUBLIC_COMPARISON_CAPTURE_CHANGED");
-  a.state.reservation.archive.records.artifacts.push(artifact);
-  const rows = addEvent(a.state, c.clientRequestId, cur.eventId, cur.at, c.runId, {
-    kind: "response-captured",
-    dispatchEventDigest: c.dispatchEventDigest,
-    responseArtifactSha256: artifact.sha256,
-  });
+  const { artifact, ...rows } = captureRowsFor(a.state, c, currentRaw);
   return result(a.state, { ...rows, binding: null, artifact }, "persist-capture");
 }
 
@@ -679,4 +670,73 @@ export function planPreparedComparisonTransmissionStorageCommand(
   if (item.c.kind === "mark-public-comparison-unknown")
     return planUnknownInspected(item.a, item.c, current);
   return planCaptureInspected(item.a, item.c, current);
+}
+
+/** Shared pure row/review mechanics. These helpers confer no SQL or execution capability. */
+export const comparisonTransmissionCore = Object.freeze({
+  parse,
+  same,
+  view,
+  original,
+  runHead,
+  validateBasis,
+  reviewFor,
+  validateCommand,
+  bindingFor,
+  bindingBodyFor,
+  beforeDispatch,
+  continuationFrom,
+  addEvent,
+  unknownRowsFor,
+  captureRowsFor,
+});
+
+function unknownRowsFor(
+  s: ComparisonTransmissionCoreState,
+  c: ComparisonUnknownCommand,
+  currentRaw?: unknown,
+) {
+  const cur = parse(z.object({ at: time, eventId: uuid }).strict(), currentRaw);
+  const rows = addEvent(s, c.clientRequestId, cur.eventId, cur.at, c.runId, {
+    kind: "dispatch-unknown",
+    dispatchEventDigest: c.dispatchEventDigest,
+    reason: c.reason,
+  });
+  return rows;
+}
+
+function captureRowsFor(
+  s: ComparisonTransmissionCoreState,
+  c: ComparisonCaptureCommand,
+  currentRaw?: unknown,
+) {
+  const cur = parse(
+    z.object({ at: time, eventId: uuid, capture: z.unknown() }).strict(),
+    currentRaw,
+    8 * MiB,
+  );
+  // A supplied canonical copy, not a runtime-owned network capture.
+  const capture = captureProviderResponse(cur.capture),
+    body = JSON.stringify(capture);
+  same(cur.capture, capture);
+  const artifact: Artifact = {
+    runId: c.runId,
+    key: "comparison-response",
+    body,
+    sha256: sha(body),
+    sizeBytes: Buffer.byteLength(body, "utf8"),
+  };
+  if (
+    artifact.sizeBytes > 4 * MiB ||
+    artifact.sha256 !== c.responseArtifactSha256 ||
+    artifact.sizeBytes !== c.sizeBytes
+  )
+    fail("PUBLIC_COMPARISON_CAPTURE_CHANGED");
+  s.reservation.archive.records.artifacts.push(artifact);
+  const rows = addEvent(s, c.clientRequestId, cur.eventId, cur.at, c.runId, {
+    kind: "response-captured",
+    dispatchEventDigest: c.dispatchEventDigest,
+    responseArtifactSha256: artifact.sha256,
+  });
+  return { ...rows, artifact };
 }

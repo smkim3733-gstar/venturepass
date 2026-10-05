@@ -420,19 +420,13 @@ export function inspectPublicComparisonNativeRecords(
             // No dropped unknown fields, alternate JSON, credentials or SDK helper properties.
             if (JSON.stringify(capture) !== a.body) invalid();
             responseMetadata = reportedProviderResponseMetadata(capture);
-            const decoded = decodePublicClaimCapturedOutput(capture, run.command.model);
-            comparisonState = decoded.state;
-            if (decoded.state === "parsed") {
-              try {
-                comparisonValue = validatePreparedPublicClaimComparison(
-                  original.prepared,
-                  decoded.output,
-                );
-                comparisonState = "comparison-ready";
-              } catch {
-                comparisonState = "comparison-rejected";
-              }
-            }
+            const compared = derivePublicComparisonCapturedResult(
+              original.prepared,
+              capture,
+              run.command.model,
+            );
+            comparisonState = compared.state;
+            comparisonValue = compared.comparison;
             proof.responseArtifactSha256 = a.sha256;
             break;
           }
@@ -443,16 +437,14 @@ export function inspectPublicComparisonNativeRecords(
               comparisonRecorded
             )
               invalid();
-            const expected = {
-              source: "supplied-response",
-              evidenceOrigin: "manual-unverified",
-              ...publicClaimComparisonRequestAuthority,
-              currentContextVerified: false,
-              requestIdentity: run.identity,
-              responseArtifactSha256: proof.responseArtifactSha256,
-              state: comparisonState,
-              comparison: comparisonValue,
-            };
+            const expected = publicComparisonValidatedBody(
+              run.identity,
+              proof.responseArtifactSha256,
+              {
+                state: comparisonState!,
+                comparison: comparisonValue,
+              },
+            );
             if (
               take("comparison-validated", p.validatedArtifactSha256).body !==
               JSON.stringify(expected)
@@ -492,22 +484,12 @@ export function inspectPublicComparisonNativeRecords(
                 (!proof.responseArtifactSha256 || !comparisonRecorded))
             )
               invalid();
-            const expected = {
-              schemaVersion: 3,
-              purpose: "compare-public-claim",
-              runId: run.id,
-              requestDigest: proof.requestDigest,
-              manifestDigest: proof.manifestDigest,
+            const expected = publicComparisonFinalBody(run, {
               cancelled: proof.cancellationEventDigest !== null,
               responseArtifactSha256: proof.responseArtifactSha256,
               comparisonState,
               assessmentDigest: proof.assessment ? digest(proof.assessment) : null,
-              costSettled: true,
-              source: "supplied-native-archive",
-              currentContextVerified: false,
-              dispatchAllowed: false,
-              costAssessmentVerified: false,
-            };
+            });
             if (take("final-result", p.finalArtifactSha256).body !== JSON.stringify(expected))
               invalid();
             finalized = true;
@@ -577,5 +559,67 @@ export function inspectPublicComparisonNativeRecords(
     reservedBudgetSlots: budgetSlots,
     reservedReceiptSlots: receiptSlots,
     reservedArtifactSlots: artifactSlots,
+  };
+}
+
+/** Existing native canonical result derivation, shared with detached post-capture plans. */
+export function derivePublicComparisonCapturedResult(
+  prepared: ReturnType<typeof inspectArchivedPublicClaimRequest>["prepared"],
+  capture: Parameters<typeof decodePublicClaimCapturedOutput>[0],
+  model: string,
+) {
+  const decoded = decodePublicClaimCapturedOutput(capture, model);
+  let state: string = decoded.state,
+    comparison: unknown = null;
+  if (decoded.state === "parsed") {
+    try {
+      comparison = validatePreparedPublicClaimComparison(prepared, decoded.output);
+      state = "comparison-ready";
+    } catch {
+      state = "comparison-rejected";
+    }
+  }
+  return { state, comparison };
+}
+export function publicComparisonValidatedBody(
+  identity: PublicComparisonNativeRecords["runs"][number]["identity"],
+  responseArtifactSha256: string,
+  result: { state: string; comparison: unknown },
+) {
+  return {
+    source: "supplied-response",
+    evidenceOrigin: "manual-unverified",
+    ...publicClaimComparisonRequestAuthority,
+    currentContextVerified: false,
+    requestIdentity: identity,
+    responseArtifactSha256,
+    state: result.state,
+    comparison: result.comparison,
+  };
+}
+export function publicComparisonFinalBody(
+  run: PublicComparisonNativeRecords["runs"][number],
+  value: {
+    cancelled: boolean;
+    responseArtifactSha256: string | null;
+    comparisonState: string | null;
+    assessmentDigest: string | null;
+  },
+) {
+  return {
+    schemaVersion: 3,
+    purpose: "compare-public-claim",
+    runId: run.id,
+    requestDigest: run.identity.requestDigest,
+    manifestDigest: run.manifestDigest,
+    cancelled: value.cancelled,
+    responseArtifactSha256: value.responseArtifactSha256,
+    comparisonState: value.comparisonState,
+    assessmentDigest: value.assessmentDigest,
+    costSettled: true,
+    source: "supplied-native-archive",
+    currentContextVerified: false,
+    dispatchAllowed: false,
+    costAssessmentVerified: false,
   };
 }

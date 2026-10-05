@@ -838,3 +838,6 @@ function planCancelled(
 export { bindingSchema as comparisonReservationBindingSchema };
 // Shared pure nonce/identity guards; no additional store or authority.
 export { freeNonce as assertComparisonFreeNonce, freshIds as assertComparisonFreshIds };
+
+/** Pure monetary row mechanics; does not grant storage or execution authority. */
+export const comparisonReservationRows = Object.freeze({ artifact, addMoney, money });
