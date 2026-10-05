@@ -768,3 +768,5 @@ export function planComparisonCancellation(stateRaw: unknown, raw: unknown, curr
     capacity: after.view.capacity,
   };
 }
+
+export { bindingSchema as comparisonReservationBindingSchema };

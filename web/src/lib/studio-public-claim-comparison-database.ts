@@ -24,6 +24,9 @@ import {
 } from "./studio-public-claim-comparison-budget";
 import { publicComparisonNativeRecordsSchema } from "./studio-public-claim-comparison-native";
 
+import { publicComparisonV11InsertGates } from "./studio-public-claim-comparison-database-v11-schema";
+import { comparisonReservationBindingSchema } from "./studio-public-claim-comparison-reservation";
+
 const MiB = 1024 * 1024;
 const table = "quality_provider_purpose_coverage";
 const coverageSql = `CREATE TABLE ${table} (id INTEGER PRIMARY KEY CHECK(id=1), body TEXT NOT NULL, body_hash TEXT NOT NULL)`;
@@ -103,17 +106,17 @@ function schemaRows(db: DatabaseSync) {
     )
     .all();
 }
-function expectedSchema(original: Rows["schema"]) {
+function expectedSchema(original: Rows["schema"], version: 10 | 11) {
   const rows = original.filter((row) => !Object.hasOwn(qualityV9WriterTriggerSql, row.name));
   rows.push({ type: "table", name: table, tbl_name: table, sql: coverageSql });
   for (const [name, sql] of Object.entries({
     ...immutableSql,
-    ...publicComparisonV10InsertGates,
+    ...(version === 10 ? publicComparisonV10InsertGates : publicComparisonV11InsertGates),
   })) {
     rows.push({
       type: "trigger",
       name,
-      tbl_name: name.replace(/_no_(update|delete)$|_v10_writer$/g, ""),
+      tbl_name: name.replace(/_no_(update|delete)$|_v(10|11)_writer$/g, ""),
       sql,
     });
   }
@@ -135,7 +138,7 @@ function checkPhysical(db: DatabaseSync) {
   )
     fail();
 }
-function readCutover(db: DatabaseSync) {
+function readCutover(db: DatabaseSync, version: 10 | 11 = 10) {
   const found = schemaRows(db);
   const row = found.find((v) => v.name === table);
   if (!row || row.type !== "table" || row.sql !== coverageSql)
@@ -154,7 +157,7 @@ function readCutover(db: DatabaseSync) {
     inspectQualitySchemaRows(cutover.originalSchema).version !== 9
   )
     fail();
-  if (digest(found) !== digest(expectedSchema(cutover.originalSchema)))
+  if (digest(found) !== digest(expectedSchema(cutover.originalSchema, version)))
     fail("PUBLIC_COMPARISON_SCHEMA_UNSUPPORTED");
   return { cutover, cutoverBytes: Buffer.byteLength(record.body) };
 }
@@ -260,24 +263,47 @@ function decodeNative(rows: Rows["actualRows"]) {
     financial: { events: budget, receipts: financialReceipts },
   };
 }
-function inspectInTransaction(
+/** Internal snapshot reader. Caller must own the transaction; version remains explicit. */
+export function readPublicComparisonDatabaseSnapshot(
   db: DatabaseSync,
   expectedSelection: PublicComparisonDatabaseSelection,
+  version: 10 | 11,
 ) {
   checkPhysical(db);
-  const { cutover, cutoverBytes } = readCutover(db);
+  const { cutover, cutoverBytes } = readCutover(db, version);
   if (digest(cutover.selection) !== digest(selectionSchema.parse(expectedSelection)))
     fail("PUBLIC_COMPARISON_IDENTITY_MISMATCH");
-  const rows = readPublicComparisonRows(db, cutover.originalSchema);
+  const rows = readPublicComparisonRows(db, cutover.originalSchema, version === 11);
   const { past, next } = splitActual(rows.actualRows, cutover.originalActualKeys);
-  const prefix = decodePublicComparisonPrefix({ ...rows, actualRows: past }, cutover.selection);
+  const bindingRows =
+    version === 11
+      ? rows.reservationRows.bindingRows.filter((row) => JSON.parse(row.body).recordVersion === 3)
+      : [];
+  const legacyBindings = rows.reservationRows.bindingRows.filter(
+    (row) => !bindingRows.includes(row),
+  );
+  if (
+    legacyBindings.length &&
+    bindingRows.some((row) => row.storage_order <= legacyBindings.at(-1)!.storage_order)
+  )
+    fail();
+  const bindings = bindingRows.map((row) => {
+    const binding = comparisonReservationBindingSchema.parse(decodeBody(row, 64 * 1024));
+    if (row.run_id !== binding.runId || row.nonce !== binding.clientRequestId) fail();
+    return binding;
+  });
+  const prefix = decodePublicComparisonPrefix(
+    {
+      ...rows,
+      actualRows: past,
+      reservationRows: { ...rows.reservationRows, bindingRows: legacyBindings },
+    },
+    cutover.selection,
+  );
   const coverage = inspectPublicComparisonCoverage(prefix, cutover.coverage);
   const archive = decodeNative(next);
-  const inspected = inspectPublicComparisonNativeArchive(prefix, coverage, archive);
-  // The pure audit already counts the proposal. Count the larger SQL cutover envelope once.
-  const nativeRawOverheadBytes = [next.runs, next.events, next.receipts, next.budget]
-    .flat()
-    .reduce(
+  const overhead = (list: { body: string }[]) =>
+    list.reduce(
       (sum, row) =>
         sum +
         Math.max(
@@ -286,6 +312,29 @@ function inspectInTransaction(
         ),
       0,
     );
+  const nativeRawOverheadBytes = overhead(
+    [next.runs, next.events, next.receipts, next.budget].flat(),
+  );
+  const bindingRawOverheadBytes = overhead(bindingRows);
+  return {
+    cutover,
+    cutoverBytes,
+    prefix,
+    coverage,
+    archive,
+    bindings,
+    nativeRawOverheadBytes,
+    bindingRawOverheadBytes,
+  };
+}
+function inspectInTransaction(
+  db: DatabaseSync,
+  expectedSelection: PublicComparisonDatabaseSelection,
+) {
+  const { cutover, cutoverBytes, prefix, coverage, archive, nativeRawOverheadBytes } =
+    readPublicComparisonDatabaseSnapshot(db, expectedSelection, 10);
+  const inspected = inspectPublicComparisonNativeArchive(prefix, coverage, archive);
+  // The pure audit already counts the proposal. Count the larger SQL cutover envelope once.
   const extraBytes =
     Math.max(0, cutoverBytes - inspected.capacity.coverageBytes) + nativeRawOverheadBytes;
   if (

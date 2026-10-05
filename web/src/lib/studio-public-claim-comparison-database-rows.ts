@@ -3,6 +3,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { inspectQualitySuppliedRows } from "../../scripts/local-data-quality.mjs";
 import {
   readProviderReservationDatabaseRows,
+  readProviderReservationRawDatabaseRows,
   decodeProviderReservationDatabaseRows,
 } from "../../scripts/local-data-quality-provider-reservation-database.mjs";
 import {
@@ -38,6 +39,7 @@ const limits: Record<string, number> = {
 export function readPublicComparisonRows(
   db: DatabaseSync,
   schema: PublicComparisonPrefix["rows"]["schema"],
+  rawReservationBindings = false,
 ) {
   let total = 0;
   for (const [table, cap] of Object.entries(limits)) {
@@ -95,7 +97,9 @@ export function readPublicComparisonRows(
       )
       .all(),
     reservationRows: (({ bindingRows, coverageRows }) => ({ bindingRows, coverageRows }))(
-      readProviderReservationDatabaseRows(db),
+      rawReservationBindings
+        ? readProviderReservationRawDatabaseRows(db)
+        : readProviderReservationDatabaseRows(db),
     ),
     transmissionRows: (({ bindingRows, coverageRows }) => ({ bindingRows, coverageRows }))(
       readProviderTransmissionApprovalDatabaseRows(db),
