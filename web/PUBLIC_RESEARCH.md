@@ -1,5 +1,11 @@
 # 공개 통계 후보 조회와 근거 보관
 
+## 2026-10-05: 4I7 — supplied 전환/비교 예산 계약
+
+고정20개 기능 기준15/20=75%, 미완료5/20=25%, 직전 대비+0%p. 모든 보고에 완료/전체·직전 대비%p·이번 신규/기존 시험과 과거 검증 구분·실환경 단계·필수 결정 수·다음 예상시간 범위를 표시한다. 실환경1/5=20%는 과거 사용자 직접 인증/접근이며 앱 실제 자동실행 성공0단계다. KOSIS 실제0/1. 이번4I7은 전환 coverage·동일 scope 비교 예산의 순수 계약 구현이다. 최종 신규65/65개·이번 기존201/228개 통과, 합계266/293개 통과이며 기존 백업/복구27개는 지정 루트의 .git 때문에 DESTINATION_REPOSITORY로 미통과했다. 백업 보호 규칙/루트 .git/허용 경로를 바꾸거나 우회하지 않는다. 병렬 때 시간 초과한 기존1개는 단독1/1로 통과했고 중복 합산하지 않는다. 초기 fixture 설정 실패53개 미실행·예비53개/중간63개·과거4I5 288개/m3z38D는 재합산하지 않는다. 전체/영향 lint·최종 typecheck·격리빌드AE8Ccw 통과. 새 HTTP/브라우저·실제 외부/고객자료/SDK/AI0이다. 다음4I8은 기획/공개주장_전환검증_비교예산_구현_20261005.md와4I6 저장 명세·4I2 요청/4I5 캡처를 읽고 비교 native v4 run/event/receipt·artifact의 순수 상태 검증과 이번 금액 증거 연결을 구현한다. 현재 supplied financial evidence는 실제 dispatch/capture/가격 정산·취소 COMMIT 증거가 아니며 executionLifecycleVerified/costAssessmentVerified:false다. full native 검사 전에는 금액 정산 뒤에도 비교당32MiB/잔여 slots를 보수적으로 유지한다. 이번 전환/예산 코드를 복제하거나 병렬 원장/승인·실제 writer/DDL/route/SDK를 먼저 열지 않는다. 기존 scope/head·과거 v1/v2 bytes·완료 nonce/예산·회사 원고/수동 judgement를 보존한다. 미지정 등급/토큰·비용0을 추정하지 않고 다른 DB의 비용을 합치지 않는다. 기존 백업 왕복27개는 승인된 저장소 외부 시험 경로가 생기기 전 반복하지 않으며 이 제한은 다음 순수 개발을 막지 않는다. 필수 결정0개·다음2~4시간 잠정·전체 완료시간 미정·자동후속 ACTIVE. 필요한 회귀→lint→typecheck→격리 build:local은 각 종료코드 확인 뒤 순차 실행하며 pnpm exec vitest run에 대상 경로를 직접 지정한다.
+
+기존 과거 원문의 전체 도메인/coverage 감사와 같은 monetary scope의 BigInt suffix를 재사용한다. 모든 결과는 supplied-financial-proposal이며 원래 실행 lifecycle/가격 진위·취소 COMMIT·SQL migration/실제 전송 권한은 false다. 상세는 `../기획/공개주장_전환검증_비교예산_구현_20261005.md`를 따른다.
+
 현재 범위는 KOSIS 검색 후보 조회, 선택한 표의 이름·수록 시점·조사 출처 조회, 수동 코드 지정 후 단일 수치 조회, 담당자의 원문 확인·수동 보관입니다. 통계 수치나 원문을 자동 분석하지 않습니다.
 
 ## 사용 순서

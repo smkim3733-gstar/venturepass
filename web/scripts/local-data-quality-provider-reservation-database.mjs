@@ -31,6 +31,12 @@ export function readProviderReservationDatabaseRows(db) {
   const coverageRows = db
     .prepare("SELECT id,body,body_hash FROM quality_provider_reservation_coverage ORDER BY id")
     .all();
+  return decodeProviderReservationDatabaseRows(bindingRows, coverageRows);
+}
+
+/** Pure row decoding shared with supplied archive inspection; no DB access. */
+export function decodeProviderReservationDatabaseRows(bindingRows, coverageRows) {
+  if (bindingRows.length > limits.records || coverageRows.length !== 1) fail("QUALITY_DATABASE_INVALID");
   try {
     const bindings = decodeVersionedProviderReservationBindingRows(bindingRows),
       row = coverageRows[0];

@@ -1174,298 +1174,304 @@ function auditQualityDatabase(db, { inTransaction = false, providerPrefix = null
             .all()
         : [],
     };
+    const result = inspectQualitySuppliedRows({ storageVersion, schema, candidates, executions, actual, policies, reservations, transmissions, runRows, revisionRows, receiptRows, candidateRows, candidateReceipts, executionRows, executionEvents, executionReceipts, policyRows, reservationRows, transmissionRows, actualRows, providerPrefix, operational });
+    if (!inTransaction) db.exec("COMMIT");
+    return result;
+  } catch (error) {
+    if (!inTransaction) db.exec("ROLLBACK");
+    throw error;
+  }
+}
+/** Shared row audit only; caller validates row envelopes, SQL schema/transaction and bounds.
+ * This function never opens a database. Supplied schema identifiers are not file/DDL evidence. */
+export function inspectQualitySuppliedRows({ storageVersion, schema, candidates, executions, actual, policies, reservations, transmissions, runRows, revisionRows, receiptRows, candidateRows, candidateReceipts, executionRows, executionEvents, executionReceipts, policyRows, reservationRows, transmissionRows, actualRows, providerPrefix, operational }) {
+  if (
+    runRows.length > 20 ||
+    revisionRows.length > 4000 ||
+    receiptRows.length !== runRows.length + revisionRows.length
+  )
+    fail("QUALITY_DATABASE_LIMIT");
+  let total = 0;
+  const runs = new Map(),
+    receipts = new Map();
+  for (const row of receiptRows) {
+    total += Buffer.byteLength(row.body);
+    const item = decode(row, 1024);
     if (
-      runRows.length > 20 ||
-      revisionRows.length > 4000 ||
-      receiptRows.length !== runRows.length + revisionRows.length
+      !uuid.safeParse(item.clientRequestId).success ||
+      row.nonce !== item.clientRequestId ||
+      !uuid.safeParse(item.runId).success ||
+      !["create", "record"].includes(item.kind) ||
+      !Number.isInteger(item.revision) ||
+      item.revision < 0 ||
+      item.revision > 200 ||
+      !hash.safeParse(item.inputDigest).success
     )
-      fail("QUALITY_DATABASE_LIMIT");
-    let total = 0;
-    const runs = new Map(),
-      receipts = new Map();
-    for (const row of receiptRows) {
-      total += Buffer.byteLength(row.body);
-      const item = decode(row, 1024);
+      fail("QUALITY_DATABASE_INVALID");
+    receipts.set(row.nonce, item);
+  }
+  for (const row of runRows) {
+    total += Buffer.byteLength(row.body);
+    const run = decode(row, 8 * 1024 * 1024);
+    if (
+      !uuid.safeParse(run.id).success ||
+      run.id !== row.id ||
+      !uuid.safeParse(run.clientRequestId).success ||
+      typeof run.title !== "string" ||
+      run.title.length < 1 ||
+      run.title.length > 120 ||
+      !z.string().datetime().safeParse(run.createdAt).success ||
+      !Array.isArray(run.manifest) ||
+      run.manifest.length !== 50 ||
+      !Array.isArray(run.fixtures) ||
+      run.fixtures.length !== 50 ||
+      digest(run.manifest) !== run.manifestDigest ||
+      new Set(run.manifest.map((v) => v.fixtureId)).size !== 50 ||
+      new Set(run.fixtures.map((v) => v.id)).size !== 50
+    )
+      fail("QUALITY_DATABASE_INVALID");
+    for (const entry of run.manifest) {
+      const fixture = run.fixtures.find((v) => v.id === entry.fixtureId);
       if (
-        !uuid.safeParse(item.clientRequestId).success ||
-        row.nonce !== item.clientRequestId ||
-        !uuid.safeParse(item.runId).success ||
-        !["create", "record"].includes(item.kind) ||
-        !Number.isInteger(item.revision) ||
-        item.revision < 0 ||
-        item.revision > 200 ||
-        !hash.safeParse(item.inputDigest).success
+        !fixture ||
+        fixture.synthetic !== true ||
+        entry.synthetic !== true ||
+        fixture.label !== entry.label ||
+        digest({ profile: fixture.profile, sources: fixture.sources }) !== entry.sourceDigest ||
+        digest(fixture.candidate) !== entry.candidateDigest ||
+        digest(fixture.plan) !== entry.inputPlanDigest ||
+        digest({
+          deterministic: fixture.deterministicExpectation,
+          semantic: fixture.semanticRubric,
+        }) !== entry.rubricDigest
       )
         fail("QUALITY_DATABASE_INVALID");
-      receipts.set(row.nonce, item);
     }
-    for (const row of runRows) {
-      total += Buffer.byteLength(row.body);
-      const run = decode(row, 8 * 1024 * 1024);
-      if (
-        !uuid.safeParse(run.id).success ||
-        run.id !== row.id ||
-        !uuid.safeParse(run.clientRequestId).success ||
-        typeof run.title !== "string" ||
-        run.title.length < 1 ||
-        run.title.length > 120 ||
-        !z.string().datetime().safeParse(run.createdAt).success ||
-        !Array.isArray(run.manifest) ||
-        run.manifest.length !== 50 ||
-        !Array.isArray(run.fixtures) ||
-        run.fixtures.length !== 50 ||
-        digest(run.manifest) !== run.manifestDigest ||
-        new Set(run.manifest.map((v) => v.fixtureId)).size !== 50 ||
-        new Set(run.fixtures.map((v) => v.id)).size !== 50
+    const receipt = receipts.get(run.clientRequestId);
+    if (
+      !receipt ||
+      receipt.kind !== "create" ||
+      receipt.runId !== run.id ||
+      receipt.revision !== 0 ||
+      receipt.inputDigest !==
+        digest({
+          kind: "create",
+          input: {
+            clientRequestId: run.clientRequestId,
+            title: run.title,
+            manifestDigest: run.manifestDigest,
+          },
+        })
+    )
+      fail("QUALITY_DATABASE_INVALID");
+    receipts.delete(run.clientRequestId);
+    runs.set(run.id, { run, revision: 0, fixtureVersions: new Map() });
+  }
+  for (const row of revisionRows) {
+    total += Buffer.byteLength(row.body);
+    const item = decode(row, 512 * 1024 + 4096),
+      parent = runs.get(row.run_id);
+    if (
+      !parent ||
+      !item.record ||
+      item.runId !== row.run_id ||
+      item.revision !== row.revision ||
+      item.revision !== parent.revision + 1 ||
+      item.revision > 200 ||
+      item.record.schemaVersion !== 1 ||
+      item.recordDigest !== digest(item.record) ||
+      item.fixtureRevision !== (parent.fixtureVersions.get(item.record.fixtureId) ?? 0) + 1 ||
+      !z.string().datetime().safeParse(item.recordedAt).success
+    )
+      fail("QUALITY_DATABASE_INVALID");
+    const entry = parent.run.manifest.find((v) => v.fixtureId === item.record.fixtureId);
+    if (
+      !entry ||
+      ["sourceDigest", "candidateDigest", "inputPlanDigest", "rubricDigest"].some(
+        (key) => entry[key] !== item.record[key],
       )
-        fail("QUALITY_DATABASE_INVALID");
-      for (const entry of run.manifest) {
-        const fixture = run.fixtures.find((v) => v.id === entry.fixtureId);
-        if (
-          !fixture ||
-          fixture.synthetic !== true ||
-          entry.synthetic !== true ||
-          fixture.label !== entry.label ||
-          digest({ profile: fixture.profile, sources: fixture.sources }) !== entry.sourceDigest ||
-          digest(fixture.candidate) !== entry.candidateDigest ||
-          digest(fixture.plan) !== entry.inputPlanDigest ||
-          digest({
-            deterministic: fixture.deterministicExpectation,
-            semantic: fixture.semanticRubric,
-          }) !== entry.rubricDigest
-        )
-          fail("QUALITY_DATABASE_INVALID");
-      }
-      const receipt = receipts.get(run.clientRequestId);
-      if (
-        !receipt ||
-        receipt.kind !== "create" ||
-        receipt.runId !== run.id ||
-        receipt.revision !== 0 ||
-        receipt.inputDigest !==
-          digest({
-            kind: "create",
-            input: {
-              clientRequestId: run.clientRequestId,
-              title: run.title,
-              manifestDigest: run.manifestDigest,
-            },
-          })
+    )
+      fail("QUALITY_DATABASE_INVALID");
+    const receipt = receipts.get(item.clientRequestId);
+    if (
+      !receipt ||
+      receipt.kind !== "record" ||
+      receipt.runId !== item.runId ||
+      receipt.revision !== item.revision ||
+      receipt.inputDigest !== item.inputDigest ||
+      item.inputDigest !==
+        digest({
+          kind: "record",
+          runId: item.runId,
+          input: {
+            revision: item.revision - 1,
+            clientRequestId: item.clientRequestId,
+            record: item.record,
+          },
+        })
+    )
+      fail("QUALITY_DATABASE_INVALID");
+    receipts.delete(item.clientRequestId);
+    parent.revision = item.revision;
+    parent.fixtureVersions.set(item.record.fixtureId, item.fixtureRevision);
+  }
+  const candidateVerification = inspectCandidateRows(
+    candidateRows,
+    candidateReceipts,
+    new Set(receiptRows.map((row) => row.nonce)),
+  );
+  total += candidateVerification.total;
+  total += inspectExecutionRows(
+    executionRows,
+    executionEvents,
+    executionReceipts,
+    candidateVerification.bindings,
+    new Set([...receiptRows, ...candidateReceipts].map((row) => row.nonce)),
+  );
+  const actualVerification = actual
+    ? inspectActualRows(
+        actualRows,
+        candidateRows.map((row) => decode(row, 8 * 1024 * 1024)),
+        new Set(
+          [...receiptRows, ...candidateReceipts, ...executionReceipts].map((row) => row.nonce),
+        ),
+        storageVersion,
+        policyRows,
+        reservationRows,
+        transmissionRows,
       )
-        fail("QUALITY_DATABASE_INVALID");
-      receipts.delete(run.clientRequestId);
-      runs.set(run.id, { run, revision: 0, fixtureVersions: new Map() });
-    }
-    for (const row of revisionRows) {
-      total += Buffer.byteLength(row.body);
-      const item = decode(row, 512 * 1024 + 4096),
-        parent = runs.get(row.run_id);
-      if (
-        !parent ||
-        !item.record ||
-        item.runId !== row.run_id ||
-        item.revision !== row.revision ||
-        item.revision !== parent.revision + 1 ||
-        item.revision > 200 ||
-        item.record.schemaVersion !== 1 ||
-        item.recordDigest !== digest(item.record) ||
-        item.fixtureRevision !== (parent.fixtureVersions.get(item.record.fixtureId) ?? 0) + 1 ||
-        !z.string().datetime().safeParse(item.recordedAt).success
-      )
-        fail("QUALITY_DATABASE_INVALID");
-      const entry = parent.run.manifest.find((v) => v.fixtureId === item.record.fixtureId);
-      if (
-        !entry ||
-        ["sourceDigest", "candidateDigest", "inputPlanDigest", "rubricDigest"].some(
-          (key) => entry[key] !== item.record[key],
-        )
-      )
-        fail("QUALITY_DATABASE_INVALID");
-      const receipt = receipts.get(item.clientRequestId);
-      if (
-        !receipt ||
-        receipt.kind !== "record" ||
-        receipt.runId !== item.runId ||
-        receipt.revision !== item.revision ||
-        receipt.inputDigest !== item.inputDigest ||
-        item.inputDigest !==
-          digest({
-            kind: "record",
-            runId: item.runId,
-            input: {
-              revision: item.revision - 1,
-              clientRequestId: item.clientRequestId,
-              record: item.record,
-            },
-          })
-      )
-        fail("QUALITY_DATABASE_INVALID");
-      receipts.delete(item.clientRequestId);
-      parent.revision = item.revision;
-      parent.fixtureVersions.set(item.record.fixtureId, item.fixtureRevision);
-    }
-    const candidateVerification = inspectCandidateRows(
-      candidateRows,
-      candidateReceipts,
-      new Set(receiptRows.map((row) => row.nonce)),
-    );
-    total += candidateVerification.total;
-    total += inspectExecutionRows(
-      executionRows,
-      executionEvents,
-      executionReceipts,
-      candidateVerification.bindings,
-      new Set([...receiptRows, ...candidateReceipts].map((row) => row.nonce)),
-    );
-    const actualVerification = actual
-      ? inspectActualRows(
+    : { total: 0, reservedBytes: 0 };
+  total += actualVerification.total;
+  if (total + actualVerification.reservedBytes > 256 * 1024 * 1024)
+    fail("QUALITY_DATABASE_LIMIT");
+  if (receipts.size || total > 256 * 1024 * 1024) fail("QUALITY_DATABASE_INVALID");
+  // Hash each bounded row separately instead of materializing a second full database JSON.
+  const groups = [
+    ["runs", runRows],
+    ["revisions", revisionRows],
+    ["receipts", receiptRows],
+    ...(candidates
+      ? [
+          ["candidateVersions", candidateRows],
+          ["candidateReceipts", candidateReceipts],
+        ]
+      : []),
+    ...(executions
+      ? [
+          ["executionRuns", executionRows],
+          ["executionEvents", executionEvents],
+          ["executionReceipts", executionReceipts],
+        ]
+      : []),
+    ...(actual
+      ? [
+          ["actualBudgetEvents", actualRows.budget],
+          ["actualRuns", actualRows.runs],
+          ["actualEvents", actualRows.events],
+          // Raw BLOB SHA has already been recomputed; avoid expanding each byte into JSON keys.
+          [
+            "actualArtifacts",
+            actualRows.artifacts.map(({ run_id, artifact_key, sha256, size_bytes }) => ({
+              run_id,
+              artifact_key,
+              sha256,
+              size_bytes,
+            })),
+          ],
+          ["actualReceipts", actualRows.receipts],
+          ...(storageVersion >= 5 ? [["actualRunInsertionOrder", actualRows.runOrder]] : []),
+        ]
+      : []),
+    ...(policies ? [["providerPolicies", policyRows]] : []),
+    ...(reservations
+      ? [
+          ["providerReservationBindings", reservationRows.bindingRows],
+          ["providerReservationCoverage", reservationRows.coverageRows],
+        ]
+      : []),
+    ...(transmissions
+      ? [
+          ["providerTransmissionBindings", transmissionRows.bindingRows],
+          ["providerTransmissionCoverage", transmissionRows.coverageRows],
+        ]
+      : []),
+  ];
+  const result = {
+    storageVersion,
+    ...(transmissions
+      ? {
+          providerTransmissionBindings: transmissionRows.bindingRows.length,
+          providerTransmissionCoverage: transmissionRows.coverageRows.length,
+        }
+      : {}),
+    ...(policies ? { providerPolicies: policyRows.length } : {}),
+    ...(reservations
+      ? {
+          providerReservationBindings: reservationRows.bindingRows.length,
+          providerReservationCoverage: reservationRows.coverageRows.length,
+        }
+      : {}),
+    digest: databaseLogicalDigest(schema, groups),
+    runs: runRows.length,
+    revisions: revisionRows.length,
+    requests: receiptRows.length,
+    ...(candidates
+      ? { candidateVersions: candidateRows.length, candidateRequests: candidateReceipts.length }
+      : {}),
+    ...(executions
+      ? {
+          executionRuns: executionRows.length,
+          executionEvents: executionEvents.length,
+          executionRequests: executionReceipts.length,
+        }
+      : {}),
+    ...(actual
+      ? {
+          actualBudgetEvents: actualRows.budget.length,
+          actualRuns: actualRows.runs.length,
+          actualEvents: actualRows.events.length,
+          actualArtifacts: actualRows.artifacts.length,
+          actualRequests: actualRows.receipts.length,
+        }
+      : {}),
+  };
+  const history =
+    providerPrefix === null
+      ? null
+      : completedProviderHistory({
+          selection: providerPrefix,
+          schema,
+          groups,
+          current: result,
+          currentLedger: actualVerification.ledger,
           actualRows,
-          candidateRows.map((row) => decode(row, 8 * 1024 * 1024)),
-          new Set(
-            [...receiptRows, ...candidateReceipts, ...executionReceipts].map((row) => row.nonce),
+          candidateRows,
+          otherNonces: [...receiptRows, ...candidateReceipts, ...executionReceipts].map(
+            (row) => row.nonce,
           ),
           storageVersion,
           policyRows,
           reservationRows,
           transmissionRows,
-        )
-      : { total: 0, reservedBytes: 0 };
-    total += actualVerification.total;
-    if (total + actualVerification.reservedBytes > 256 * 1024 * 1024)
-      fail("QUALITY_DATABASE_LIMIT");
-    if (receipts.size || total > 256 * 1024 * 1024) fail("QUALITY_DATABASE_INVALID");
-    // Hash each bounded row separately instead of materializing a second full database JSON.
-    const groups = [
-      ["runs", runRows],
-      ["revisions", revisionRows],
-      ["receipts", receiptRows],
-      ...(candidates
-        ? [
-            ["candidateVersions", candidateRows],
-            ["candidateReceipts", candidateReceipts],
-          ]
-        : []),
-      ...(executions
-        ? [
-            ["executionRuns", executionRows],
-            ["executionEvents", executionEvents],
-            ["executionReceipts", executionReceipts],
-          ]
-        : []),
-      ...(actual
-        ? [
-            ["actualBudgetEvents", actualRows.budget],
-            ["actualRuns", actualRows.runs],
-            ["actualEvents", actualRows.events],
-            // Raw BLOB SHA has already been recomputed; avoid expanding each byte into JSON keys.
-            [
-              "actualArtifacts",
-              actualRows.artifacts.map(({ run_id, artifact_key, sha256, size_bytes }) => ({
-                run_id,
-                artifact_key,
-                sha256,
-                size_bytes,
-              })),
-            ],
-            ["actualReceipts", actualRows.receipts],
-            ...(storageVersion >= 5 ? [["actualRunInsertionOrder", actualRows.runOrder]] : []),
-          ]
-        : []),
-      ...(policies ? [["providerPolicies", policyRows]] : []),
-      ...(reservations
-        ? [
-            ["providerReservationBindings", reservationRows.bindingRows],
-            ["providerReservationCoverage", reservationRows.coverageRows],
-          ]
-        : []),
-      ...(transmissions
-        ? [
-            ["providerTransmissionBindings", transmissionRows.bindingRows],
-            ["providerTransmissionCoverage", transmissionRows.coverageRows],
-          ]
-        : []),
-    ];
-    const result = {
-      storageVersion,
-      ...(transmissions
-        ? {
-            providerTransmissionBindings: transmissionRows.bindingRows.length,
-            providerTransmissionCoverage: transmissionRows.coverageRows.length,
-          }
-        : {}),
-      ...(policies ? { providerPolicies: policyRows.length } : {}),
-      ...(reservations
-        ? {
-            providerReservationBindings: reservationRows.bindingRows.length,
-            providerReservationCoverage: reservationRows.coverageRows.length,
-          }
-        : {}),
-      digest: databaseLogicalDigest(schema, groups),
-      runs: runRows.length,
-      revisions: revisionRows.length,
-      requests: receiptRows.length,
-      ...(candidates
-        ? { candidateVersions: candidateRows.length, candidateRequests: candidateReceipts.length }
-        : {}),
-      ...(executions
-        ? {
-            executionRuns: executionRows.length,
-            executionEvents: executionEvents.length,
-            executionRequests: executionReceipts.length,
-          }
-        : {}),
-      ...(actual
-        ? {
-            actualBudgetEvents: actualRows.budget.length,
-            actualRuns: actualRows.runs.length,
-            actualEvents: actualRows.events.length,
-            actualArtifacts: actualRows.artifacts.length,
-            actualRequests: actualRows.receipts.length,
-          }
-        : {}),
-    };
-    const history =
-      providerPrefix === null
-        ? null
-        : completedProviderHistory({
-            selection: providerPrefix,
-            schema,
-            groups,
-            current: result,
-            currentLedger: actualVerification.ledger,
-            actualRows,
-            candidateRows,
-            otherNonces: [...receiptRows, ...candidateReceipts, ...executionReceipts].map(
-              (row) => row.nonce,
-            ),
-            storageVersion,
-            policyRows,
-            reservationRows,
-            transmissionRows,
-          });
-    if (!inTransaction) db.exec("COMMIT");
-    return {
-      history,
-      operational: !operational ? null : {
-        provider: actualVerification.ledger.provider,
-        registries: candidateRows.map((row) => decode(row, 8 * 1024 * 1024)),
-        registrationReceipts: candidateReceipts.map((row) => decode(row, 8 * 1024 * 1024)),
-        policies: policyRows.map((row) => decode(row, 8 * 1024 * 1024)),
-        reservations: reservationRows.records,
-        approvals: transmissionRows.records,
-        nonces: [...receiptRows, ...candidateReceipts, ...executionReceipts, ...actualRows.receipts, ...policyRows].map((row) => row.nonce),
-        registrationDatabaseDigest: databaseLogicalDigest(schema, groups.map(([name, rows]) => [
-          name, name.startsWith("actual") || ["providerPolicies", "providerReservationBindings", "providerTransmissionBindings"].includes(name) ? [] : rows,
-        ])),
-      },
-      snapshot: result,
-      ledger: actualVerification.ledgerInput,
-      usage: { usedBytes: total, reservedBytes: actualVerification.reservedBytes },
-    };
-  } catch (error) {
-    if (!inTransaction) db.exec("ROLLBACK");
-    throw error;
-  }
+        });
+  return {
+    history,
+    operational: !operational ? null : {
+      provider: actualVerification.ledger.provider,
+      registries: candidateRows.map((row) => decode(row, 8 * 1024 * 1024)),
+      registrationReceipts: candidateReceipts.map((row) => decode(row, 8 * 1024 * 1024)),
+      policies: policyRows.map((row) => decode(row, 8 * 1024 * 1024)),
+      reservations: reservationRows.records,
+      approvals: transmissionRows.records,
+      nonces: [...receiptRows, ...candidateReceipts, ...executionReceipts, ...actualRows.receipts, ...policyRows].map((row) => row.nonce),
+      registrationDatabaseDigest: databaseLogicalDigest(schema, groups.map(([name, rows]) => [
+        name, name.startsWith("actual") || ["providerPolicies", "providerReservationBindings", "providerTransmissionBindings"].includes(name) ? [] : rows,
+      ])),
+    },
+    snapshot: result,
+    ledger: actualVerification.ledgerInput,
+    usage: { usedBytes: total, reservedBytes: actualVerification.reservedBytes },
+  };
 }
 /** Reuse the native/archive validators, retaining each original SQL row and its ordering.
  * Rows outside the appendable provider chain stay in the digest; they cannot disappear

@@ -31,6 +31,12 @@ export function readProviderTransmissionApprovalDatabaseRows(db) {
   const coverageRows = db
     .prepare("SELECT id,body,body_hash FROM quality_provider_transmission_coverage ORDER BY id")
     .all();
+  return decodeProviderTransmissionApprovalDatabaseRows(bindingRows, coverageRows);
+}
+
+/** Pure row decoding shared with supplied archive inspection; no DB access. */
+export function decodeProviderTransmissionApprovalDatabaseRows(bindingRows, coverageRows) {
+  if (bindingRows.length > limits.records || coverageRows.length !== 1) fail("QUALITY_DATABASE_INVALID");
   try {
     const bindings = decodeVersionedProviderTransmissionApprovalBindingRows(bindingRows),
       row = coverageRows[0];
