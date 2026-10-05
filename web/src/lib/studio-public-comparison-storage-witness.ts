@@ -172,14 +172,37 @@ const entryV2Schema = entrySchema.extend({
   recordVersion: z.literal(2),
   payload: payloadV2Schema,
 });
-const anyEntrySchema = z.union([entrySchema, entryV2Schema]);
-type Version = 1 | 2;
+const intentV3Schema = intentV2Schema.extend({
+  operation: z.enum([
+    "reserve",
+    "cancel",
+    "approve-dispatch",
+    "mark-unknown",
+    "persist-capture",
+    "record-result",
+    "settle-finalize",
+  ]),
+  rows: z.array(rowSchema).min(2).max(8),
+});
+const transitionV3Schema = transitionSchema.extend({ from: z.literal(12), to: z.literal(13) });
+const payloadV3Schema = z.discriminatedUnion("type", [
+  intentV3Schema,
+  ackSchema,
+  transitionV3Schema,
+  transitionAckSchema,
+]);
+const entryV3Schema = entrySchema.extend({ recordVersion: z.literal(3), payload: payloadV3Schema });
+const throughV2Schema = z.union([entrySchema, entryV2Schema]);
+const anyEntrySchema = z.union([entrySchema, entryV2Schema, entryV3Schema]);
+type Version = 1 | 2 | 3;
 const operationRows = {
   reserve: 7,
   cancel: 6,
   "approve-dispatch": 3,
   "mark-unknown": 2,
   "persist-capture": 3,
+  "record-result": 3,
+  "settle-finalize": 8,
 } as const;
 type Entry = z.infer<typeof anyEntrySchema>;
 type Intent = z.infer<typeof intentSchema>;
@@ -302,12 +325,12 @@ function entries(token: ComparisonStorageSession, version: Version = 1) {
   for (let i = 0; i < names[0].length; i++) {
     const name = String(i).padStart(3, "0") + ".json";
     if (names[0][i] !== name) fail("WITNESS_INVALID");
-    const a = (version === 1 ? entrySchema : anyEntrySchema).parse(
-      readJournalJson(join(dirs[0], name), 32768, fail),
-    );
-    const b = (version === 1 ? entrySchema : anyEntrySchema).parse(
-      readJournalJson(join(dirs[1], name), 32768, fail),
-    );
+    const a = (
+      version === 1 ? entrySchema : version === 2 ? throughV2Schema : anyEntrySchema
+    ).parse(readJournalJson(join(dirs[0], name), 32768, fail));
+    const b = (
+      version === 1 ? entrySchema : version === 2 ? throughV2Schema : anyEntrySchema
+    ).parse(readJournalJson(join(dirs[1], name), 32768, fail));
     if (digest(a) !== digest(b)) fail("WITNESS_PARTIAL");
     size += Buffer.byteLength(JSON.stringify(a) + "\n");
     const { entryDigest, ...body } = a;
@@ -333,31 +356,35 @@ function entries(token: ComparisonStorageSession, version: Version = 1) {
   )
     fail("WITNESS_BINDING_CHANGED");
   if (result[0].recordVersion !== 1 || result[1]?.recordVersion !== 1) fail("WITNESS_INVALID");
-  let transitioned = false;
+  let protocol: Version = 1;
   for (let i = 2; i < result.length; i++) {
     const v = result[i].payload;
     const e = result[i];
     if (v.type === "transition-intent") {
       const prev = result[i - 1];
       if (
-        transitioned ||
         i % 2 !== 0 ||
-        e.recordVersion !== 2 ||
-        prev.recordVersion !== 1 ||
-        (prev.payload.type !== "ack" && prev.payload.type !== "anchor") ||
+        e.recordVersion !== protocol + 1 ||
+        prev.recordVersion !== protocol ||
+        v.from !== protocol + 10 ||
+        v.to !== protocol + 11 ||
+        (prev.payload.type !== "ack" &&
+          prev.payload.type !== "anchor" &&
+          prev.payload.type !== "transition-ack") ||
         digest(v.before) !== digest(prev.payload.checkpoint)
       )
         fail("WITNESS_INVALID");
-      transitioned = true;
+      protocol = e.recordVersion;
       continue;
     }
     if (v.type === "transition-ack") {
       const prev = result[i - 1],
         t = prev.payload;
       if (
-        !transitioned ||
+        protocol === 1 ||
         i % 2 !== 1 ||
-        e.recordVersion !== 2 ||
+        e.recordVersion !== protocol ||
+        prev.recordVersion !== protocol ||
         t.type !== "transition-intent" ||
         v.intentDigest !== prev.entryDigest ||
         v.schemaDigest !== t.afterSchemaDigest ||
@@ -371,10 +398,7 @@ function entries(token: ComparisonStorageSession, version: Version = 1) {
         fail("WITNESS_INVALID");
       continue;
     }
-    if (
-      e.recordVersion !== (transitioned ? 2 : 1) ||
-      (i % 2 === 0 ? v.type !== "intent" : v.type !== "ack")
-    )
+    if (e.recordVersion !== protocol || (i % 2 === 0 ? v.type !== "intent" : v.type !== "ack"))
       fail("WITNESS_INVALID");
     if (v.type === "intent") {
       const prev = result[i - 1].payload;
@@ -410,7 +434,10 @@ function entries(token: ComparisonStorageSession, version: Version = 1) {
 function append(
   token: ComparisonStorageSession,
   prior: Entry[],
-  payload: z.infer<typeof payloadSchema> | z.infer<typeof payloadV2Schema>,
+  payload:
+    | z.infer<typeof payloadSchema>
+    | z.infer<typeof payloadV2Schema>
+    | z.infer<typeof payloadV3Schema>,
   version: Version = 1,
 ) {
   const s = guard(token);
@@ -420,12 +447,19 @@ function append(
     recordVersion: version,
     sequence: prior.length,
     previousDigest: prior.at(-1)?.entryDigest ?? null,
-    payload: (version === 1 ? payloadSchema : payloadV2Schema).parse(payload),
+    payload: (version === 1
+      ? payloadSchema
+      : version === 2
+        ? payloadV2Schema
+        : payloadV3Schema
+    ).parse(payload),
   };
-  const entry = (version === 1 ? entrySchema : entryV2Schema).parse({
-    ...body,
-    entryDigest: digest(body),
-  });
+  const entry = (version === 1 ? entrySchema : version === 2 ? entryV2Schema : entryV3Schema).parse(
+    {
+      ...body,
+      entryDigest: digest(body),
+    },
+  );
   if (
     prior.reduce((n, e) => n + Buffer.byteLength(JSON.stringify(e) + "\n"), 0) +
       Buffer.byteLength(JSON.stringify(entry) + "\n") >
@@ -487,7 +521,10 @@ export function comparisonWitnessInventory(
   }
   return h.digest("hex");
 }
-function requireRows(db: DatabaseSync, intent: Intent | z.infer<typeof intentV2Schema>) {
+function requireRows(
+  db: DatabaseSync,
+  intent: Intent | z.infer<typeof intentV2Schema> | z.infer<typeof intentV3Schema>,
+) {
   for (const ref of intent.rows) {
     const cols = columns[ref.table];
     const result = db
@@ -555,7 +592,10 @@ export function checkComparisonWitness(
     digest(last.checkpoint) !== digest(checkpoint)
   )
     fail("WITNESS_RECONCILIATION_REQUIRED");
-  if (version === 2 && !list.some((e) => e.payload.type === "transition-ack"))
+  if (
+    version >= 2 &&
+    !list.some((e) => e.recordVersion === version && e.payload.type === "transition-ack")
+  )
     fail("WITNESS_TRANSITION_REQUIRED");
   return list;
 }
@@ -596,7 +636,8 @@ export function acknowledgeComparisonWitness(
     entry = list.at(-1)!,
     intent = entry.payload,
     s = own(token);
-  if (intent.type !== "intent") fail("WITNESS_RECONCILIATION_REQUIRED");
+  if (intent.type !== "intent" || entry.recordVersion !== version)
+    fail("WITNESS_RECONCILIATION_REQUIRED");
   const command =
     intent.operation === "reserve"
       ? state.bindings.find((b) => b.clientRequestId === intent.nonce)?.command
@@ -652,13 +693,23 @@ export function requireComparisonWitnessCapacity(
   priorCount: number,
   appended: number,
   state: ComparisonReservationState,
+  version: Version = 2,
 ) {
   let remaining = 0;
   for (const run of state.archive.records.runs) {
     const events = state.archive.records.events.filter((e) => e.runId === run.id);
     if (events.some((e) => e.payload.kind === "finalized")) continue;
-    const count = new Set(events.map((e) => e.payload.kind)).size;
-    remaining += 2 * Math.max(0, 8 - count);
+    const kinds = new Set(events.map((e) => e.payload.kind));
+    if (version === 3) {
+      // usage/cost/final are one atomic close, with one intent/ack pair.
+      remaining +=
+        2 *
+        (Number(!kinds.has("dispatch-recorded")) +
+          Number(!kinds.has("dispatch-unknown") && !kinds.has("response-captured")) +
+          Number(!kinds.has("response-captured")) +
+          Number(!kinds.has("comparison-recorded")) +
+          1);
+    } else remaining += 2 * Math.max(0, 8 - kinds.size);
   }
   if (
     priorCount + appended + remaining > 128 ||
@@ -669,36 +720,51 @@ export function requireComparisonWitnessCapacity(
 export function recordComparisonWitnessIntentV2(
   token: ComparisonStorageSession,
   checkpoint: ComparisonWitnessCheckpoint,
-  intent: Omit<z.infer<typeof intentV2Schema>, "type" | "before">,
+  intent: Omit<z.infer<typeof intentV2Schema> | z.infer<typeof intentV3Schema>, "type" | "before">,
   next: ComparisonReservationState,
+  version: 2 | 3 = 2,
 ) {
-  const prior = checkComparisonWitness(token, checkpoint, 2);
-  const parsed = intentV2Schema.parse({ type: "intent", before: checkpoint, ...intent });
+  const prior = checkComparisonWitness(token, checkpoint, version);
+  const parsed = (version === 2 ? intentV2Schema : intentV3Schema).parse({
+    type: "intent",
+    before: checkpoint,
+    ...intent,
+  });
   if (parsed.rows.length !== operationRows[parsed.operation]) fail("WITNESS_INVALID");
-  requireComparisonWitnessCapacity(prior.length, 2, next);
-  append(token, prior, parsed, 2);
+  requireComparisonWitnessCapacity(prior.length, 2, next, version);
+  append(token, prior, parsed, version);
 }
 export function beginComparisonWitnessTransition(
   token: ComparisonStorageSession,
   transition: Omit<z.infer<typeof transitionSchema>, "type" | "from" | "to">,
   state: ComparisonReservationState,
+  version: 2 | 3 = 2,
 ) {
-  const prior = checkComparisonWitness(token, transition.before);
-  requireComparisonWitnessCapacity(prior.length, 2, state);
-  append(token, prior, { type: "transition-intent", from: 11, to: 12, ...transition }, 2);
+  const prior = checkComparisonWitness(token, transition.before, version === 2 ? 1 : 2);
+  requireComparisonWitnessCapacity(prior.length, 2, state, version);
+  append(
+    token,
+    prior,
+    version === 2
+      ? { type: "transition-intent", from: 11, to: 12, ...transition }
+      : { type: "transition-intent", from: 12, to: 13, ...transition },
+    version,
+  );
 }
 export function acknowledgeComparisonWitnessTransition(
   token: ComparisonStorageSession,
   checkpoint: ComparisonWitnessCheckpoint,
   schemaDigest: string,
+  version: 2 | 3 = 2,
 ) {
-  const list = entries(token, 2),
+  const list = entries(token, version),
     entry = list.at(-1)!,
     t = entry.payload,
     s = guard(token);
   const rowDataDigest = comparisonWitnessInventory(s.db, [], true);
   if (
     t.type !== "transition-intent" ||
+    entry.recordVersion !== version ||
     schemaDigest !== t.afterSchemaDigest ||
     rowDataDigest !== t.rowDataDigest ||
     checkpoint.archiveDigest !== t.afterArchiveDigest ||
@@ -718,7 +784,7 @@ export function acknowledgeComparisonWitnessTransition(
       schemaDigest,
       rowDataDigest,
     },
-    2,
+    version,
   );
-  checkComparisonWitness(token, checkpoint, 2);
+  checkComparisonWitness(token, checkpoint, version);
 }

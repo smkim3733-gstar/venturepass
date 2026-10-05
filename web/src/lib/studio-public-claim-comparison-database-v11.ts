@@ -53,8 +53,24 @@ import {
   planPreparedComparisonTransmissionStorageCommand,
   type ComparisonTransmissionOperation,
 } from "./studio-public-claim-comparison-transmission";
-type Version = 11 | 12;
-type Operation = "reserve" | "cancel" | ComparisonTransmissionOperation;
+import { publicComparisonV13InsertGates } from "./studio-public-claim-comparison-database-v13-schema";
+import {
+  inspectComparisonTransmissionV4State,
+  prepareComparisonV4StorageCommand,
+  inspectedComparisonV4StorageCommand,
+  planPreparedComparisonV4StorageCommand,
+  type ComparisonV4StorageOperation,
+} from "./studio-public-claim-comparison-transmission-v4";
+type Version = 11 | 12 | 13;
+function witnessVersion(version: Version) {
+  return version === 11 ? 1 : version === 12 ? 2 : 3;
+}
+type V4Plan = Exclude<
+  ReturnType<typeof planPreparedComparisonV4StorageCommand>,
+  { status: "blocked" }
+>;
+type Operation =
+  "reserve" | "cancel" | ComparisonTransmissionOperation | ComparisonV4StorageOperation;
 type TransmissionPlan = ReturnType<typeof planPreparedComparisonTransmissionStorageCommand>;
 type Table = keyof typeof publicComparisonV12Columns;
 type Row = { table: Table; values: SQLInputValue[] };
@@ -62,6 +78,8 @@ type Plan =
   | ReturnType<typeof planComparisonReservation>
   | ReturnType<typeof planComparisonCancellation>
   | TransmissionPlan
+  | V4Plan
+  | Extract<ReturnType<typeof prepareComparisonV4StorageCommand>, { status: "replay" }>
   | Extract<ReturnType<typeof prepareComparisonTransmissionStorageCommand>, { status: "replay" }>;
 type NewPlan = Extract<Plan, { status: "prepared-not-committed" }>;
 const busy = new WeakSet<DatabaseSync>();
@@ -85,35 +103,41 @@ function signature(table: string, values: unknown[]) {
   ]);
 }
 function registerGate(db: DatabaseSync, version: Version = 11) {
-  db.function(
-    version === 11 ? "comparison_v11_insert_guard" : "comparison_v12_insert_guard",
-    { varargs: true },
-    (...args) => {
-      const permit = permits.get(db);
-      if (
-        !busy.has(db) ||
-        !db.isTransaction ||
-        !permit ||
-        permit.version !== version ||
-        !(
-          version === 11
-            ? ["reserve", "cancel"]
-            : ["reserve", "cancel", "approve-dispatch", "mark-unknown", "persist-capture"]
-        ).includes(permit.operation) ||
-        typeof args[0] !== "string"
-      )
-        return 0;
-      let actual: string;
-      try {
-        actual = signature(args[0], args.slice(1));
-      } catch {
-        return 0;
-      }
-      if (actual !== permit.rows[permit.index]) return 0;
-      permit.index++;
-      return 1;
-    },
-  );
+  db.function("comparison_v" + version + "_insert_guard", { varargs: true }, (...args) => {
+    const permit = permits.get(db);
+    if (
+      !busy.has(db) ||
+      !db.isTransaction ||
+      !permit ||
+      permit.version !== version ||
+      !(
+        version === 11
+          ? ["reserve", "cancel"]
+          : version === 12
+            ? ["reserve", "cancel", "approve-dispatch", "mark-unknown", "persist-capture"]
+            : [
+                "reserve",
+                "cancel",
+                "approve-dispatch",
+                "mark-unknown",
+                "persist-capture",
+                "record-result",
+                "settle-finalize",
+              ]
+      ).includes(permit.operation) ||
+      typeof args[0] !== "string"
+    )
+      return 0;
+    let actual: string;
+    try {
+      actual = signature(args[0], args.slice(1));
+    } catch {
+      return 0;
+    }
+    if (actual !== permit.rows[permit.index]) return 0;
+    permit.index++;
+    return 1;
+  });
 }
 function readStateTransaction(
   db: DatabaseSync,
@@ -155,8 +179,10 @@ function inspectTransaction(
 ) {
   const { state, ...snapshot } = readStateTransaction(db, selection, version);
   const transmission =
-    version === 12
-      ? inspectComparisonTransmissionState({
+    version >= 12
+      ? (version === 13
+          ? inspectComparisonTransmissionV4State
+          : inspectComparisonTransmissionState)({
           reservation: state,
           transmissionBindings: snapshot.transmissionBindings,
         })
@@ -305,12 +331,25 @@ function inserts(plan: NewPlan): Row[] {
       receipt(r.receipts[1]),
     ];
   }
+  if (plan.operation === "settle-finalize") {
+    const r = plan.rows;
+    return [
+      event(r.events[0]),
+      receipt(r.receipts[0]),
+      budget(r.budgetEvent),
+      event(r.events[1]),
+      receipt(r.receipts[1]),
+      artifact(r.artifact),
+      event(r.events[2]),
+      receipt(r.receipts[2]),
+    ];
+  }
   const r = plan.rows;
   return [
     ...(r.artifact ? [artifact(r.artifact)] : []),
     event(r.event),
     receipt(r.receipt),
-    ...(r.binding
+    ...("binding" in r && r.binding
       ? [
           {
             table: "quality_provider_transmission_bindings" as const,
@@ -361,7 +400,7 @@ function checkpoint(
     cutoverDigest: snapshot.cutoverDigest,
     coverageDigest: snapshot.state.coverage.coverageDigest,
     archiveDigest:
-      snapshot.storageVersion === 12
+      snapshot.storageVersion >= 12
         ? digest({
             reservationArchiveDigest: inspection.view.archiveDigest,
             transmissionBindings: snapshot.transmissionBindings,
@@ -430,29 +469,39 @@ function write(
         reservation: before.state,
         transmissionBindings: before.transmissionBindings,
       };
-      if (transmissionOperation && version !== 12) fail();
+      if (transmissionOperation && version < 12) fail();
+      if (version === 13 && !transmissionOperation)
+        inspectComparisonTransmissionV4State(transmissionState);
       const prepared = transmissionOperation
-        ? prepareComparisonTransmissionStorageCommand(
-            transmissionState,
-            operation as ComparisonTransmissionOperation,
-            command,
-          )
+        ? version === 13
+          ? prepareComparisonV4StorageCommand(
+              transmissionState,
+              operation as ComparisonV4StorageOperation,
+              command,
+            )
+          : prepareComparisonTransmissionStorageCommand(
+              transmissionState,
+              operation as ComparisonTransmissionOperation,
+              command,
+            )
         : prepareComparisonStorageCommand(before.state, operation as "reserve" | "cancel", command);
       if (prepared.status === "replay") plan = prepared;
       else {
         const transmissionAudit =
-          prepared.ticket.kind === "comparison-transmission-ticket"
-            ? inspectedComparisonTransmissionStorageCommand(prepared.ticket)
-            : null;
+          prepared.ticket.kind === "comparison-v4-storage-ticket"
+            ? inspectedComparisonV4StorageCommand(prepared.ticket)
+            : prepared.ticket.kind === "comparison-transmission-ticket"
+              ? inspectedComparisonTransmissionStorageCommand(prepared.ticket)
+              : null;
         const audited =
-          prepared.ticket.kind === "comparison-transmission-ticket"
-            ? transmissionAudit!.reservation
-            : inspectedComparisonStorageCommand(prepared.ticket);
+          prepared.ticket.kind === "comparison-prepared-command"
+            ? inspectedComparisonStorageCommand(prepared.ticket)
+            : transmissionAudit!.reservation;
         // v12 reserve/cancel still audit every existing transmission binding.
         if (version === 12 && !transmissionAudit)
           inspectComparisonTransmissionState(transmissionState);
         const beforeCheckpoint = checkpoint(db, before, audited);
-        checkComparisonWitness(session, beforeCheckpoint, version === 12 ? 2 : 1);
+        checkComparisonWitness(session, beforeCheckpoint, witnessVersion(version));
         let actualCurrent = current;
         if (operation === "reserve" || operation === "approve-dispatch") {
           assertPublicComparisonDataOnly(current, 8 * 1024 * 1024);
@@ -474,13 +523,14 @@ function write(
                     companyGuard: z.unknown(),
                     approvedReview: z.unknown(),
                     basis: z.unknown(),
+                    ...(version === 13 ? { usagePolicy: z.unknown() } : {}),
                     at: z.unknown(),
                     eventId: z.unknown(),
                   })
                   .strict()
           ).parse(current);
           const cap = cur.companyGuard as ComparisonCompanyGuard;
-          checkComparisonWitnessCompany(session, cap, version === 12 ? 2 : 1);
+          checkComparisonWitnessCompany(session, cap, witnessVersion(version));
           companyId =
             "companyId" in prepared.command
               ? prepared.command.companyId
@@ -494,15 +544,37 @@ function write(
           void _cap;
           actualCurrent = { ...inputs, company };
         }
-        plan =
-          prepared.ticket.kind === "comparison-transmission-ticket"
-            ? planPreparedComparisonTransmissionStorageCommand(prepared.ticket, actualCurrent)
-            : planPreparedComparisonStorageCommand(prepared.ticket, actualCurrent);
+        const planned =
+          prepared.ticket.kind === "comparison-v4-storage-ticket"
+            ? planPreparedComparisonV4StorageCommand(prepared.ticket, actualCurrent)
+            : prepared.ticket.kind === "comparison-transmission-ticket"
+              ? planPreparedComparisonTransmissionStorageCommand(prepared.ticket, actualCurrent)
+              : planPreparedComparisonStorageCommand(prepared.ticket, actualCurrent);
+        if (planned.status === "blocked") {
+          const inspection = inspectTransaction(db, selection, version);
+          commitAttempted = true;
+          db.exec("COMMIT");
+          if (db.isTransaction) fail("PUBLIC_COMPARISON_COMMIT_OBSERVATION_UNKNOWN");
+          return {
+            source: "local-comparison-reservation-database-write" as const,
+            storageVersion: version,
+            status: "blocked" as const,
+            result: planned,
+            inspection,
+            insertedRows: 0,
+            commitObserved: false,
+            witnessMatched: true,
+            companyLockObserved: false,
+            owner: null,
+            authority: comparisonPlanAuthority,
+          };
+        }
+        plan = planned;
         const rows = inserts(plan);
         const runId =
           plan.operation === "reserve"
             ? plan.rows.run.id
-            : plan.operation === "cancel"
+            : plan.operation === "cancel" || plan.operation === "settle-finalize"
               ? plan.rows.events[0].runId
               : plan.rows.event.runId;
         const intent = {
@@ -517,12 +589,13 @@ function write(
           ),
           rows: rows.map((r) => comparisonWitnessRow(r.table, r.values)),
         };
-        if (version === 12)
+        if (version >= 12)
           recordComparisonWitnessIntentV2(
             session,
             beforeCheckpoint,
             intent,
             "reservation" in plan.next ? plan.next.reservation : plan.next,
+            version === 13 ? 3 : 2,
           );
         else {
           if (intent.operation !== "reserve" && intent.operation !== "cancel") fail();
@@ -547,7 +620,7 @@ function write(
           checkComparisonWitness(
             session,
             checkpoint(db, before, inspection.inspection),
-            version === 12 ? 2 : 1,
+            witnessVersion(version),
           );
           witnessMatched = true;
         } catch {
@@ -601,34 +674,37 @@ function write(
         : plan.operation === "cancel" && (!cancellation || digest(cancellation) !== digest(command))
     )
       fail();
-    const transmissionCommand =
+    const receiptForCommand =
       plan.operation === "cancel"
-        ? undefined
-        : inspection.transmission?.commands.find(
-            (c) => c.clientRequestId === plan.rows.receipt.clientRequestId,
-          );
+        ? plan.rows.receipts[0]
+        : plan.operation === "settle-finalize"
+          ? plan.rows.receipts[1]
+          : plan.rows.receipt;
+    const transmissionCommand = inspection.transmission?.commands.find(
+      (c) => c.clientRequestId === receiptForCommand.clientRequestId,
+    );
     let replay;
     if (plan.operation === "reserve") replay = { ...common, binding: binding! };
     else if (plan.operation === "cancel") replay = { ...common, command: cancellation! };
     else {
       if (!transmissionCommand || digest(transmissionCommand) !== digest(command)) fail();
       replay = {
-        source: "supplied-transmission-plan" as const,
+        source:
+          plan.operation === "record-result" || plan.operation === "settle-finalize"
+            ? ("supplied-postcapture-plan" as const)
+            : ("supplied-transmission-plan" as const),
         status: "replay" as const,
         rows: null,
         owner: null,
         authority: comparisonPlanAuthority,
         command: transmissionCommand,
-        receipt: plan.rows.receipt,
+        receipt: receiptForCommand,
       };
     }
     if (companyGuard) checkComparisonCompanyRead(companyGuard, companyId!);
     if (session) {
-      const nonce =
-        plan.operation === "cancel"
-          ? plan.rows.receipts[0].clientRequestId
-          : plan.rows.receipt.clientRequestId;
-      checkComparisonWitnessPending(session, nonce, digest(command), version === 12 ? 2 : 1);
+      const nonce = receiptForCommand.clientRequestId;
+      checkComparisonWitnessPending(session, nonce, digest(command), witnessVersion(version));
     }
     commitAttempted = true;
     db.exec("COMMIT");
@@ -644,8 +720,10 @@ function write(
         db.exec("BEGIN IMMEDIATE");
         const durable = readStateTransaction(db, selection, version),
           transmission =
-            version === 12
-              ? inspectComparisonTransmissionState({
+            version >= 12
+              ? (version === 13
+                  ? inspectComparisonTransmissionV4State
+                  : inspectComparisonTransmissionState)({
                   reservation: durable.state,
                   transmissionBindings: durable.transmissionBindings,
                 })
@@ -656,7 +734,7 @@ function write(
           checkpoint(db, durable, audit),
           audit.state,
           [...audit.cancellations, ...(transmission?.commands ?? [])],
-          version === 12 ? 2 : 1,
+          witnessVersion(version),
         );
         db.exec("COMMIT");
         if (db.isTransaction) fail("PUBLIC_COMPARISON_COMMIT_OBSERVATION_UNKNOWN");
@@ -840,14 +918,15 @@ export function writeGuardedPublicComparisonV12(
     fail();
   return guardedWrite(session, operation, command, current, 12);
 }
-export function inspectPublicComparisonDatabaseV12(
+function inspectVersionedDatabase(
   db: DatabaseSync,
   selection: PublicComparisonDatabaseSelection,
+  version: 12 | 13,
 ) {
   enter(db);
   try {
     db.exec("BEGIN");
-    const result = inspectTransaction(db, selection, 12);
+    const result = inspectTransaction(db, selection, version);
     db.exec("COMMIT");
     if (db.isTransaction) fail("PUBLIC_COMPARISON_COMMIT_OBSERVATION_UNKNOWN");
     return result;
@@ -864,36 +943,41 @@ function actualSchema(db: DatabaseSync) {
     )
     .all();
 }
-export function migrateGuardedPublicComparisonDatabaseV12(session: ComparisonStorageSession) {
+function migrateGuardedDatabase(session: ComparisonStorageSession, version: 12 | 13) {
   const { db, selection } = beginComparisonStorageSession(session);
   enter(db);
   let attempted = false,
     observed = false;
   try {
-    registerGate(db, 12);
+    registerGate(db, version);
     db.exec("BEGIN IMMEDIATE");
     const already = !!db
-      .prepare(
-        "SELECT name FROM sqlite_schema WHERE name='quality_actual_runs_v12_writer' AND type='trigger'",
-      )
-      .get();
+      .prepare("SELECT name FROM sqlite_schema WHERE name=? AND type='trigger'")
+      .get("quality_actual_runs_v" + version + "_writer");
     if (already) {
-      const snapshot = readStateTransaction(db, selection, 12),
-        audit = inspectTransaction(db, selection, 12);
+      const snapshot = readStateTransaction(db, selection, version),
+        audit = inspectTransaction(db, selection, version);
       const cp = checkpoint(db, snapshot, audit.inspection);
-      checkComparisonWitness(session, cp, 2);
+      checkComparisonWitness(session, cp, version === 13 ? 3 : 2);
       db.exec("COMMIT");
       if (db.isTransaction) fail("PUBLIC_COMPARISON_COMMIT_OBSERVATION_UNKNOWN");
       return {
-        status: "already-v12" as const,
+        status: version === 13 ? ("already-v13" as const) : ("already-v12" as const),
         migrationCommitObserved: false,
         dispatchAllowed: false,
         owner: null,
       };
     }
-    const before = readStateTransaction(db, selection, 11),
-      audit = inspectComparisonReservationState(before.state);
+    const before = readStateTransaction(db, selection, version === 13 ? 12 : 11),
+      audit =
+        version === 13
+          ? inspectComparisonTransmissionState({
+              reservation: before.state,
+              transmissionBindings: before.transmissionBindings,
+            }).reservation
+          : inspectComparisonReservationState(before.state);
     if (
+      version === 12 &&
       audit.state.archive.records.events.some(
         (e) => !["reserved", "cancelled", "finalized"].includes(e.payload.kind),
       )
@@ -901,11 +985,18 @@ export function migrateGuardedPublicComparisonDatabaseV12(session: ComparisonSto
       fail("PUBLIC_COMPARISON_DISPATCH_ALREADY_PRESENT");
     const beforeCheckpoint = checkpoint(db, before, audit);
     const schema = actualSchema(db);
-    const expected = schema.filter(
-      (r) => !Object.hasOwn(publicComparisonV11InsertGates, String(r.name)),
-    );
-    for (const [name, sql] of Object.entries(publicComparisonV12InsertGates))
-      expected.push({ type: "trigger", name, tbl_name: name.replace(/_v12_writer$/, ""), sql });
+    const oldGates =
+      version === 13 ? publicComparisonV12InsertGates : publicComparisonV11InsertGates;
+    const newGates =
+      version === 13 ? publicComparisonV13InsertGates : publicComparisonV12InsertGates;
+    const expected = schema.filter((r) => !Object.hasOwn(oldGates, String(r.name)));
+    for (const [name, sql] of Object.entries(newGates))
+      expected.push({
+        type: "trigger",
+        name,
+        tbl_name: name.replace(/_v(12|13)_writer$/, ""),
+        sql,
+      });
     // Match SQLite BINARY order, independent of host locale.
     expected.sort((a, b) =>
       String(a.type) < String(b.type)
@@ -928,17 +1019,19 @@ export function migrateGuardedPublicComparisonDatabaseV12(session: ComparisonSto
         rowDataDigest: originalRowDataDigest,
         afterArchiveDigest: digest({
           reservationArchiveDigest: audit.view.archiveDigest,
-          transmissionBindings: [],
+          transmissionBindings: before.transmissionBindings,
         }),
       },
       before.state,
+      version === 13 ? 3 : 2,
     );
-    for (const name of Object.keys(publicComparisonV11InsertGates)) db.exec("DROP TRIGGER " + name);
-    for (const sql of Object.values(publicComparisonV12InsertGates)) db.exec(sql);
-    const after = inspectTransaction(db, selection, 12);
+    for (const name of Object.keys(oldGates)) db.exec("DROP TRIGGER " + name);
+    for (const sql of Object.values(newGates)) db.exec(sql);
+    const after = inspectTransaction(db, selection, version);
     if (
       digest(actualSchema(db)) !== digest(expected) ||
       digest(after.inspection.state) !== digest(before.state) ||
+      digest(after.transmissionBindings) !== digest(before.transmissionBindings) ||
       comparisonWitnessInventory(db, [], true) !== originalRowDataDigest
     )
       fail();
@@ -947,17 +1040,18 @@ export function migrateGuardedPublicComparisonDatabaseV12(session: ComparisonSto
     if (db.isTransaction) fail("PUBLIC_COMPARISON_COMMIT_OBSERVATION_UNKNOWN");
     observed = true;
     db.exec("BEGIN IMMEDIATE");
-    const durable = readStateTransaction(db, selection, 12),
-      verified = inspectTransaction(db, selection, 12);
+    const durable = readStateTransaction(db, selection, version),
+      verified = inspectTransaction(db, selection, version);
     acknowledgeComparisonWitnessTransition(
       session,
       checkpoint(db, durable, verified.inspection),
       digest(actualSchema(db)),
+      version === 13 ? 3 : 2,
     );
     db.exec("COMMIT");
     if (db.isTransaction) fail("PUBLIC_COMPARISON_COMMIT_OBSERVATION_UNKNOWN");
     return {
-      status: "migrated-v12" as const,
+      status: version === 13 ? ("migrated-v13" as const) : ("migrated-v12" as const),
       migrationCommitObserved: true,
       dispatchAllowed: false,
       owner: null,
@@ -984,21 +1078,26 @@ export function migrateGuardedPublicComparisonDatabaseV12(session: ComparisonSto
     }
   }
 }
-export function reconcilePublicComparisonStorageWitnessV2(session: ComparisonStorageSession) {
+function reconcileVersionedWitness(session: ComparisonStorageSession, version: 12 | 13) {
   const { db, selection } = beginComparisonStorageSession(session);
   enter(db);
   try {
     db.exec("BEGIN IMMEDIATE");
-    const snapshot = readStateTransaction(db, selection, 12),
-      audit = inspectTransaction(db, selection, 12);
+    const snapshot = readStateTransaction(db, selection, version),
+      audit = inspectTransaction(db, selection, version);
     const cp = checkpoint(db, snapshot, audit.inspection);
     let repairedFilesOnly = false;
     try {
-      checkComparisonWitness(session, cp, 2);
+      checkComparisonWitness(session, cp, version === 13 ? 3 : 2);
     } catch {
       // Both repairs only append an acknowledgement after full DB/schema/original-command audit.
       try {
-        acknowledgeComparisonWitnessTransition(session, cp, digest(actualSchema(db)));
+        acknowledgeComparisonWitnessTransition(
+          session,
+          cp,
+          digest(actualSchema(db)),
+          version === 13 ? 3 : 2,
+        );
       } catch (e) {
         if (!(e instanceof Error) || !e.message.includes("TRANSITION_RECONCILIATION_REQUIRED"))
           throw e;
@@ -1007,7 +1106,7 @@ export function reconcilePublicComparisonStorageWitnessV2(session: ComparisonSto
           cp,
           audit.inspection.state,
           [...audit.inspection.cancellations, ...audit.transmission!.commands],
-          2,
+          version === 13 ? 3 : 2,
         );
       }
       repairedFilesOnly = true;
@@ -1026,4 +1125,49 @@ export function reconcilePublicComparisonStorageWitnessV2(session: ComparisonSto
     busy.delete(db);
     endComparisonStorageSession(session);
   }
+}
+
+export function inspectPublicComparisonDatabaseV12(
+  db: DatabaseSync,
+  selection: PublicComparisonDatabaseSelection,
+) {
+  return inspectVersionedDatabase(db, selection, 12);
+}
+export function inspectPublicComparisonDatabaseV13(
+  db: DatabaseSync,
+  selection: PublicComparisonDatabaseSelection,
+) {
+  return inspectVersionedDatabase(db, selection, 13);
+}
+export function migrateGuardedPublicComparisonDatabaseV12(session: ComparisonStorageSession) {
+  return migrateGuardedDatabase(session, 12);
+}
+export function migrateGuardedPublicComparisonDatabaseV13(session: ComparisonStorageSession) {
+  return migrateGuardedDatabase(session, 13);
+}
+export function reconcilePublicComparisonStorageWitnessV2(session: ComparisonStorageSession) {
+  return reconcileVersionedWitness(session, 12);
+}
+export function reconcilePublicComparisonStorageWitnessV3(session: ComparisonStorageSession) {
+  return reconcileVersionedWitness(session, 13);
+}
+export function writeGuardedPublicComparisonV13(
+  session: ComparisonStorageSession,
+  operation: Operation,
+  command: unknown,
+  current?: unknown,
+) {
+  if (
+    ![
+      "reserve",
+      "cancel",
+      "approve-dispatch",
+      "mark-unknown",
+      "persist-capture",
+      "record-result",
+      "settle-finalize",
+    ].includes(operation)
+  )
+    fail();
+  return guardedWrite(session, operation, command, current, 13);
 }

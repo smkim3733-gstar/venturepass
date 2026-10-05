@@ -280,6 +280,13 @@ export function planComparisonDispatchV2(state: unknown, raw: unknown, currentRa
     c = core.parse(comparisonDispatchV2CommandSchema, raw);
   const old = replay(a, c);
   if (old) return old;
+  return planDispatchInspected(a, c, currentRaw);
+}
+function planDispatchInspected(
+  a: Inspection,
+  c: z.infer<typeof comparisonDispatchV2CommandSchema>,
+  currentRaw?: unknown,
+) {
   const cur = core.parse(
     z
       .object({
@@ -357,6 +364,14 @@ export function planComparisonContinuationV4(state: unknown, raw: unknown, curre
   );
   const old = replay(a, c);
   if (old) return old;
+  return planContinuationInspected(a, c, currentRaw);
+}
+function planContinuationInspected(
+  a: Inspection,
+  c:
+    z.infer<typeof comparisonUnknownCommandSchema> | z.infer<typeof comparisonCaptureCommandSchema>,
+  currentRaw?: unknown,
+) {
   continuation(a, c);
   const rows =
     c.kind === "mark-public-comparison-unknown"
@@ -398,6 +413,13 @@ export function planComparisonPostcapture(state: unknown, raw: unknown, currentR
       source: "supplied-postcapture-plan" as const,
       recordedRows: structuredClone(comparisonPostcaptureRecordedRows(a.state, c)),
     };
+  return planPostcaptureInspected(a, c, currentRaw);
+}
+function planPostcaptureInspected(
+  a: Inspection,
+  c: ComparisonResultCommand | ComparisonCloseCommand,
+  currentRaw?: unknown,
+) {
   if (c.kind === "record-public-comparison-result") {
     const rows = planComparisonResultRows(a.state, c, currentRaw);
     const after = inspectComparisonTransmissionV4State(a.state);
@@ -440,3 +462,61 @@ export function planComparisonPostcapture(state: unknown, raw: unknown, currentR
   };
 }
 export { comparisonResultCommandSchema, comparisonCloseCommandSchema };
+
+// Connection-bound writer composition uses a single-use audit ticket; no caller callback.
+export type ComparisonV4StorageOperation =
+  "approve-dispatch" | "mark-unknown" | "persist-capture" | "record-result" | "settle-finalize";
+type StorageTicket = Readonly<{ kind: "comparison-v4-storage-ticket" }>;
+const storageTickets = new WeakMap<StorageTicket, { a: Inspection; c: Command }>();
+export function prepareComparisonV4StorageCommand(
+  state: unknown,
+  operation: ComparisonV4StorageOperation,
+  raw: unknown,
+) {
+  const a = inspectComparisonTransmissionV4State(state);
+  const c = core.parse<Command>(
+    operation === "approve-dispatch"
+      ? z.union([comparisonDispatchV2CommandSchema, comparisonDispatchCommandSchema])
+      : operation === "mark-unknown"
+        ? comparisonUnknownCommandSchema
+        : operation === "persist-capture"
+          ? comparisonCaptureCommandSchema
+          : operation === "record-result"
+            ? comparisonResultCommandSchema
+            : comparisonCloseCommandSchema,
+    raw,
+  );
+  const old = replay(a, c);
+  if (old)
+    return c.kind === "record-public-comparison-result" ||
+      c.kind === "settle-finalize-public-comparison"
+      ? {
+          ...old,
+          source: "supplied-postcapture-plan" as const,
+          recordedRows: structuredClone(comparisonPostcaptureRecordedRows(a.state, c)),
+        }
+      : old;
+  if (c.kind === "approve-dispatch-public-claim-comparison" && c.commandVersion !== 2)
+    fail("PUBLIC_COMPARISON_USAGE_POLICY_REQUIRED");
+  const ticket = Object.freeze({ kind: "comparison-v4-storage-ticket" as const });
+  storageTickets.set(ticket, { a, c });
+  return { status: "new-command" as const, ticket, command: structuredClone(c) };
+}
+export function inspectedComparisonV4StorageCommand(ticket: StorageTicket) {
+  const item = storageTickets.get(ticket);
+  if (!item) fail();
+  return structuredClone(item.a);
+}
+export function planPreparedComparisonV4StorageCommand(ticket: StorageTicket, current?: unknown) {
+  const item = storageTickets.get(ticket);
+  if (!item) fail();
+  storageTickets.delete(ticket);
+  const { a, c } = item;
+  if (c.kind === "approve-dispatch-public-claim-comparison") {
+    if (c.commandVersion !== 2) fail("PUBLIC_COMPARISON_USAGE_POLICY_REQUIRED");
+    return planDispatchInspected(a, c, current);
+  }
+  if (c.kind === "mark-public-comparison-unknown" || c.kind === "persist-public-comparison-capture")
+    return planContinuationInspected(a, c, current);
+  return planPostcaptureInspected(a, c, current);
+}

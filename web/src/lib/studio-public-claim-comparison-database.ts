@@ -27,6 +27,8 @@ import { publicComparisonNativeRecordsSchema } from "./studio-public-claim-compa
 import { publicComparisonV11InsertGates } from "./studio-public-claim-comparison-database-v11-schema";
 import { comparisonReservationBindingSchema } from "./studio-public-claim-comparison-reservation";
 
+import { publicComparisonV13InsertGates } from "./studio-public-claim-comparison-database-v13-schema";
+import { comparisonTransmissionAnyBindingSchema } from "./studio-public-claim-comparison-transmission-v4";
 import { publicComparisonV12InsertGates } from "./studio-public-claim-comparison-database-v12-schema";
 import { comparisonTransmissionBindingSchema } from "./studio-public-claim-comparison-transmission-types";
 const MiB = 1024 * 1024;
@@ -108,7 +110,7 @@ function schemaRows(db: DatabaseSync) {
     )
     .all();
 }
-function expectedSchema(original: Rows["schema"], version: 10 | 11 | 12) {
+function expectedSchema(original: Rows["schema"], version: 10 | 11 | 12 | 13) {
   const rows = original.filter((row) => !Object.hasOwn(qualityV9WriterTriggerSql, row.name));
   rows.push({ type: "table", name: table, tbl_name: table, sql: coverageSql });
   for (const [name, sql] of Object.entries({
@@ -117,12 +119,14 @@ function expectedSchema(original: Rows["schema"], version: 10 | 11 | 12) {
       ? publicComparisonV10InsertGates
       : version === 11
         ? publicComparisonV11InsertGates
-        : publicComparisonV12InsertGates),
+        : version === 12
+          ? publicComparisonV12InsertGates
+          : publicComparisonV13InsertGates),
   })) {
     rows.push({
       type: "trigger",
       name,
-      tbl_name: name.replace(/_no_(update|delete)$|_v(10|11|12)_writer$/g, ""),
+      tbl_name: name.replace(/_no_(update|delete)$|_v(10|11|12|13)_writer$/g, ""),
       sql,
     });
   }
@@ -144,7 +148,7 @@ function checkPhysical(db: DatabaseSync) {
   )
     fail();
 }
-function readCutover(db: DatabaseSync, version: 10 | 11 | 12 = 10) {
+function readCutover(db: DatabaseSync, version: 10 | 11 | 12 | 13 = 10) {
   const found = schemaRows(db);
   const row = found.find((v) => v.name === table);
   if (!row || row.type !== "table" || row.sql !== coverageSql)
@@ -273,13 +277,13 @@ function decodeNative(rows: Rows["actualRows"]) {
 export function readPublicComparisonDatabaseSnapshot(
   db: DatabaseSync,
   expectedSelection: PublicComparisonDatabaseSelection,
-  version: 10 | 11 | 12,
+  version: 10 | 11 | 12 | 13,
 ) {
   checkPhysical(db);
   const { cutover, cutoverBytes } = readCutover(db, version);
   if (digest(cutover.selection) !== digest(selectionSchema.parse(expectedSelection)))
     fail("PUBLIC_COMPARISON_IDENTITY_MISMATCH");
-  const rows = readPublicComparisonRows(db, cutover.originalSchema, version >= 11, version === 12);
+  const rows = readPublicComparisonRows(db, cutover.originalSchema, version >= 11, version >= 12);
   const rawRowsDigest = createHash("sha256")
     .update(
       JSON.stringify(
@@ -314,8 +318,11 @@ export function readPublicComparisonDatabaseSnapshot(
     return binding;
   });
   const transmissionRows =
-    version === 12
-      ? rows.transmissionRows.bindingRows.filter((r) => JSON.parse(r.body).recordVersion === 3)
+    version >= 12
+      ? rows.transmissionRows.bindingRows.filter((r) => {
+          const v = JSON.parse(r.body).recordVersion;
+          return v === 3 || (version === 13 && v === 4);
+        })
       : [];
   const legacyTransmissions = rows.transmissionRows.bindingRows.filter(
     (r) => !transmissionRows.includes(r),
@@ -326,7 +333,9 @@ export function readPublicComparisonDatabaseSnapshot(
   )
     fail();
   const transmissionBindings = transmissionRows.map((row) => {
-    const b = comparisonTransmissionBindingSchema.parse(decodeBody(row, 64 * 1024));
+    const b = (
+      version === 13 ? comparisonTransmissionAnyBindingSchema : comparisonTransmissionBindingSchema
+    ).parse(decodeBody(row, 64 * 1024));
     if (row.run_id !== b.runId || row.nonce !== b.clientRequestId) fail();
     return b;
   });
