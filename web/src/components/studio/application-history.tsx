@@ -2,6 +2,7 @@
 
 import { useEffect, useId, useRef, useState } from "react";
 import { Plus, Save, X } from "lucide-react";
+import { ApplicationNumberPanel } from "./application-number-panel";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -41,6 +42,7 @@ type FormState = {
 type Props = Pick<PanelProps, "company" | "mutate"> & {
   blockedReason: string;
   onDirtyChange: (dirty: boolean) => void;
+  onCompany?: (company: StudioCase) => void;
 };
 const manualNotice =
   "담당자가 기록한 신청 이력입니다. 회차 등록·원본 연결·제출 기록 저장은 공식 사이트 전송이나 기관 접수·심사 결과 확인이 아닙니다. 회사 전체 진행 단계와 원고 검토 상태도 바꾸지 않습니다.";
@@ -299,9 +301,46 @@ export function ApplicationSubmissionView({
 }
 
 export function ApplicationHistory(props: Props) {
-  // The parent already protects dirty navigation; this key also discards stale form bindings.
+  const [numberOpen, setNumberOpen] = useState(false);
+  const [numberDirty, setNumberDirty] = useState(false);
+  const [editorDirty, setEditorDirty] = useState(false);
+  useDirty(numberDirty || editorDirty, props.onDirtyChange);
   return (
-    <ApplicationHistoryEditor key={`${props.company.id}:${props.company.revision}`} {...props} />
+    <>
+      {props.onCompany && (
+        <div className="mt-5">
+          {!numberOpen ? (
+            <Button
+              type="button"
+              variant="outline"
+              disabled={!!props.blockedReason || editorDirty}
+              onClick={() => setNumberOpen(true)}
+            >
+              신청번호 수동 연결·정정
+            </Button>
+          ) : (
+            <ApplicationNumberPanel
+              key={props.company.id}
+              company={props.company}
+              onCompany={props.onCompany}
+              blockedReason={
+                props.blockedReason || (editorDirty ? "신청 이력 편집을 먼저 마쳐 주세요." : "")
+              }
+              onDirtyChange={setNumberDirty}
+              onClose={() => setNumberOpen(false)}
+            />
+          )}
+        </div>
+      )}
+      <ApplicationHistoryEditor
+        key={`${props.company.id}:${props.company.revision}`}
+        {...props}
+        blockedReason={
+          props.blockedReason || (numberDirty ? "신청번호 입력·요청 확인을 먼저 마쳐 주세요." : "")
+        }
+        onDirtyChange={setEditorDirty}
+      />
+    </>
   );
 }
 

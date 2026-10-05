@@ -288,7 +288,7 @@ export function StudioWorkspace() {
     setCompany(next);
     // A preserved editor must release its own dirty state only after it acknowledges
     // the exact saved record. An unrelated newer response must not clear its guard.
-    if (!(tab === "workflow" && workflowNavigation?.target.caseId === next.id)) setDirty(false);
+    if (tab !== "workflow") setDirty(false);
     setCases((current) => [summarizeCase(next), ...current.filter((item) => item.id !== next.id)]);
   }
   async function showError(caught: unknown, id?: string) {
@@ -940,7 +940,7 @@ export function StudioWorkspace() {
               <fieldset
                 disabled={!!busy || automationUnsettled || manualPreparationUnsettled}
                 className="min-w-0 p-4 sm:p-6"
-                key={`${company.id}:${tab === "sources" || (tab === "workflow" && workflowNavigation) ? tab : company.revision}`}
+                key={`${company.id}:${tab === "sources" || tab === "workflow" ? tab : company.revision}`}
               >
                 <div
                   role="tabpanel"
@@ -1056,6 +1056,7 @@ export function StudioWorkspace() {
                   )}
                   {panelProps && tab === "workflow" && (
                     <WorkflowPanel
+                      onCompany={accept}
                       key={workflowNavigation?.key ?? company.id}
                       {...panelProps}
                       guidedTarget={workflowNavigation?.target}

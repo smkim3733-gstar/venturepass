@@ -138,7 +138,12 @@ export function WorkflowPanel({
   setDirty,
   onBusyChange = () => undefined,
   guidedTarget,
-}: PanelProps & { onBusyChange?: (message: string) => void; guidedTarget?: GuidedWorkflowTarget }) {
+  onCompany,
+}: PanelProps & {
+  onBusyChange?: (message: string) => void;
+  guidedTarget?: GuidedWorkflowTarget;
+  onCompany?: (company: StudioCase) => void;
+}) {
   // Parent remounts only after its dirty/busy navigation guard accepts a new target.
   const [entryTarget] = useState(guidedTarget);
   const [entryValid] = useState(
@@ -459,6 +464,7 @@ export function WorkflowPanel({
         onDirtyChange={setAppealDirty}
       />
       <ApplicationHistory
+        onCompany={onCompany}
         company={company}
         mutate={mutate}
         blockedReason={
