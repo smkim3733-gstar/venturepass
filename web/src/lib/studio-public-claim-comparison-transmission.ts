@@ -533,6 +533,9 @@ export function planComparisonDispatch(state: unknown, raw: unknown, currentRaw?
     c = parse(comparisonDispatchCommandSchema, raw);
   const old = replay(a, c);
   if (old) return old;
+  return planDispatchInspected(a, c, currentRaw);
+}
+function planDispatchInspected(a: Inspection, c: ComparisonDispatchCommand, currentRaw?: unknown) {
   const cur = parse(
     z
       .object({
@@ -579,6 +582,9 @@ export function planComparisonUnknown(state: unknown, raw: unknown, currentRaw?:
     c = parse(comparisonUnknownCommandSchema, raw);
   const old = replay(a, c);
   if (old) return old;
+  return planUnknownInspected(a, c, currentRaw);
+}
+function planUnknownInspected(a: Inspection, c: ComparisonUnknownCommand, currentRaw?: unknown) {
   continuation(a, c);
   const cur = parse(z.object({ at: time, eventId: uuid }).strict(), currentRaw);
   const rows = addEvent(a.state, c.clientRequestId, cur.eventId, cur.at, c.runId, {
@@ -593,6 +599,9 @@ export function planComparisonCapture(state: unknown, raw: unknown, currentRaw?:
     c = parse(comparisonCaptureCommandSchema, raw);
   const old = replay(a, c);
   if (old) return old;
+  return planCaptureInspected(a, c, currentRaw);
+}
+function planCaptureInspected(a: Inspection, c: ComparisonCaptureCommand, currentRaw?: unknown) {
   continuation(a, c);
   const cur = parse(
     z.object({ at: time, eventId: uuid, capture: z.unknown() }).strict(),
@@ -623,4 +632,51 @@ export function planComparisonCapture(state: unknown, raw: unknown, currentRaw?:
     responseArtifactSha256: artifact.sha256,
   });
   return result(a.state, { ...rows, binding: null, artifact }, "persist-capture");
+}
+
+export type ComparisonTransmissionOperation =
+  "approve-dispatch" | "mark-unknown" | "persist-capture";
+type TransmissionCommand =
+  ComparisonDispatchCommand | ComparisonUnknownCommand | ComparisonCaptureCommand;
+type Ticket = Readonly<{ kind: "comparison-transmission-ticket" }>;
+const storageTickets = new WeakMap<
+  Ticket,
+  { a: Inspection; c: TransmissionCommand; operation: ComparisonTransmissionOperation }
+>();
+/** One full audit and full original-command lookup before any lazy company/clock input. */
+export function prepareComparisonTransmissionStorageCommand(
+  state: unknown,
+  operation: ComparisonTransmissionOperation,
+  raw: unknown,
+) {
+  const a = inspectComparisonTransmissionState(state);
+  const c =
+    operation === "approve-dispatch"
+      ? parse(comparisonDispatchCommandSchema, raw)
+      : operation === "mark-unknown"
+        ? parse(comparisonUnknownCommandSchema, raw)
+        : parse(comparisonCaptureCommandSchema, raw);
+  const old = replay(a, c);
+  if (old) return old;
+  const ticket = Object.freeze({ kind: "comparison-transmission-ticket" as const });
+  storageTickets.set(ticket, { a, c, operation });
+  return { status: "new-command" as const, ticket, command: structuredClone(c) };
+}
+export function inspectedComparisonTransmissionStorageCommand(ticket: Ticket) {
+  const item = storageTickets.get(ticket);
+  if (!item) fail();
+  return structuredClone(item.a);
+}
+export function planPreparedComparisonTransmissionStorageCommand(
+  ticket: Ticket,
+  current?: unknown,
+) {
+  const item = storageTickets.get(ticket);
+  if (!item) fail();
+  storageTickets.delete(ticket);
+  if (item.c.kind === "approve-dispatch-public-claim-comparison")
+    return planDispatchInspected(item.a, item.c, current);
+  if (item.c.kind === "mark-public-comparison-unknown")
+    return planUnknownInspected(item.a, item.c, current);
+  return planCaptureInspected(item.a, item.c, current);
 }

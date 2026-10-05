@@ -27,6 +27,8 @@ import { publicComparisonNativeRecordsSchema } from "./studio-public-claim-compa
 import { publicComparisonV11InsertGates } from "./studio-public-claim-comparison-database-v11-schema";
 import { comparisonReservationBindingSchema } from "./studio-public-claim-comparison-reservation";
 
+import { publicComparisonV12InsertGates } from "./studio-public-claim-comparison-database-v12-schema";
+import { comparisonTransmissionBindingSchema } from "./studio-public-claim-comparison-transmission-types";
 const MiB = 1024 * 1024;
 const table = "quality_provider_purpose_coverage";
 const coverageSql = `CREATE TABLE ${table} (id INTEGER PRIMARY KEY CHECK(id=1), body TEXT NOT NULL, body_hash TEXT NOT NULL)`;
@@ -106,17 +108,21 @@ function schemaRows(db: DatabaseSync) {
     )
     .all();
 }
-function expectedSchema(original: Rows["schema"], version: 10 | 11) {
+function expectedSchema(original: Rows["schema"], version: 10 | 11 | 12) {
   const rows = original.filter((row) => !Object.hasOwn(qualityV9WriterTriggerSql, row.name));
   rows.push({ type: "table", name: table, tbl_name: table, sql: coverageSql });
   for (const [name, sql] of Object.entries({
     ...immutableSql,
-    ...(version === 10 ? publicComparisonV10InsertGates : publicComparisonV11InsertGates),
+    ...(version === 10
+      ? publicComparisonV10InsertGates
+      : version === 11
+        ? publicComparisonV11InsertGates
+        : publicComparisonV12InsertGates),
   })) {
     rows.push({
       type: "trigger",
       name,
-      tbl_name: name.replace(/_no_(update|delete)$|_v(10|11)_writer$/g, ""),
+      tbl_name: name.replace(/_no_(update|delete)$|_v(10|11|12)_writer$/g, ""),
       sql,
     });
   }
@@ -138,7 +144,7 @@ function checkPhysical(db: DatabaseSync) {
   )
     fail();
 }
-function readCutover(db: DatabaseSync, version: 10 | 11 = 10) {
+function readCutover(db: DatabaseSync, version: 10 | 11 | 12 = 10) {
   const found = schemaRows(db);
   const row = found.find((v) => v.name === table);
   if (!row || row.type !== "table" || row.sql !== coverageSql)
@@ -267,13 +273,13 @@ function decodeNative(rows: Rows["actualRows"]) {
 export function readPublicComparisonDatabaseSnapshot(
   db: DatabaseSync,
   expectedSelection: PublicComparisonDatabaseSelection,
-  version: 10 | 11,
+  version: 10 | 11 | 12,
 ) {
   checkPhysical(db);
   const { cutover, cutoverBytes } = readCutover(db, version);
   if (digest(cutover.selection) !== digest(selectionSchema.parse(expectedSelection)))
     fail("PUBLIC_COMPARISON_IDENTITY_MISMATCH");
-  const rows = readPublicComparisonRows(db, cutover.originalSchema, version === 11);
+  const rows = readPublicComparisonRows(db, cutover.originalSchema, version >= 11, version === 12);
   const rawRowsDigest = createHash("sha256")
     .update(
       JSON.stringify(
@@ -291,7 +297,7 @@ export function readPublicComparisonDatabaseSnapshot(
     .digest("hex");
   const { past, next } = splitActual(rows.actualRows, cutover.originalActualKeys);
   const bindingRows =
-    version === 11
+    version >= 11
       ? rows.reservationRows.bindingRows.filter((row) => JSON.parse(row.body).recordVersion === 3)
       : [];
   const legacyBindings = rows.reservationRows.bindingRows.filter(
@@ -307,11 +313,29 @@ export function readPublicComparisonDatabaseSnapshot(
     if (row.run_id !== binding.runId || row.nonce !== binding.clientRequestId) fail();
     return binding;
   });
+  const transmissionRows =
+    version === 12
+      ? rows.transmissionRows.bindingRows.filter((r) => JSON.parse(r.body).recordVersion === 3)
+      : [];
+  const legacyTransmissions = rows.transmissionRows.bindingRows.filter(
+    (r) => !transmissionRows.includes(r),
+  );
+  if (
+    legacyTransmissions.length &&
+    transmissionRows.some((r) => r.storage_order <= legacyTransmissions.at(-1)!.storage_order)
+  )
+    fail();
+  const transmissionBindings = transmissionRows.map((row) => {
+    const b = comparisonTransmissionBindingSchema.parse(decodeBody(row, 64 * 1024));
+    if (row.run_id !== b.runId || row.nonce !== b.clientRequestId) fail();
+    return b;
+  });
   const prefix = decodePublicComparisonPrefix(
     {
       ...rows,
       actualRows: past,
       reservationRows: { ...rows.reservationRows, bindingRows: legacyBindings },
+      transmissionRows: { ...rows.transmissionRows, bindingRows: legacyTransmissions },
     },
     cutover.selection,
   );
@@ -340,6 +364,8 @@ export function readPublicComparisonDatabaseSnapshot(
     bindings,
     nativeRawOverheadBytes,
     bindingRawOverheadBytes,
+    transmissionBindings,
+    transmissionRawOverheadBytes: overhead(transmissionRows),
     rawRowsDigest,
   };
 }

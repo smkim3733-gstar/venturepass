@@ -6,7 +6,7 @@ import { providerDigest as digest } from "./local-data-quality-provider.mjs";
 import { DataToolError, fail } from "./local-data-files.mjs";
 
 /** Bounded raw-row decoder only. Caller must audit schema and the complete archive in one transaction. */
-export function readProviderTransmissionApprovalDatabaseRows(db) {
+export function readProviderTransmissionApprovalRawDatabaseRows(db) {
   const count = db
     .prepare(
       `SELECT
@@ -31,12 +31,18 @@ export function readProviderTransmissionApprovalDatabaseRows(db) {
   const coverageRows = db
     .prepare("SELECT id,body,body_hash FROM quality_provider_transmission_coverage ORDER BY id")
     .all();
+  return { bindingRows, coverageRows };
+}
+
+export function readProviderTransmissionApprovalDatabaseRows(db) {
+  const { bindingRows, coverageRows } = readProviderTransmissionApprovalRawDatabaseRows(db);
   return decodeProviderTransmissionApprovalDatabaseRows(bindingRows, coverageRows);
 }
 
 /** Pure row decoding shared with supplied archive inspection; no DB access. */
 export function decodeProviderTransmissionApprovalDatabaseRows(bindingRows, coverageRows) {
-  if (bindingRows.length > limits.records || coverageRows.length !== 1) fail("QUALITY_DATABASE_INVALID");
+  if (bindingRows.length > limits.records || coverageRows.length !== 1)
+    fail("QUALITY_DATABASE_INVALID");
   try {
     const bindings = decodeVersionedProviderTransmissionApprovalBindingRows(bindingRows),
       row = coverageRows[0];

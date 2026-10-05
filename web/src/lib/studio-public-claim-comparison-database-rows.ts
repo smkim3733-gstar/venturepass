@@ -8,6 +8,7 @@ import {
 } from "../../scripts/local-data-quality-provider-reservation-database.mjs";
 import {
   readProviderTransmissionApprovalDatabaseRows,
+  readProviderTransmissionApprovalRawDatabaseRows,
   decodeProviderTransmissionApprovalDatabaseRows,
 } from "../../scripts/local-data-quality-provider-transmission-database.mjs";
 import {
@@ -40,6 +41,7 @@ export function readPublicComparisonRows(
   db: DatabaseSync,
   schema: PublicComparisonPrefix["rows"]["schema"],
   rawReservationBindings = false,
+  rawTransmissionBindings = false,
 ) {
   let total = 0;
   for (const [table, cap] of Object.entries(limits)) {
@@ -102,7 +104,9 @@ export function readPublicComparisonRows(
         : readProviderReservationDatabaseRows(db),
     ),
     transmissionRows: (({ bindingRows, coverageRows }) => ({ bindingRows, coverageRows }))(
-      readProviderTransmissionApprovalDatabaseRows(db),
+      rawTransmissionBindings
+        ? readProviderTransmissionApprovalRawDatabaseRows(db)
+        : readProviderTransmissionApprovalDatabaseRows(db),
     ),
     actualRows: {
       budget: db

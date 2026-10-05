@@ -12,7 +12,7 @@ import {
   writeJournalJson,
 } from "../../scripts/local-journal-io.mjs";
 import { providerDigest as digest } from "../../scripts/local-data-quality-provider.mjs";
-import { publicComparisonV11Columns } from "./studio-public-claim-comparison-database-v11-schema";
+import { publicComparisonV12Columns as columns } from "./studio-public-claim-comparison-database-v12-schema";
 import type { PublicComparisonDatabaseSelection } from "./studio-public-claim-comparison-database";
 import type { ComparisonReservationState } from "./studio-public-claim-comparison-reservation";
 import {
@@ -44,6 +44,7 @@ const tableSchema = z.enum([
   "quality_actual_budget_events",
   "quality_actual_requests",
   "quality_provider_reservation_bindings",
+  "quality_provider_transmission_bindings",
 ]);
 type Table = z.infer<typeof tableSchema>;
 const keyCounts: Record<Table, number> = {
@@ -53,6 +54,7 @@ const keyCounts: Record<Table, number> = {
   quality_actual_budget_events: 2,
   quality_actual_requests: 1,
   quality_provider_reservation_bindings: 1,
+  quality_provider_transmission_bindings: 1,
 };
 const rowSchema = z
   .object({
@@ -105,7 +107,10 @@ const intentSchema = z
     runId: z.string().uuid(),
     before: checkpointSchema,
     expectedArchiveDigest: hash,
-    rows: z.array(rowSchema).min(6).max(7),
+    rows: z
+      .array(rowSchema.refine((r) => r.table !== "quality_provider_transmission_bindings"))
+      .min(6)
+      .max(7),
   })
   .strict();
 const ackSchema = z
@@ -132,7 +137,51 @@ const entrySchema = z
     entryDigest: hash,
   })
   .strict();
-type Entry = z.infer<typeof entrySchema>;
+const intentV2Schema = intentSchema.extend({
+  operation: z.enum(["reserve", "cancel", "approve-dispatch", "mark-unknown", "persist-capture"]),
+  rows: z.array(rowSchema).min(2).max(7),
+});
+const transitionSchema = z
+  .object({
+    type: z.literal("transition-intent"),
+    from: z.literal(11),
+    to: z.literal(12),
+    before: checkpointSchema,
+    afterArchiveDigest: hash,
+    beforeSchemaDigest: hash,
+    afterSchemaDigest: hash,
+    rowDataDigest: hash,
+  })
+  .strict();
+const transitionAckSchema = z
+  .object({
+    type: z.literal("transition-ack"),
+    intentDigest: hash,
+    checkpoint: checkpointSchema,
+    schemaDigest: hash,
+    rowDataDigest: hash,
+  })
+  .strict();
+const payloadV2Schema = z.discriminatedUnion("type", [
+  intentV2Schema,
+  ackSchema,
+  transitionSchema,
+  transitionAckSchema,
+]);
+const entryV2Schema = entrySchema.extend({
+  recordVersion: z.literal(2),
+  payload: payloadV2Schema,
+});
+const anyEntrySchema = z.union([entrySchema, entryV2Schema]);
+type Version = 1 | 2;
+const operationRows = {
+  reserve: 7,
+  cancel: 6,
+  "approve-dispatch": 3,
+  "mark-unknown": 2,
+  "persist-capture": 3,
+} as const;
+type Entry = z.infer<typeof anyEntrySchema>;
 type Intent = z.infer<typeof intentSchema>;
 export type ComparisonStorageSession = Readonly<{ kind: "comparison-storage-session" }>;
 type Owned = {
@@ -240,7 +289,7 @@ function guard(token: ComparisonStorageSession) {
   pathCheck(s);
   return s;
 }
-function entries(token: ComparisonStorageSession) {
+function entries(token: ComparisonStorageSession, version: Version = 1) {
   const s = guard(token),
     dirs = directories(s);
   for (const dir of dirs) safePath(dir, "directory");
@@ -253,8 +302,12 @@ function entries(token: ComparisonStorageSession) {
   for (let i = 0; i < names[0].length; i++) {
     const name = String(i).padStart(3, "0") + ".json";
     if (names[0][i] !== name) fail("WITNESS_INVALID");
-    const a = entrySchema.parse(readJournalJson(join(dirs[0], name), 32768, fail));
-    const b = entrySchema.parse(readJournalJson(join(dirs[1], name), 32768, fail));
+    const a = (version === 1 ? entrySchema : anyEntrySchema).parse(
+      readJournalJson(join(dirs[0], name), 32768, fail),
+    );
+    const b = (version === 1 ? entrySchema : anyEntrySchema).parse(
+      readJournalJson(join(dirs[1], name), 32768, fail),
+    );
     if (digest(a) !== digest(b)) fail("WITNESS_PARTIAL");
     size += Buffer.byteLength(JSON.stringify(a) + "\n");
     const { entryDigest, ...body } = a;
@@ -279,15 +332,57 @@ function entries(token: ComparisonStorageSession) {
     digest(binding.journalIdentity) !== digest(comparisonRootIdentity(dirs[1]))
   )
     fail("WITNESS_BINDING_CHANGED");
+  if (result[0].recordVersion !== 1 || result[1]?.recordVersion !== 1) fail("WITNESS_INVALID");
+  let transitioned = false;
   for (let i = 2; i < result.length; i++) {
     const v = result[i].payload;
-    if (i % 2 === 0 ? v.type !== "intent" : v.type !== "ack") fail("WITNESS_INVALID");
+    const e = result[i];
+    if (v.type === "transition-intent") {
+      const prev = result[i - 1];
+      if (
+        transitioned ||
+        i % 2 !== 0 ||
+        e.recordVersion !== 2 ||
+        prev.recordVersion !== 1 ||
+        (prev.payload.type !== "ack" && prev.payload.type !== "anchor") ||
+        digest(v.before) !== digest(prev.payload.checkpoint)
+      )
+        fail("WITNESS_INVALID");
+      transitioned = true;
+      continue;
+    }
+    if (v.type === "transition-ack") {
+      const prev = result[i - 1],
+        t = prev.payload;
+      if (
+        !transitioned ||
+        i % 2 !== 1 ||
+        e.recordVersion !== 2 ||
+        t.type !== "transition-intent" ||
+        v.intentDigest !== prev.entryDigest ||
+        v.schemaDigest !== t.afterSchemaDigest ||
+        v.rowDataDigest !== t.rowDataDigest ||
+        v.checkpoint.archiveDigest !== t.afterArchiveDigest ||
+        v.checkpoint.coverageDigest !== t.before.coverageDigest ||
+        v.checkpoint.cutoverDigest !== t.before.cutoverDigest ||
+        v.checkpoint.budgetRevision !== t.before.budgetRevision ||
+        v.checkpoint.budgetHead !== t.before.budgetHead
+      )
+        fail("WITNESS_INVALID");
+      continue;
+    }
+    if (
+      e.recordVersion !== (transitioned ? 2 : 1) ||
+      (i % 2 === 0 ? v.type !== "intent" : v.type !== "ack")
+    )
+      fail("WITNESS_INVALID");
     if (v.type === "intent") {
       const prev = result[i - 1].payload;
-      if (prev.type !== "anchor" && prev.type !== "ack") fail("WITNESS_INVALID");
+      if (prev.type !== "anchor" && prev.type !== "ack" && prev.type !== "transition-ack")
+        fail("WITNESS_INVALID");
       if (
         digest(v.before) !== digest(prev.checkpoint) ||
-        v.rows.length !== (v.operation === "reserve" ? 7 : 6) ||
+        v.rows.length !== operationRows[v.operation] ||
         v.rows.some((r) => r.keys.length !== keyCounts[r.table]) ||
         new Set(v.rows.map((r) => digest([r.table, r.keys]))).size !== v.rows.length
       )
@@ -315,18 +410,28 @@ function entries(token: ComparisonStorageSession) {
 function append(
   token: ComparisonStorageSession,
   prior: Entry[],
-  payload: z.infer<typeof payloadSchema>,
+  payload: z.infer<typeof payloadSchema> | z.infer<typeof payloadV2Schema>,
+  version: Version = 1,
 ) {
   const s = guard(token);
   if (prior.length >= 128) fail("WITNESS_LIMIT");
   const body = {
     kind: "public-comparison-storage-witness" as const,
-    recordVersion: 1 as const,
+    recordVersion: version,
     sequence: prior.length,
     previousDigest: prior.at(-1)?.entryDigest ?? null,
-    payload: payloadSchema.parse(payload),
+    payload: (version === 1 ? payloadSchema : payloadV2Schema).parse(payload),
   };
-  const entry = entrySchema.parse({ ...body, entryDigest: digest(body) });
+  const entry = (version === 1 ? entrySchema : entryV2Schema).parse({
+    ...body,
+    entryDigest: digest(body),
+  });
+  if (
+    prior.reduce((n, e) => n + Buffer.byteLength(JSON.stringify(e) + "\n"), 0) +
+      Buffer.byteLength(JSON.stringify(entry) + "\n") >
+    4 * 1024 * 1024
+  )
+    fail("WITNESS_LIMIT");
   const name = String(prior.length).padStart(3, "0") + ".json";
   // External control first, then DB-side witness. A half pair stays blocked.
   for (const dir of directories(s)) writeJournalJson(join(dir, name), entry, 32768, fail);
@@ -352,13 +457,17 @@ export function comparisonWitnessRow(table: Table, values: unknown[]): Compariso
   });
 }
 /** Called only after the bounded exact-schema inspector in the same SQL transaction. */
-export function comparisonWitnessInventory(db: DatabaseSync, exclude: ComparisonWitnessRow[] = []) {
+export function comparisonWitnessInventory(
+  db: DatabaseSync,
+  exclude: ComparisonWitnessRow[] = [],
+  rowsOnly = false,
+) {
   const schema = db
     .prepare(
       "SELECT type,name,tbl_name,sql FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name",
     )
     .all();
-  const h = createHash("sha256").update(encode(schema));
+  const h = createHash("sha256").update(rowsOnly ? "comparison-rows-only-v1" : encode(schema));
   for (const row of schema.filter((r) => r.type === "table")) {
     const table = String(row.name);
     if (!/^[a-z_]+$/.test(table)) fail("WITNESS_INVALID");
@@ -367,12 +476,10 @@ export function comparisonWitnessInventory(db: DatabaseSync, exclude: Comparison
       .prepare("SELECT rowid AS original_order,* FROM " + table + " ORDER BY rowid")
       .iterate()) {
       const ref = exclude.find(
-        (r) =>
-          r.table === table &&
-          r.keys.every((k, i) => record[publicComparisonV11Columns[r.table][i]] === k),
+        (r) => r.table === table && r.keys.every((k, i) => record[columns[r.table][i]] === k),
       );
       if (ref) {
-        const values = publicComparisonV11Columns[ref.table].map((k) => record[k]);
+        const values = columns[ref.table].map((k) => record[k]);
         if (comparisonWitnessRow(ref.table, values).digest !== ref.digest)
           fail("WITNESS_ROWS_CHANGED");
       } else h.update(encode(record));
@@ -380,9 +487,9 @@ export function comparisonWitnessInventory(db: DatabaseSync, exclude: Comparison
   }
   return h.digest("hex");
 }
-function requireRows(db: DatabaseSync, intent: Intent) {
+function requireRows(db: DatabaseSync, intent: Intent | z.infer<typeof intentV2Schema>) {
   for (const ref of intent.rows) {
-    const cols = publicComparisonV11Columns[ref.table];
+    const cols = columns[ref.table];
     const result = db
       .prepare(
         "SELECT " +
@@ -439,21 +546,25 @@ export function initializeComparisonWitness(
 export function checkComparisonWitness(
   token: ComparisonStorageSession,
   checkpoint: ComparisonWitnessCheckpoint,
+  version: Version = 1,
 ) {
-  const list = entries(token),
+  const list = entries(token, version),
     last = list.at(-1)!.payload;
   if (
-    (last.type !== "anchor" && last.type !== "ack") ||
+    (last.type !== "anchor" && last.type !== "ack" && last.type !== "transition-ack") ||
     digest(last.checkpoint) !== digest(checkpoint)
   )
     fail("WITNESS_RECONCILIATION_REQUIRED");
+  if (version === 2 && !list.some((e) => e.payload.type === "transition-ack"))
+    fail("WITNESS_TRANSITION_REQUIRED");
   return list;
 }
 export function checkComparisonWitnessCompany(
   token: ComparisonStorageSession,
   company: ComparisonCompanyGuard,
+  version: Version = 1,
 ) {
-  const list = entries(token),
+  const list = entries(token, version),
     first = list[0].payload,
     s = own(token),
     studio = comparisonCompanyBinding(company);
@@ -479,8 +590,9 @@ export function acknowledgeComparisonWitness(
   checkpoint: ComparisonWitnessCheckpoint,
   state: ComparisonReservationState,
   cancellations: { clientRequestId: string }[],
+  version: Version = 1,
 ) {
-  const list = entries(token),
+  const list = entries(token, version),
     entry = list.at(-1)!,
     intent = entry.payload,
     s = own(token);
@@ -503,13 +615,18 @@ export function acknowledgeComparisonWitness(
   requireRows(s.db, intent);
   if (comparisonWitnessInventory(s.db, intent.rows) !== intent.before.inventoryDigest)
     fail("WITNESS_DATABASE_CHANGED");
-  append(token, list, {
-    type: "ack",
-    intentDigest: entry.entryDigest,
-    receiptDigest: digest(receipt),
-    checkpoint,
-  });
-  checkComparisonWitness(token, checkpoint);
+  append(
+    token,
+    list,
+    {
+      type: "ack",
+      intentDigest: entry.entryDigest,
+      receiptDigest: digest(receipt),
+      checkpoint,
+    },
+    version,
+  );
+  checkComparisonWitness(token, checkpoint, version);
   return {
     source: "local-comparison-witness-reconciliation" as const,
     repairedFilesOnly: true,
@@ -521,9 +638,87 @@ export function checkComparisonWitnessPending(
   token: ComparisonStorageSession,
   nonce: string,
   commandDigest: string,
+  version: Version = 1,
 ) {
-  const list = entries(token),
+  const list = entries(token, version),
     last = list.at(-1)!.payload;
   if (last.type !== "intent" || last.nonce !== nonce || last.commandDigest !== commandDigest)
     fail("WITNESS_RECONCILIATION_REQUIRED");
+}
+
+/** Conservative room for every unfinished run, including future unsupported operations.
+ * No record rotation, deletion, or alternate control directory. */
+export function requireComparisonWitnessCapacity(
+  priorCount: number,
+  appended: number,
+  state: ComparisonReservationState,
+) {
+  let remaining = 0;
+  for (const run of state.archive.records.runs) {
+    const events = state.archive.records.events.filter((e) => e.runId === run.id);
+    if (events.some((e) => e.payload.kind === "finalized")) continue;
+    const count = new Set(events.map((e) => e.payload.kind)).size;
+    remaining += 2 * Math.max(0, 8 - count);
+  }
+  if (
+    priorCount + appended + remaining > 128 ||
+    (priorCount + appended + remaining) * 32768 > 4 * 1024 * 1024
+  )
+    fail("WITNESS_LIMIT");
+}
+export function recordComparisonWitnessIntentV2(
+  token: ComparisonStorageSession,
+  checkpoint: ComparisonWitnessCheckpoint,
+  intent: Omit<z.infer<typeof intentV2Schema>, "type" | "before">,
+  next: ComparisonReservationState,
+) {
+  const prior = checkComparisonWitness(token, checkpoint, 2);
+  const parsed = intentV2Schema.parse({ type: "intent", before: checkpoint, ...intent });
+  if (parsed.rows.length !== operationRows[parsed.operation]) fail("WITNESS_INVALID");
+  requireComparisonWitnessCapacity(prior.length, 2, next);
+  append(token, prior, parsed, 2);
+}
+export function beginComparisonWitnessTransition(
+  token: ComparisonStorageSession,
+  transition: Omit<z.infer<typeof transitionSchema>, "type" | "from" | "to">,
+  state: ComparisonReservationState,
+) {
+  const prior = checkComparisonWitness(token, transition.before);
+  requireComparisonWitnessCapacity(prior.length, 2, state);
+  append(token, prior, { type: "transition-intent", from: 11, to: 12, ...transition }, 2);
+}
+export function acknowledgeComparisonWitnessTransition(
+  token: ComparisonStorageSession,
+  checkpoint: ComparisonWitnessCheckpoint,
+  schemaDigest: string,
+) {
+  const list = entries(token, 2),
+    entry = list.at(-1)!,
+    t = entry.payload,
+    s = guard(token);
+  const rowDataDigest = comparisonWitnessInventory(s.db, [], true);
+  if (
+    t.type !== "transition-intent" ||
+    schemaDigest !== t.afterSchemaDigest ||
+    rowDataDigest !== t.rowDataDigest ||
+    checkpoint.archiveDigest !== t.afterArchiveDigest ||
+    checkpoint.coverageDigest !== t.before.coverageDigest ||
+    checkpoint.cutoverDigest !== t.before.cutoverDigest ||
+    checkpoint.budgetRevision !== t.before.budgetRevision ||
+    checkpoint.budgetHead !== t.before.budgetHead
+  )
+    fail("WITNESS_TRANSITION_RECONCILIATION_REQUIRED");
+  append(
+    token,
+    list,
+    {
+      type: "transition-ack",
+      intentDigest: entry.entryDigest,
+      checkpoint,
+      schemaDigest,
+      rowDataDigest,
+    },
+    2,
+  );
+  checkComparisonWitness(token, checkpoint, 2);
 }
