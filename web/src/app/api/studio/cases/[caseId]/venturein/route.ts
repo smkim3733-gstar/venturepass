@@ -88,7 +88,7 @@ export function POST(request: Request, context: Context) {
           if (input.action === "continue") {
             await continueVentureSession(caseId, credentials);
           } else {
-            await startVentureSession(caseId, credentials);
+            await startVentureSession(caseId, credentials, input.accountRevision);
           }
         } finally {
           credentials.loginId = "";

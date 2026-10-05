@@ -10,6 +10,8 @@ import {
 } from "playwright-core";
 import { ventureinUrls, type VentureSessionStatus } from "./venturein-schema";
 import { StudioError } from "./studio-http";
+import { collectVentureMyStatus } from "./venturein-my-status-collector";
+import { VentureMyStatusError } from "./venturein-my-status";
 import { collectVentureScreen } from "./venturein-inspection-collector";
 import { ventureInspectionRules } from "./venturein-inspection";
 import {
@@ -146,6 +148,7 @@ function classifyClickFailure(error: unknown): keyof typeof clickFailureMessages
 }
 
 type Session = {
+  accountRevision?: number;
   status: VentureSessionStatus;
   cancelled: boolean;
   operationInProgress?: boolean;
@@ -321,12 +324,14 @@ export async function stopVentureSession(caseId: string): Promise<VentureSession
 export async function startVentureSession(
   caseId: string,
   credentials: { loginId: string; password: string },
+  accountRevision?: number,
 ): Promise<VentureSessionStatus> {
   const previous = sessions.get(caseId);
   if (previous && active(previous)) return { ...previous.status };
 
   const now = new Date().toISOString();
   const session: Session = {
+    accountRevision,
     cancelled: false,
     loginAttempted: false,
     operationInProgress: true,
@@ -1520,4 +1525,66 @@ async function inspectVentureSession(
       );
   }
   return getVentureSession(caseId);
+}
+
+/** Read only the already-open MY page. Never refresh authentication, navigate or persist status. */
+export async function readVentureMyStatus(
+  caseId: string,
+  input: { sessionStartedAt: string; accountRevision: number; businessNumber: string },
+  assertCurrent: () => void,
+) {
+  const requested = { ...input };
+  const unavailable = () => new StudioError(
+    "원래 계정의 연결 세션과 현재 화면을 확인해 주세요. 자동으로 다시 연결하지 않습니다.",
+    409, "MY_STATUS_SESSION_CHANGED",
+  );
+  const session = sessions.get(caseId);
+  if (!session || !session.page || !session.textInputTracking ||
+    !session.authenticatedAt || session.accountRevision === undefined ||
+    !Number.isSafeInteger(requested.accountRevision) || requested.accountRevision < 0)
+    throw unavailable();
+  if (session.operationInProgress)
+    throw new StudioError("연결 창에서 다른 작업이 진행 중입니다.", 409, "SESSION_BUSY");
+  const page = session.page;
+  const context = session.context;
+  const browser = session.browser;
+  const rawUrl = page.url();
+  const documentRevision = session.documentRevision ?? 0;
+  const authenticatedAt = session.authenticatedAt;
+  const check = () => {
+    assertCurrent();
+    if (process.env.DEBUG?.trim() || (process.env.PWDEBUG && process.env.PWDEBUG !== "0"))
+      throw new StudioError("브라우저 진단 모드에서는 기록을 읽지 않습니다.", 409, "DEBUG_ENABLED");
+    if (sessions.get(caseId) !== session || !active(session) || session.page !== page ||
+      session.context !== context || session.browser !== browser ||
+      page.isClosed() || session.status.state !== "connected_unmapped" ||
+      session.status.startedAt !== requested.sessionStartedAt ||
+      session.accountRevision !== requested.accountRevision ||
+      !session.textInputTracking || session.authenticatedAt !== authenticatedAt ||
+      !Number.isFinite(Date.parse(authenticatedAt)) ||
+      Date.now() < Date.parse(authenticatedAt) ||
+      Date.now() >= Date.parse(authenticatedAt) + sessionLifetimeMs ||
+      (session.documentRevision ?? 0) !== documentRevision || page.url() !== rawUrl)
+      throw unavailable();
+  };
+  session.operationInProgress = true;
+  try {
+    check();
+    const observation = await collectVentureMyStatus(page, {
+      businessNumber: requested.businessNumber,
+      // Local receipt numbers are not authenticated official application numbers.
+      applicationNumber: null,
+    }, check);
+    check();
+    return { observation, documentRevision };
+  } catch (error) {
+    check();
+    if (error instanceof StudioError) throw error;
+    throw new StudioError(
+      "현재 MY벤처현황을 읽지 못했습니다. 지원 화면과 기업 표시를 확인해 주세요.",
+      409, error instanceof VentureMyStatusError ? error.code : "MY_STATUS_READ_FAILED",
+    );
+  } finally {
+    session.operationInProgress = false;
+  }
 }

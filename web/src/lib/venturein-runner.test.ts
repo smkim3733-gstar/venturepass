@@ -1,12 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
-const { launch, collectScreen, applyText, compareInputs } = vi.hoisted(() => ({
+const { launch, collectScreen, applyText, compareInputs, collectMyStatus } = vi.hoisted(() => ({
+  collectMyStatus: vi.fn(),
   launch: vi.fn(),
   collectScreen: vi.fn(),
   applyText: vi.fn(),
   compareInputs: vi.fn(),
 }));
+vi.mock("./venturein-my-status-collector", () => ({ collectVentureMyStatus: collectMyStatus }));
 vi.mock("playwright-core", () => ({ chromium: { launch } }));
 vi.mock("./venturein-inspection-collector", () => ({ collectVentureScreen: collectScreen }));
 vi.mock("./venturein-text-input", async (importOriginal) => ({
@@ -19,6 +21,7 @@ vi.mock("./venturein-input-comparison", async (importOriginal) => ({
 }));
 
 import {
+  readVentureMyStatus,
   continueVentureSession,
   getVentureSession,
   inspectVentureApplication,
@@ -302,6 +305,7 @@ function browserFixture() {
 }
 
 beforeEach(() => {
+  collectMyStatus.mockReset();
   launch.mockReset();
   collectScreen.mockReset();
   applyText.mockReset();
@@ -2655,5 +2659,102 @@ describe("벤처인 임시 로그인 실행기 — 브라우저 모의 테스트
     } finally {
       globalSessions.__ventureinSessions = previous;
     }
+  });
+});
+
+
+describe("MY status uses the original account-bound session without login actions", () => {
+  async function connected(revision?: number) {
+    const id = caseId();
+    const fixture = browserFixture();
+    launch.mockResolvedValue(fixture.browser);
+    await startVentureSession(id, account(), revision);
+    fixture.fields.idVisible = false;
+    fixture.fields.passwordVisible = false;
+    fixture.fields.logoutVisible = true;
+    fixture.navigate("https://www.smes.go.kr/venturein/myVntr/viewMyVntr");
+    const status = await resumeVentureSession(id);
+    expect(status.state).toBe("connected_unmapped");
+    const input = { accountRevision: 7, sessionStartedAt: status.startedAt!, businessNumber: "777-77-00001" };
+    collectMyStatus.mockImplementation(async (_page, _expected, check) => {
+      check();
+      return { origin: "page-observation", databaseChanged: false };
+    });
+    return { id, fixture, input };
+  }
+  it("binds the account revision at first session creation and does not rebind a repeated start", async () => {
+    const { id, fixture, input } = await connected(7);
+    const before = getVentureSession(id);
+    await startVentureSession(id, account(), 9);
+    expect(await readVentureMyStatus(id, input, () => {})).toMatchObject({ observation: { databaseChanged: false } });
+    expect(getVentureSession(id)).toEqual(before);
+    expect(collectMyStatus).toHaveBeenCalledWith(fixture.page, {
+      businessNumber: input.businessNumber, applicationNumber: null,
+    }, expect.any(Function));
+    expect(launch).toHaveBeenCalledTimes(1);
+    expect(fixture.page.goto).toHaveBeenCalledTimes(1);
+    expect(fixture.loginButton.click).toHaveBeenCalledTimes(1);
+    expect(collectScreen).not.toHaveBeenCalled();
+    await expect(readVentureMyStatus(id, { ...input, accountRevision: 9 }, () => {}))
+      .rejects.toMatchObject({ code: "MY_STATUS_SESSION_CHANGED" });
+  });
+  it("does not give an older unbound session a new account identity", async () => {
+    const { id, input } = await connected();
+    await expect(readVentureMyStatus(id, input, () => {})).rejects.toMatchObject({ code: "MY_STATUS_SESSION_CHANGED" });
+    expect(collectMyStatus).not.toHaveBeenCalled();
+  });
+  it.each(["wrong-start", "wrong-account", "debug", "expired"])("rejects %s before collecting", async (kind) => {
+    const { id, input } = await connected(7);
+    if (kind === "wrong-start") input.sessionStartedAt = "2031-01-01T00:00:00.000Z";
+    if (kind === "wrong-account") input.accountRevision++;
+    if (kind === "debug") vi.stubEnv("DEBUG", "pw:api");
+    if (kind === "expired") vi.spyOn(Date, "now").mockReturnValue(Date.now() + 16 * 60 * 1000);
+    try {
+      await expect(readVentureMyStatus(id, input, () => {})).rejects.toBeInstanceOf(Error);
+      expect(collectMyStatus).not.toHaveBeenCalled();
+    } finally { vi.restoreAllMocks(); }
+  });
+  it.each(["navigation", "popup", "close", "callback"])("rejects %s during the read and never replays it", async (kind) => {
+    const { id, fixture, input } = await connected(7);
+    let current = true;
+    collectMyStatus.mockImplementation(async (_page, _expected, check) => {
+      check();
+      if (kind === "navigation") fixture.navigate(fixture.page.url());
+      if (kind === "popup") fixture.openPopup();
+      if (kind === "close") fixture.closeWindow();
+      if (kind === "callback") current = false;
+      return { origin: "page-observation" };
+    });
+    await expect(readVentureMyStatus(id, input, () => { if (!current) throw Error("Changed"); })).rejects.toBeInstanceOf(Error);
+    expect(collectMyStatus).toHaveBeenCalledTimes(1);
+    expect(fixture.loginButton.click).toHaveBeenCalledTimes(1);
+  });
+  it("keeps the operation lock until response validation and releases it on read failure", async () => {
+    const { id, input } = await connected(7);
+    let release!: () => void;
+    collectMyStatus.mockImplementationOnce(async () => {
+      await new Promise<void>((resolve) => { release = resolve; });
+      throw Error("PRIVATE-URL-AND-CUSTOMER-TEXT");
+    });
+    const first = readVentureMyStatus(id, input, () => {});
+    await expect(readVentureMyStatus(id, input, () => {})).rejects.toMatchObject({ code: "SESSION_BUSY" });
+    release();
+    await expect(first).rejects.toMatchObject({ code: "MY_STATUS_READ_FAILED" });
+    expect(collectMyStatus).toHaveBeenCalledTimes(1);
+    await readVentureMyStatus(id, input, () => {});
+    expect(collectMyStatus).toHaveBeenCalledTimes(2);
+  });
+  it("copies the caller identity before awaiting the collector", async () => {
+    const { id, input } = await connected(7);
+    let release!: () => void;
+    collectMyStatus.mockImplementationOnce(async (_page, expected, check) => {
+      await new Promise<void>((resolve) => { release = resolve; }); check();
+      expect(expected).toEqual({ businessNumber: "777-77-00001", applicationNumber: null });
+      return { origin: "page-observation" };
+    });
+    const reading = readVentureMyStatus(id, input, () => {});
+    input.accountRevision = 999; input.sessionStartedAt = "changed"; input.businessNumber = "changed";
+    release();
+    await expect(reading).resolves.toMatchObject({ observation: { origin: "page-observation" } });
   });
 });

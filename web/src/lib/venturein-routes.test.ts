@@ -185,6 +185,7 @@ describe("벤처인 계정 API 경계", () => {
       expect(received).toEqual({ loginId: "test-only-id", password: "test-only-secret" });
       expect(credentials).toEqual({ loginId: "", password: "" });
       expect(runner).toHaveBeenCalledOnce();
+      if (action === "start") expect(runner.mock.calls[0][2]).toBe(0);
       expect(action === "start" ? state.continueLogin : state.start).not.toHaveBeenCalled();
       expect(state.stop).not.toHaveBeenCalled();
       expect(await response.text()).not.toContain("test-only-secret");
