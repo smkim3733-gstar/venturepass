@@ -8,8 +8,10 @@ import {
   validatePublicClaimComparison,
   publicClaimComparisonLimits,
   publicClaimComparisonResponseSchema,
+  type PublicClaimComparisonPreparation,
 } from "./studio-public-claim-comparison";
 import type { StudioCase } from "./studio-schema";
+import { inspectArchivedPublicClaimPreparation } from "./studio-public-claim-comparison-archive-preparation";
 import { StudioError } from "./studio-http";
 
 // Frozen meaning of public-claim-comparison-request-v1. A changed prompt/schema requires a new version.
@@ -85,6 +87,18 @@ export function buildPublicClaimComparisonRequest(company: StudioCase, raw: unkn
   )
     fail("PUBLIC_CLAIM_REQUEST_LIMIT", 413);
   const prepared = preparePublicClaimComparison(company, command.selection);
+  return requestFromPreparation(command, prepared);
+}
+
+/** Historical bytes only; does not re-audit current company/history or grant transmission. */
+export function inspectArchivedPublicClaimRequest(raw: unknown, context: string) {
+  const command = parse(publicClaimComparisonRequestCommandSchema, raw);
+  if (Buffer.byteLength(JSON.stringify(command)) > publicClaimComparisonLimits.selectionBytes) fail("PUBLIC_CLAIM_REQUEST_LIMIT",413);
+  const prepared = inspectArchivedPublicClaimPreparation(context);
+  if (executionDigest(prepared.selection) !== executionDigest(command.selection)) fail("PUBLIC_CLAIM_REQUEST_CHANGED");
+  return {prepared, request:requestFromPreparation(command,prepared)};
+}
+function requestFromPreparation(command: z.infer<typeof publicClaimComparisonRequestCommandSchema>, prepared: PublicClaimComparisonPreparation) {
   const contract = getPublicClaimComparisonRequestContract();
   const user = JSON.stringify(prepared);
   const body: EngineExecutionTransportRequest["body"] = {

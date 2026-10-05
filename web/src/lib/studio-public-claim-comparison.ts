@@ -218,6 +218,11 @@ export function validatePublicClaimComparison(
   rawResponse: unknown,
 ) {
   const prepared = preparePublicClaimComparison(company, selection);
+  return validatePreparedPublicClaimComparison(prepared, rawResponse);
+}
+
+/** Quote comparison only. Callers must independently audit the preparation/context. */
+export function validatePreparedPublicClaimComparison(prepared: PublicClaimComparisonPreparation, rawResponse: unknown) {
   json(rawResponse, publicClaimComparisonLimits.responseCharacters);
   const response = parse(publicClaimComparisonResponseSchema, rawResponse);
   if (

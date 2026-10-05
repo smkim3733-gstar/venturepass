@@ -127,25 +127,9 @@ export function capturePublicClaimComparisonResponse(
     // The frozen request omits service_tier; response tier cannot fill it in.
     requestedTier: null,
   };
-  if (capture.status !== "completed") return reject("response-incomplete");
-  const parsed = envelope.safeParse(capture);
-  if (!parsed.success) return reject("response-unsupported");
-  if (parsed.data.model !== current.command.model) return reject("model-mismatch");
-  const messages: unknown[] = [];
-  for (const item of parsed.data.output) {
-    const kind = outputKind.safeParse(item);
-    if (!kind.success) return reject("response-unsupported");
-    if (kind.data.type === "message") messages.push(item);
-  }
-  if (messages.length !== 1 || !message.safeParse(messages[0]).success)
-    return reject("response-unsupported");
-  let output: unknown;
-  try {
-    // Reuse the existing JSON extraction without changing legacy output handling.
-    output = parseProviderResponseOutput(capture);
-  } catch {
-    return reject("response-unsupported");
-  }
+  const decoded = decodePublicClaimCapturedOutput(capture,current.command.model);
+  if (decoded.state !== "parsed") return reject(decoded.state);
+  const output = decoded.output;
   try {
     const comparison = validatePublicClaimComparisonRequestResponse(
       company,
@@ -164,4 +148,28 @@ export function capturePublicClaimComparisonResponse(
   } catch {
     return reject("comparison-rejected");
   }
+}
+
+/** Shared narrow envelope/JSON check; capture must already be copied by captureProviderResponse. */
+export function decodePublicClaimCapturedOutput(capture: ProviderCapturedResponse, model: string) {
+  if (capture.status !== "completed") return {state:"response-incomplete" as const};
+  const parsed = envelope.safeParse(capture);
+  if (!parsed.success) return {state:"response-unsupported" as const};
+  if (parsed.data.model !== model) return {state:"model-mismatch" as const};
+  const messages: unknown[] = [];
+  for (const item of parsed.data.output) {
+    const kind = outputKind.safeParse(item);
+    if (!kind.success) return {state:"response-unsupported" as const};
+    if (kind.data.type === "message") messages.push(item);
+  }
+  if (messages.length !== 1 || !message.safeParse(messages[0]).success)
+    return {state:"response-unsupported" as const};
+  let output: unknown;
+  try {
+    // Reuse the existing JSON extraction without changing legacy output handling.
+    output = parseProviderResponseOutput(capture);
+  } catch {
+    return {state:"response-unsupported" as const};
+  }
+  return {state:"parsed" as const,output};
 }

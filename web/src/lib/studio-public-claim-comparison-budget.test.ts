@@ -1,3 +1,4 @@
+import {readPublicComparisonPrefix} from "./studio-public-claim-comparison-prefix-test-helpers";
 import { randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -8,16 +9,12 @@ import { PlanQualityStore } from "./studio-plan-quality-store";
 import { finalizationStoreFixture } from "./studio-plan-quality-provider-finalization-store-test-helpers";
 import * as configuration from "./studio-plan-quality-provider-configuration";
 import { actualTestNow } from "./studio-plan-quality-actual-test-helpers";
-import { inspectQualityDatabase, inspectQualitySuppliedRows } from "../../scripts/local-data-quality.mjs";
-import { inspectQualitySchema } from "../../scripts/local-data-quality-schema.mjs";
-import { readProviderReservationDatabaseRows } from "../../scripts/local-data-quality-provider-reservation-database.mjs";
-import { readProviderTransmissionApprovalDatabaseRows } from "../../scripts/local-data-quality-provider-transmission-database.mjs";
+import { inspectQualityDatabase } from "../../scripts/local-data-quality.mjs";
 import { providerDigest as digest } from "../../scripts/local-data-quality-provider.mjs";
 import { getProviderExecutionBudgetSnapshot } from "../../scripts/local-data-quality-provider-execution.mjs";
 import {
   createPublicComparisonCoverage, inspectPublicComparisonCoverage, inspectPublicComparisonBudget,
   lookupPublicComparisonNonce, createPublicComparisonBudgetEvent, publicComparisonBudgetInputDigest,
-  publicComparisonPrefixRowsSchema,
   type PublicComparisonPrefix, type PublicComparisonCoverage, type PublicComparisonBudgetSuffix,
   type PublicComparisonBudgetEvent,
 } from "./studio-public-claim-comparison-budget";
@@ -42,43 +39,6 @@ let directory: string, prefix: PublicComparisonPrefix, unsettled: PublicComparis
 let sqlSnapshot: ReturnType<typeof inspectQualityDatabase>;
 const h = (s: string) => digest(s);
 const empty = (): PublicComparisonBudgetSuffix => ({ events: [], receipts: [], evidence: [] });
-function read(db: DatabaseSync): PublicComparisonPrefix {
-  const rows = publicComparisonPrefixRowsSchema.parse({
-    schema: inspectQualitySchema(db).schema,
-    runRows: db.prepare("SELECT id,body,body_hash FROM quality_runs ORDER BY id").all(),
-    revisionRows: db.prepare("SELECT run_id,revision,body,body_hash FROM quality_revisions ORDER BY run_id,revision").all(),
-    receiptRows: db.prepare("SELECT nonce,body,body_hash FROM quality_requests ORDER BY nonce").all(),
-    candidateRows: db.prepare("SELECT set_id,version,body,body_hash FROM quality_candidate_versions ORDER BY set_id,version").all(),
-    candidateReceipts: db.prepare("SELECT nonce,body,body_hash FROM quality_candidate_requests ORDER BY nonce").all(),
-    executionRows: db.prepare("SELECT id,body,body_hash FROM quality_execution_runs ORDER BY id").all(),
-    executionEvents: db.prepare("SELECT run_id,revision,body,body_hash FROM quality_execution_events ORDER BY run_id,revision").all(),
-    executionReceipts: db.prepare("SELECT nonce,body,body_hash FROM quality_execution_requests ORDER BY nonce").all(),
-    policyRows: db.prepare("SELECT rowid AS storage_order,scope_id,revision,nonce,body,body_hash FROM quality_provider_policies ORDER BY rowid").all(),
-    reservationRows: (({ bindingRows, coverageRows }) => ({ bindingRows, coverageRows }))(readProviderReservationDatabaseRows(db)),
-    transmissionRows: (({ bindingRows, coverageRows }) => ({ bindingRows, coverageRows }))(readProviderTransmissionApprovalDatabaseRows(db)),
-    actualRows: {
-      budget: db.prepare("SELECT scope_id,revision,body,body_hash FROM quality_actual_budget_events ORDER BY scope_id,revision").all(),
-      runs: db.prepare("SELECT id,body,body_hash FROM quality_actual_runs ORDER BY id").all(),
-      runOrder: db.prepare("SELECT rowid AS storage_order,id FROM quality_actual_runs ORDER BY rowid").all(),
-      events: db.prepare("SELECT run_id,revision,body,body_hash FROM quality_actual_events ORDER BY run_id,revision").all(),
-      artifacts: db.prepare("SELECT run_id,artifact_key,payload,sha256,size_bytes FROM quality_actual_artifacts ORDER BY run_id,artifact_key").all(),
-      receipts: db.prepare("SELECT nonce,body,body_hash FROM quality_actual_requests ORDER BY nonce").all(),
-    },
-  });
-  const reservationRows = readProviderReservationDatabaseRows(db);
-  const transmissionRows = readProviderTransmissionApprovalDatabaseRows(db);
-  const audited = inspectQualitySuppliedRows({
-    ...rows, reservationRows, transmissionRows, storageVersion: 9,
-    candidates: true, executions: true, actual: true, policies: true, reservations: true, transmissions: true,
-    providerPrefix: null, operational: false,
-  });
-  return {
-    storageVersion: 9, databaseInstanceId: "4900300f-313a-4114-bbf5-5b0d33b7c824",
-    environment: "production", scopeId: "candidate-quality-provider-v2-live", rows,
-    decoded: { ledger: audited.ledger, reservationCoverage: reservationRows.coverage, reservationRecords: reservationRows.records,
-      transmissionCoverage: transmissionRows.coverage, transmissionRecords: transmissionRows.records },
-  };
-}
 beforeAll(async () => {
   vi.useFakeTimers({ toFake: ["Date"] }); vi.setSystemTime(actualTestNow); vi.stubGlobal("fetch", forbidden);
   directory = mkdtempSync(join(tmpdir(), "venture-purpose-contract-"));
@@ -89,9 +49,9 @@ beforeAll(async () => {
     const f = await finalizationStoreFixture(store);
     const db = new DatabaseSync(join(directory, "quality-evaluation", "quality.sqlite"));
     try {
-      unsettled = read(db);
+      unsettled = readPublicComparisonPrefix(db);
       store.providerRecordFinalization(f.identity);
-      prefix = read(db);
+      prefix = readPublicComparisonPrefix(db);
       sqlSnapshot = inspectQualityDatabase(db);
     } finally { db.close(); }
   } finally { store.close(); }

@@ -1,4 +1,5 @@
 import "server-only";
+import { inspectPublicComparisonNativeRecords } from "./studio-public-claim-comparison-native";
 import { z } from "zod";
 import { inspectQualitySuppliedRows } from "../../scripts/local-data-quality.mjs";
 import { decodeProviderReservationDatabaseRows } from "../../scripts/local-data-quality-provider-reservation-database.mjs";
@@ -247,7 +248,7 @@ export function createPublicComparisonBudgetEvent(value: Omit<PublicComparisonBu
   dataOnly(value, 32768);
   return publicComparisonBudgetEventSchema.parse({ ...value, eventDigest: digest(value) });
 }
-function inspectSuffix(prefix: unknown, expected: unknown, value: unknown) {
+function inspectSuffix(prefix: unknown, expected: unknown, value: unknown, native?: ReturnType<typeof inspectPublicComparisonNativeRecords>) {
   const p = inspectCoverage(prefix, expected);
   dataOnly(value, 32 * MiB);
   const s = suffixSchema.parse(value);
@@ -262,6 +263,19 @@ function inspectSuffix(prefix: unknown, expected: unknown, value: unknown) {
   for (const r of s.receipts) {
     if (nonces.has(r.clientRequestId) || bytes(r) > 4096) invalid();
     nonces.add(r.clientRequestId);
+  }
+  if (native) {
+    for (const row of p.input.rows.actualRows.events) ids.add(JSON.parse(row.body).eventId as string);
+    for (const row of [...p.input.rows.runRows,...p.input.rows.executionRows]) oldRuns.add(row.id);
+    for (const r of native.extraReceipts) {
+      if (nonces.has(r.clientRequestId)) invalid();
+      nonces.add(r.clientRequestId);
+    }
+    for (const e of native.records.events) {
+      if (ids.has(e.eventId) || s.events.some(v=>v.eventId===e.eventId)) invalid();
+      ids.add(e.eventId);
+    }
+    if (digest(native.records.runs.map(v=>v.id)) !== digest(s.events.filter(v=>v.payload.kind==="reserve-comparison").map(v=>v.payload.runId))) invalid();
   }
   type Reservation = { runId: string; reservationDigest: string; requestDigest: string; manifestDigest: string;
     reservedUnits: string; heldUnits: string; recognizedUnits: string; settled: boolean };
@@ -320,6 +334,15 @@ function inspectSuffix(prefix: unknown, expected: unknown, value: unknown) {
   // even for a financially settled proposal. Existing bytes/slots inside it are not counted twice.
   const runCount = reservations.size, prefixRows = p.input.rows.actualRows;
   const suffixBytes = bytes(s), coverageBytes = bytes(p.coverage);
+  if (native) {
+    if (p.ledger.globalRunCount + runCount > 20 ||
+      prefixRows.artifacts.length + native.records.artifacts.length + native.reservedArtifactSlots > 140 ||
+      prefixRows.events.length + native.records.events.length + native.reservedEventSlots > 640 ||
+      prefixRows.budget.length + s.events.length + native.reservedBudgetSlots > 1000 ||
+      prefixRows.receipts.length + native.records.receipts.length + native.reservedReceiptSlots > 1000 ||
+      p.audited.usage.usedBytes + coverageBytes + native.totalUsed + native.heldBytes > 256 * MiB)
+      invalid("PUBLIC_COMPARISON_ARCHIVE_LIMIT");
+  } else {
   if (p.ledger.globalRunCount + runCount > 20 || prefixRows.artifacts.length + runCount * 7 > 140 ||
       prefixRows.events.length + runCount * 32 > 640 ||
       prefixRows.budget.length + runCount * 16 > 1000 ||
@@ -327,6 +350,7 @@ function inspectSuffix(prefix: unknown, expected: unknown, value: unknown) {
       s.events.length > runCount * 16 || s.receipts.length > runCount * 64 ||
       suffixBytes > runCount * 32 * MiB + 1024 ||
       p.audited.usage.usedBytes + coverageBytes + runCount * 32 * MiB > 256 * MiB) invalid("PUBLIC_COMPARISON_ARCHIVE_LIMIT");
+  }
   const exposure = recognized + held(), cap = BigInt(p.budget.capUnits);
   return {
     prefix: p, suffix: s,
@@ -360,4 +384,40 @@ export function lookupPublicComparisonNonce(prefix: unknown, coverage: unknown, 
   if (!record) return { status: "not-observed" as const, record: null, authority };
   if ((old?.inputDigest ?? current!.inputDigest) !== command.inputDigest) invalid("PUBLIC_COMPARISON_NONCE_CONFLICT");
   return { status: "replay" as const, record: structuredClone(record), authority };
+}
+
+/** Full supplied native-v4 structure plus the unchanged prefix/monetary fold.
+ * Financial references come exclusively from audited events/artifacts, never a parallel evidence input.
+ * No company, keys, DB, clock or owner is consulted/created. */
+export function inspectPublicComparisonNativeArchive(prefix: unknown, coverage: unknown, raw: unknown) {
+  dataOnly(raw, 256 * MiB);
+  const outer = z.object({records:z.unknown(),financial:suffixSchema.omit({evidence:true})}).strict().parse(raw);
+  const auditedCoverage=inspectPublicComparisonCoverage(prefix,coverage);
+  const native=inspectPublicComparisonNativeRecords(outer.records,outer.financial,auditedCoverage.coverageDigest);
+  const audit=inspectSuffix(prefix,coverage,{...outer.financial,evidence:native.evidence},native);
+  return {
+    ...audit.result,source:"supplied-native-archive" as const,archiveFormatVersion:4 as const,
+    structureConsistent:true as const,sourceKind:"native-state-and-financial-evidence" as const,
+    runs:native.summaries,
+    capacity:{prefixUsedBytes:audit.result.capacity.prefixUsedBytes,coverageBytes:audit.result.capacity.coverageBytes,
+      comparisonUsedBytes:native.totalUsed,comparisonHeldBytes:native.heldBytes,
+      reservedEventSlots:native.reservedEventSlots,reservedBudgetSlots:native.reservedBudgetSlots,
+      reservedReceiptSlots:native.reservedReceiptSlots,reservedArtifactSlots:native.reservedArtifactSlots},
+    nativeReceipts:structuredClone(native.records.receipts),
+    authority:{...authority,transactionCommitVerified:false,providerExecutionObserved:false,currentCompanyVerified:false},
+  };
+}
+/** Original receipt only; cold/replay reads never confer dispatch ownership. */
+export function lookupPublicComparisonNativeNonce(prefix:unknown,coverage:unknown,raw:unknown,value:unknown) {
+  dataOnly(value,1024);
+  const command=z.object({nonce:uuid,inputDigest:hash}).strict().parse(value);
+  const archive=inspectPublicComparisonNativeArchive(prefix,coverage,raw);
+  const current=archive.nativeReceipts.find(v=>v.clientRequestId===command.nonce);
+  if(current) {
+    if(current.inputDigest!==command.inputDigest) invalid("PUBLIC_COMPARISON_NONCE_CONFLICT");
+    return {status:"replay" as const,record:current,owner:null,authority:archive.authority};
+  }
+  const p=inspectCoverage(prefix,coverage),old=p.nonces.find(v=>v.nonce===command.nonce);
+  if(old && old.inputDigest!==command.inputDigest) invalid("PUBLIC_COMPARISON_NONCE_CONFLICT");
+  return {status:old?"replay" as const:"not-observed" as const,record:old?structuredClone(old.record):null,owner:null,authority:archive.authority};
 }
