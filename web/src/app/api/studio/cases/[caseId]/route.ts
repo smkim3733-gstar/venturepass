@@ -34,7 +34,8 @@ export function PATCH(request: Request, context: Context) {
       typeof raw === "object" &&
       raw !== null &&
       "action" in raw &&
-      (applicationActions as readonly unknown[]).includes(raw.action);
+      ((applicationActions as readonly unknown[]).includes(raw.action) ||
+        raw.action === "record-application-number");
     if (applicationRequest && bytes.byteLength > applicationLimits.requestBytes)
       throw new StudioError("신청회차 요청 용량을 초과했습니다.", 413, "TOO_LARGE");
     if (
@@ -107,6 +108,7 @@ export function PATCH(request: Request, context: Context) {
     if (
       [
         ...applicationActions,
+        "record-application-number",
         ...criteriaVersionActions,
         "diagnose",
         "diagnosis-answers",

@@ -1,3 +1,7 @@
+import {
+  applicationNumberBindingCommandSchema,
+  applicationNumberBindingHistorySchema,
+} from "./studio-application-number-types";
 import { planSupplementAdoptionReceiptSchema } from "./studio-plan-supplement-adoption-types";
 import { planSupplementExecutionRecordSchema } from "./studio-plan-supplement-execution-types";
 import { MAX_COMPANY_SOURCES } from "./studio-source-limits";
@@ -380,6 +384,7 @@ export const caseSchema = z.object({
   agencyRecords: z.array(agencyRecordSchema).max(200).default([]),
   applications: z.array(applicationCycleSchema).max(applicationLimits.cycles).default([]),
   applicationEvents: z.array(applicationEventSchema).max(applicationLimits.events).default([]),
+  applicationNumberBindings: applicationNumberBindingHistorySchema.optional(),
   criteriaVersions: z.array(criteriaVersionSchema).max(criteriaVersionLimits.versions).default([]),
   applicationCriteriaBindings: z
     .array(applicationCriteriaBindingSchema)
@@ -435,6 +440,7 @@ export type StudioStatus = {
   supportedFiles: string[];
 };
 export const mutationSchema = z.discriminatedUnion("action", [
+  applicationNumberBindingCommandSchema,
   preparationAutomationSettingInputSchema,
   ...criteriaVersionMutationSchema.options,
   appendApplicationProcedureSchema,

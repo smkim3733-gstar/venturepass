@@ -23,6 +23,11 @@ import {
   supplementExecutionError,
 } from "./studio-plan-supplement-execution-state";
 import { MAX_COMPANY_SOURCES } from "./studio-source-limits";
+import { applicationNumberBindingCommandSchema } from "./studio-application-number-types";
+import {
+  buildApplicationNumberBinding,
+  findApplicationNumberReplay,
+} from "./studio-application-number";
 import { createHash, randomUUID } from "node:crypto";
 import { packageLimits } from "./studio-package-types";
 import {
@@ -1172,6 +1177,21 @@ export class StudioStore {
           return false;
         },
         (record) => isCandidateSelectionReplay(record, input),
+      );
+    }
+    if (mutation.action === "record-application-number") {
+      const input = applicationNumberBindingCommandSchema.parse(mutation);
+      return this.update(
+        id,
+        input.revision,
+        (record) => {
+          record.applicationNumberBindings = buildApplicationNumberBinding(record, input, {
+            id: randomUUID(),
+            recordedAt: new Date().toISOString(),
+          });
+          return false;
+        },
+        (record) => findApplicationNumberReplay(record, input) !== null,
       );
     }
     if (isApplicationMutation(mutation)) {

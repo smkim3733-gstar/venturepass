@@ -1,5 +1,9 @@
 // Node-only storage helper. Client components import studio-application-types instead.
 import { createHash, randomUUID } from "node:crypto";
+import {
+  applicationNumberBindingLimits,
+  type ApplicationNumberBindingHistory,
+} from "./studio-application-number-types";
 import { isAgencyNoticeRecord, type AgencyRecord } from "./studio-agency-records";
 import type { SourceDocument, StudioCase } from "./studio-schema";
 import { StudioError } from "./studio-http";
@@ -45,7 +49,9 @@ export function isApplicationReplay(record: ApplicationState, input: Application
     fail("APPLICATION_REQUEST_CONFLICT");
   return true;
 }
-export function assertApplicationCapacity(record: ApplicationState) {
+export function assertApplicationCapacity(
+  record: ApplicationState & { applicationNumberBindings?: ApplicationNumberBindingHistory },
+) {
   if (
     record.applications.length > applicationLimits.cycles ||
     record.applicationEvents.length > applicationLimits.events
@@ -63,12 +69,26 @@ export function assertApplicationCapacity(record: ApplicationState) {
     if (Buffer.byteLength(JSON.stringify(item)) > applicationLimits.snapshotBytes)
       fail("APPLICATION_SNAPSHOT_LIMIT", 413);
   }
+  const bindings = record.applicationNumberBindings;
+  if (bindings) {
+    if (bindings.records.length > applicationNumberBindingLimits.records)
+      fail("APPLICATION_HISTORY_LIMIT", 413);
+    for (const entry of bindings.records)
+      characters +=
+        entry.command.recordedBy.length +
+        entry.command.reason.length +
+        (entry.command.applicationNumber?.length ?? 0) +
+        entry.companySnapshot.companyName.length +
+        entry.companySnapshot.businessNumber.length +
+        entry.applicationSnapshot.title.length;
+  }
   if (
     characters > applicationLimits.text ||
     Buffer.byteLength(
       JSON.stringify({
         applications: record.applications,
         applicationEvents: record.applicationEvents,
+        ...(bindings ? { applicationNumberBindings: bindings } : {}),
       }),
     ) > applicationLimits.historyBytes
   )
