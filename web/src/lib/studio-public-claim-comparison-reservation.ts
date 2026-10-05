@@ -836,3 +836,5 @@ function planCancelled(
 }
 
 export { bindingSchema as comparisonReservationBindingSchema };
+// Shared pure nonce/identity guards; no additional store or authority.
+export { freeNonce as assertComparisonFreeNonce, freshIds as assertComparisonFreshIds };
