@@ -1,0 +1,20 @@
+import { expect, it, vi } from "vitest";
+const forbidden = vi.hoisted(() => vi.fn(() => { throw Error("Forbidden runtime import"); }));
+vi.mock("openai", forbidden);
+vi.mock("openai/helpers/zod", forbidden);
+vi.mock("openai/error", forbidden);
+vi.mock("node:sqlite", forbidden);
+vi.mock("./studio-storage", forbidden);
+vi.mock("./studio-plan-quality-store", forbidden);
+vi.mock("./studio-public-claim-comparison-review-handler", forbidden);
+vi.mock("./studio-public-claim-comparison-review-server", forbidden);
+vi.mock("./studio-public-claim-comparison-database-v11", forbidden);
+vi.mock("./studio-plan-quality-provider-production-server", forbidden);
+vi.mock("./studio-plan-quality-provider-production-runtime", forbidden);
+vi.mock("./studio-plan-quality-provider-production-service", forbidden);
+vi.mock("./studio-plan-quality-provider-production-command-service", forbidden);
+import { useComparisonReviewScreen } from "./studio-public-claim-comparison-review-react";
+it("4I46 React adapter imports without SDK, server handler, store, SQLite or production modules", () => {
+  expect(typeof useComparisonReviewScreen).toBe("function");
+  expect(forbidden).not.toHaveBeenCalled();
+});
