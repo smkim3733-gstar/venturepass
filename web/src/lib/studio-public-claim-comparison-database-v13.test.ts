@@ -87,6 +87,9 @@ import * as storageWitness22 from "./studio-public-comparison-storage-witness";
 import * as companyGuard22 from "./studio-public-comparison-company-guard";
 import * as databaseRows22 from "./studio-public-claim-comparison-database-rows";
 vi.mock("server-only", () => ({}));
+vi.mock("openai/helpers/zod", async () => ({
+  zodTextFormat: (await import("./studio-public-claim-comparison-format-test-fixture")).pinnedComparisonFormatFixture,
+}));
 vi.mock("openai/error", () => {
   class APIError extends Error {}
   return {
@@ -4235,6 +4238,115 @@ it("4I36 SQL13 screen abort retains original server cleanup responsibility; expl
   expect(service.inspect().postcapture.cleanupRequired).toBe(true);
   fault.mockRestore();
   expect((await delivered36(service, query)).historical.result.state).toBe("comparison-ready");
+  expect(service.inspect().postcapture.cleanupRequired).toBe(false);
+  expect(snapshot(g.db)).toEqual(before); expect(witnessFiles(g)).toEqual(files);
+  expect(start).not.toHaveBeenCalled(); service.retire();
+}, postLimit30);
+
+// 4I38: injected native Request -> same inactive service -> bounded Response -> ticket.
+// The test owns fixture cleanup; the handler receives only the synchronous read port.
+import { createComparisonReviewRequestHandler } from "./studio-public-claim-comparison-review-handler";
+function operation38(service: Pick<ReturnType<typeof service30>["service"], "readStoredReviewByRun">, query: {
+  runId: string; dispatchCommandDigest: string; mode: "historical" | "inspect-current";
+}, signal = new AbortController().signal) {
+  const localOrigin = "http://127.0.0.1:3000", companyId = fixture.company.id;
+  const handler = createComparisonReviewRequestHandler({ service, ...query, companyId, localOrigin });
+  return handler.handle(new Request(localOrigin + "/api/studio/cases/" + companyId + "/public-claim-comparison/stored-review", {
+    method: "POST", headers: { origin: localOrigin, host: "127.0.0.1:3000", "content-type": "application/json; charset=utf-8" },
+    body: JSON.stringify(query), signal,
+  }));
+}
+async function delivered38(service: Pick<ReturnType<typeof service30>["service"], "readStoredReviewByRun">, query: {
+  runId: string; dispatchCommandDigest: string; mode: "historical" | "inspect-current";
+}) {
+  const op = operation38(service, query), receiver = createComparisonReviewReceiver(query, new AbortController().signal);
+  const body = await receiver.start(() => op.response);
+  await Promise.all([op.completion, receiver.completion]);
+  for (const boundary of [op, receiver])
+    expect(boundary.inspect()).toEqual({ started: true, delivered: true, settled: true, cleanupFailed: false });
+  return body;
+}
+it("4I38 SQL13 fixed request historical/current reaches ticket with no stored changes or extra service calls", async () => {
+  const g = throughResult(readyResponse32()), { service, start, selected } = service30(g);
+  const before = snapshot(g.db), files = witnessFiles(g), company = allCompany(g.companyDb);
+  const read = vi.fn(service.readStoredReviewByRun.bind(service));
+  const observedPort = { readStoredReviewByRun: read };
+  const historical = await delivered38(observedPort, { ...selected, mode: "historical" });
+  const query = { ...selected, mode: "inspect-current" as const }, current = await delivered38(observedPort, query);
+  expect(read).toHaveBeenCalledTimes(2);
+  expect(read.mock.calls).toEqual([[{ ...selected, mode: "historical" }], [query]]);
+  expect(current.historical).toEqual(historical.historical);
+  expect(current.current.status).toBe("exact-original-request");
+  const screen = { id: fixture.company.id, revision: fixture.company.revision };
+  const expected = { ...query, selection: current.resultIdentity.selection, binding: current.resultIdentity.binding,
+    sectionKey: current.historical.prepared.input.section.key };
+  const ticket = createComparisonReviewDisplayTicket(1, screen, expected);
+  const frame = { latest: ticket, snapshot: screen, expected, mounted: true, open: true, dirty: false, blocked: false, aborted: false };
+  expect(ticket.accept(current, frame)).toEqual(current);
+  screen.revision++; expect(ticket.accept(current, frame)).toBeNull();
+  expect(snapshot(g.db)).toEqual(before); expect(witnessFiles(g)).toEqual(files); expect(allCompany(g.companyDb)).toEqual(company);
+  expect(start).not.toHaveBeenCalled(); expect(service.retire().status).toBe("closed");
+}, postLimit30);
+it("4I38 SQL13 request preserves null opinion and hold across changed/unavailable current reads", async () => {
+  const g = throughResult(), { service, start, selected } = service30(g), query = { ...selected, mode: "inspect-current" as const };
+  const before = snapshot(g.db), files = witnessFiles(g);
+  const changed = structuredClone(fixture.company); changed.revision++;
+  g.companyDb.prepare("UPDATE studio_cases SET revision=?,body=? WHERE id=?").run(changed.revision, JSON.stringify(changed), changed.id);
+  const body = await delivered38(service, query);
+  expect(body.current).toMatchObject({ status: "changed", observedRevision: changed.revision });
+  expect(body.historical.result.comparison).toBeNull();
+  expect(body.database.runHeldBytes).toBeGreaterThan(0); expect(body.database.costSettled).toBe(false);
+  g.companyDb.prepare("DELETE FROM studio_cases WHERE id=?").run(changed.id);
+  const unavailable = await delivered38(service, query);
+  expect(unavailable.current).toMatchObject({ status: "unavailable", observedRevision: null });
+  expect(unavailable.historical).toEqual(body.historical); expect(unavailable.database).toEqual(body.database);
+  expect(Object.values(unavailable.authority).every((v) => v === false)).toBe(true);
+  expect(snapshot(g.db)).toEqual(before); expect(witnessFiles(g)).toEqual(files);
+  expect(start).not.toHaveBeenCalled(); service.retire();
+}, postLimit30);
+it("4I38 SQL13 request cannot promote preview, steal a lease or repair original pending ack", async () => {
+  const g = throughCapture(readyResponse32()), { service, start, selected } = service30(g);
+  const query = { ...selected, mode: "historical" as const }, before = snapshot(g.db), files = witnessFiles(g);
+  const missing = operation38(service, query);
+  expect((await missing.response).status).toBe(404); await missing.completion;
+  expect(snapshot(g.db)).toEqual(before); expect(witnessFiles(g)).toEqual(files);
+  beginComparisonStorageSession(g.session);
+  try {
+    const busy = operation38(service, query);
+    expect((await busy.response).status).toBe(409); await busy.completion;
+    // A second rejected request leaves the competing lease owned by its original caller.
+    const stillBusy = operation38(service, query);
+    expect((await stillBusy.response).status).toBe(409); await stillBusy.completion;
+  } finally { endComparisonStorageSession(g.session); }
+  const command = commands30(service.previewPostcapture(selected)).result;
+  const ack = vi.spyOn(storageWitness22, "acknowledgeComparisonWitness").mockImplementation(() => { throw Error("synthetic ack loss"); });
+  expect(() => service.writePostcapture("record-result", command, { at: later, eventId: randomUUID() })).toThrow();
+  ack.mockRestore();
+  const pending = snapshot(g.db), journal = witnessFiles(g), state = service.inspect();
+  const blocked = operation38(service, query); expect((await blocked.response).status).toBe(409); await blocked.completion;
+  expect(snapshot(g.db)).toEqual(pending); expect(witnessFiles(g)).toEqual(journal);
+  expect(service.inspect()).toEqual(state); expect(state.postcapture.commandDigest).not.toBeNull(); expect(start).not.toHaveBeenCalled();
+  service.recoverPostcapture("record-result", command); service.retire();
+}, postLimit30);
+it("4I38 SQL13 request and response aborts retain server cleanup until explicit original-service read", async () => {
+  const g = throughResult(readyResponse32()), { service, start, selected } = service30(g);
+  const before = snapshot(g.db), files = witnessFiles(g), original = g.db.exec.bind(g.db);
+  const fault = vi.spyOn(g.db, "exec").mockImplementation((sql: string) => {
+    if (sql === "ROLLBACK") throw Error("synthetic rollback loss");
+    return original(sql);
+  });
+  const query = { ...selected, mode: "historical" as const }, failed = operation38(service, query);
+  const encoded = await failed.response; expect(encoded.status).toBe(409); await failed.completion;
+  expect(failed.inspect().cleanupFailed).toBe(false); // Request bytes ended; server SQL did not.
+  const serverState = service.inspect(); expect(serverState.postcapture.cleanupRequired).toBe(true);
+  const controller = new AbortController(); controller.abort();
+  const cancelled = operation38(service, query, controller.signal);
+  expect((await cancelled.response).status).toBe(409); await cancelled.completion;
+  const receiver = createComparisonReviewReceiver(query, controller.signal);
+  await expect(receiver.start(async () => encoded)).rejects.toMatchObject({ code: "CANCELLED" }); await receiver.completion;
+  expect(service.inspect()).toEqual(serverState);
+  fault.mockRestore();
+  expect((await delivered38(service, query)).historical.result.state).toBe("comparison-ready");
   expect(service.inspect().postcapture.cleanupRequired).toBe(false);
   expect(snapshot(g.db)).toEqual(before); expect(witnessFiles(g)).toEqual(files);
   expect(start).not.toHaveBeenCalled(); service.retire();

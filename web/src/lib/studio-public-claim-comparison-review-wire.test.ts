@@ -2,6 +2,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("server-only", () => ({}));
 const sdkForbidden36 = vi.hoisted(() => vi.fn(() => { throw Error("SDK construction forbidden"); }));
 vi.mock("openai", () => ({ default: class { constructor() { sdkForbidden36(); } } }));
+vi.mock("openai/helpers/zod", async () => ({
+  zodTextFormat: (await import("./studio-public-claim-comparison-format-test-fixture")).pinnedComparisonFormatFixture,
+}));
+vi.mock("openai/error", () => {
+  class APIError extends Error {}
+  return { APIError, APIConnectionError: class extends APIError {},
+    APIConnectionTimeoutError: class extends APIError {}, APIUserAbortError: class extends APIError {} };
+});
 import { randomUUID } from "node:crypto";
 import { publicClaimComparisonFixture } from "./studio-public-claim-comparison-test-helpers";
 import { preparePublicClaimComparison, validatePreparedPublicClaimComparison } from "./studio-public-claim-comparison";
@@ -205,8 +213,10 @@ describe("4I36 bounded receive lifetime", () => {
     await receive(Response.redirect("https://example.invalid", 302), "INVALID_RESPONSE");
     const used = response(); await used.text(); await receive(used, "INVALID_RESPONSE");
     const r = response(), owned = r.body!.getReader();
+    const cancelOther = vi.spyOn(owned, "cancel");
     const o = await receive(r, "INVALID_RESPONSE");
-    expect(o.inspect().cleanupFailed).toBe(true);
+    expect(o.inspect().cleanupFailed).toBe(false);
+    expect(cancelOther).not.toHaveBeenCalled();
     expect(r.body!.locked).toBe(true);
     await owned.cancel(); owned.releaseLock();
   });

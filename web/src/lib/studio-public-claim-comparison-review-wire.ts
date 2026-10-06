@@ -15,11 +15,14 @@ export const comparisonReviewWireLimits = Object.freeze({
 export const comparisonReviewErrorStatus = Object.freeze({
   INVALID_QUERY: 400, LOCAL_ONLY: 403, RESULT_UNAVAILABLE: 404, READ_BLOCKED: 409,
   TOO_LARGE: 413, CONTENT_TYPE: 415, READ_FAILED: 500,
+  METHOD_NOT_ALLOWED: 405, REQUEST_CANCELLED: 409, REQUEST_TIMEOUT: 408,
 });
 export type ComparisonReviewErrorCode = keyof typeof comparisonReviewErrorStatus;
 export type ComparisonReviewReceiveCode = ComparisonReviewErrorCode |
   "CANCELLED" | "TIMEOUT" | "RECEIVE_LIMIT" | "INVALID_RESPONSE" | "RECEIVE_FAILED";
 const messages: Record<ComparisonReviewReceiveCode, string> = {
+  METHOD_NOT_ALLOWED: "POST 요청만 지원합니다.", REQUEST_CANCELLED: "결과 읽기 요청이 취소되었습니다.",
+  REQUEST_TIMEOUT: "결과 읽기 요청 시간이 지났습니다.",
   INVALID_QUERY: "원래 결과 선택을 확인해 주세요.", LOCAL_ONLY: "로컬 앱에서만 읽을 수 있습니다.",
   RESULT_UNAVAILABLE: "저장된 비교 결과를 확인할 수 없습니다.",
   READ_BLOCKED: "원래 실행 또는 저장 정리를 확인한 뒤 명시적으로 다시 읽어 주세요.",
@@ -115,7 +118,8 @@ const successSchema = z.object({
 }).strict();
 const errorSchema = z.object({
   wireVersion: z.literal(1), kind: z.literal("public-comparison-stored-review-error"),
-  code: z.enum(["INVALID_QUERY", "LOCAL_ONLY", "RESULT_UNAVAILABLE", "READ_BLOCKED", "TOO_LARGE", "CONTENT_TYPE", "READ_FAILED"]),
+  code: z.enum(["INVALID_QUERY", "LOCAL_ONLY", "RESULT_UNAVAILABLE", "READ_BLOCKED", "TOO_LARGE", "CONTENT_TYPE", "READ_FAILED",
+    "METHOD_NOT_ALLOWED", "REQUEST_CANCELLED", "REQUEST_TIMEOUT"]),
 }).strict();
 
 function checkResult(r: ComparisonReviewWireResult, query: ComparisonReviewQuery) {
