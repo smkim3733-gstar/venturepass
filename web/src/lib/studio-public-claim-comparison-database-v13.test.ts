@@ -4467,3 +4467,77 @@ it("4I40 SQL13 cancelled retained invocation cannot clear server cleanup; new ex
   expect(snapshot(g.db)).toEqual(before); expect(witnessFiles(g)).toEqual(files);
   expect(start).not.toHaveBeenCalled(); service.retire();
 }, postLimit30);
+
+// 4I42: the retainer owns one I/O slot, never the fixture's SQL/ack cleanup.
+import { createComparisonReviewRetainer } from "./studio-public-claim-comparison-review-retainer";
+function retained42(r: ReturnType<typeof createComparisonReviewRetainer>, service: Parameters<typeof operation38>[0],
+  query: Parameters<typeof operation38>[1], view = r.attachView()!) {
+  const prepared = preparePublicClaimComparison(fixture.company, fixture.request.command.selection);
+  const expected = { ...query, selection: prepared.selection, binding: prepared.binding, sectionKey: prepared.input.section.key };
+  const screen = { id: fixture.company.id, revision: fixture.company.revision };
+  const port = vi.fn((fixed: typeof query, signal: AbortSignal) => {
+    expect(fixed).toEqual(query); return operation38(service, query, signal);
+  });
+  const p = r.prepare(view, { snapshot: screen, expected, signal: new AbortController().signal, startRequest: port });
+  if (!p.ok) throw Error(p.code);
+  const frame = { latest: p.handle.ticket, snapshot: screen, expected, mounted: true, open: true,
+    dirty: false, blocked: false, aborted: false };
+  return { handle: p.handle, frame, view, port };
+}
+async function finish42(r: ReturnType<typeof createComparisonReviewRetainer>, x: ReturnType<typeof retained42>) {
+  const start = r.start(x.view, x.handle, x.frame);
+  if (!start.ok) throw Error(start.code);
+  const result = await start.delivery; await x.handle.completion;
+  expect(r.inspect()).toMatchObject({ occupied: true, canForget: true, observerFailed: false,
+    io: { settled: true, requestStatus: "settled", canForget: true } });
+  return result;
+}
+it("4I42 SQL13 released I/O slot preserves pending acknowledgement until original explicit recovery", async () => {
+  const g = throughCapture(readyResponse32()), { service, start, selected } = service30(g);
+  const command = commands30(service.previewPostcapture(selected)).result;
+  const ack = vi.spyOn(storageWitness22, "acknowledgeComparisonWitness").mockImplementation(() => { throw Error("synthetic ack loss"); });
+  expect(() => service.writePostcapture("record-result", command, { at: later, eventId: randomUUID() })).toThrow();
+  ack.mockRestore();
+  const state = service.inspect(), before = snapshot(g.db), files = witnessFiles(g), company = allCompany(g.companyDb);
+  const read = vi.fn(service.readStoredReviewByRun.bind(service)), r = createComparisonReviewRetainer();
+  const port = { readStoredReviewByRun: read }, query = { ...selected, mode: "historical" as const };
+  const x = retained42(r, port, query), failed = await finish42(r, x);
+  expect(failed.kind).toBe("error"); expect(r.display(x.view, x.handle, x.frame)).toEqual(failed);
+  expect(r.release(x.handle)).toBe(true); expect(r.inspect().occupied).toBe(false);
+  expect(service.inspect()).toEqual(state); expect(state.postcapture.commandDigest).not.toBeNull();
+  expect(snapshot(g.db)).toEqual(before); expect(witnessFiles(g)).toEqual(files); expect(allCompany(g.companyDb)).toEqual(company);
+  const y = retained42(r, port, query, x.view); expect(read).toHaveBeenCalledTimes(1);
+  // Only the original fixture command performs recovery; preparing a new call did not.
+  service.recoverPostcapture("record-result", command);
+  const result = await finish42(r, y);
+  expect(result.kind).toBe("result"); if (result.kind !== "result") throw Error("stored result required");
+  expect(result.result.resultIdentity).toMatchObject(selected);
+  expect(result.result.historical.result).toMatchObject({ source: "supplied-response", evidenceOrigin: "manual-unverified", currentContextVerified: false });
+  expect(Object.values(result.result.authority).every((v) => v === false)).toBe(true);
+  expect(r.display(y.view, y.handle, y.frame)).toEqual(result);
+  expect(read).toHaveBeenCalledTimes(2); expect(start).not.toHaveBeenCalled();
+  r.close(); expect(r.inspect().occupied).toBe(false); service.retire();
+}, postLimit30);
+it("4I42 SQL13 cancelled/released slot retains server cleanup and next explicit read preserves identity and hold", async () => {
+  const g = throughResult(readyResponse32()), { service, start, selected } = service30(g);
+  const before = snapshot(g.db), files = witnessFiles(g), original = g.db.exec.bind(g.db);
+  const fault = vi.spyOn(g.db, "exec").mockImplementation((sql: string) => {
+    if (sql === "ROLLBACK") throw Error("synthetic rollback loss");
+    return original(sql);
+  });
+  const r = createComparisonReviewRetainer(), query = { ...selected, mode: "historical" as const };
+  const x = retained42(r, service, query);
+  expect((await finish42(r, x)).kind).toBe("error");
+  const state = service.inspect(); expect(state.postcapture.cleanupRequired).toBe(true);
+  r.cancel(x.view, x.handle); expect(r.inspect().occupied).toBe(false);
+  expect(service.inspect()).toEqual(state); expect(snapshot(g.db)).toEqual(before); expect(witnessFiles(g)).toEqual(files);
+  fault.mockRestore();
+  const y = retained42(r, service, query, x.view), result = await finish42(r, y);
+  expect(result.kind).toBe("result"); if (result.kind !== "result") throw Error("original result required");
+  expect(result.result.resultIdentity).toMatchObject(selected);
+  expect(result.result.database).toMatchObject({ costSettled: false, currentContextVerified: false });
+  expect(result.result.database.runHeldBytes).toBeGreaterThan(0);
+  expect(service.inspect().postcapture.cleanupRequired).toBe(false);
+  expect(snapshot(g.db)).toEqual(before); expect(witnessFiles(g)).toEqual(files);
+  expect(start).not.toHaveBeenCalled(); r.close(); service.retire();
+}, postLimit30);
