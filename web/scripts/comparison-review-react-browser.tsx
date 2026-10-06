@@ -1,3 +1,4 @@
+import { ComparisonReviewOpinion } from "../src/components/studio/comparison-review-opinion";
 import { StrictMode, Suspense, startTransition, useEffect, useLayoutEffect } from "react";
 import { createRoot } from "react-dom/client";
 import { flushSync } from "react-dom";
@@ -127,6 +128,7 @@ function createHarness(data: ReviewMountFixture, mode: Mode) {
     return <><button id="read" onClick={() => { const result = adapter.read(options()); lastCode = result.ok ? "OK" : result.code; }}>Read</button>
       <button id="cancel" onClick={() => adapter.cancel()}>Cancel</button>
       <button id="release" onClick={() => adapter.release()}>Release</button>
+      <ComparisonReviewOpinion result={adapter.display?.kind === "result" ? adapter.display.result : null} />
       <output id="state">{JSON.stringify({ status: adapter.status, occupied: adapter.occupied,
         canForget: adapter.canForget, canPrepare: adapter.canPrepare, display: adapter.display })}</output></>;
   }

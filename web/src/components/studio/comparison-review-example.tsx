@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { ComparisonReviewOpinion } from "./comparison-review-opinion";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { useComparisonReviewScreen, type ComparisonReviewReactFrame } from "@/lib/studio-public-claim-comparison-review-react";
@@ -22,8 +23,7 @@ function ConnectedReview({ screen, frame }: { screen: Screen; frame: ComparisonR
     setMessage(started.ok ? "" : "이전 읽기 상태를 확인한 뒤 다시 시도해 주세요.");
   }
   const closed = screen.getSnapshot().state.closed;
-  const opinion = review.display?.kind === "result"
-    ? review.display.result.historical.result.comparison?.comparison : null;
+
   return <section className="space-y-4" aria-label="합성 검토 결과">
     <div className="flex flex-wrap gap-2">
       <Button onClick={read} disabled={!review.canPrepare}>검토 결과 읽기</Button>
@@ -39,16 +39,7 @@ function ConnectedReview({ screen, frame }: { screen: Screen; frame: ComparisonR
         : message || "버튼을 눌러 고정된 합성 검토 결과를 확인하세요."}
     </p>
     {review.display?.kind === "error" && <p role="alert" className="rounded-lg border p-4">{review.display.message}</p>}
-    {opinion && <div data-testid="example-result" className="space-y-4 rounded-xl border border-primary/20 bg-white p-5">
-      <div><h2 className="font-semibold">추가 확인이 필요한 예제 결과</h2>
-        <p className="mt-1 text-sm text-muted-foreground">합성 자료의 고정 의견입니다. 실제 AI 분석이나 사실 확인 결과가 아닙니다.</p></div>
-      <p className="text-sm">주장: {opinion.claimQuote}</p>
-      {opinion.evidence.map((e) => <div key={e.sourceId} className="border-t pt-3 text-sm">
-        <p className="font-medium">{e.reason}</p>
-        {e.quotes.map((quote, i) => <blockquote key={i} className="mt-2 border-l-2 pl-3 text-muted-foreground">{quote}</blockquote>)}
-      </div>)}
-      <p className="text-sm">다음 확인: 원문 출처와 우리 회사에 적용되는 조건을 확인하세요.</p>
-    </div>}
+    <ComparisonReviewOpinion result={review.display?.kind === "result" ? review.display.result : null} />
     {(review.notificationFailed || review.observationFailed) &&
       <p role="alert">읽기 상태를 확인하지 못했습니다. 이 창의 원래 요청을 보관합니다.</p>}
   </section>;

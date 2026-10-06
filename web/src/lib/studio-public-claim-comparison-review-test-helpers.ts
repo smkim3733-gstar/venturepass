@@ -7,9 +7,9 @@ import { comparisonPlanAuthority } from "./studio-public-claim-comparison-types"
 import type { ComparisonReviewWireResult, ComparisonReviewQuery } from "./studio-public-claim-comparison-review-wire";
 
 /** Test-only original comparison wire fixture. Callers retain the SDK-free format mocks. */
-export function comparisonReviewTestFixture() {
+export function comparisonReviewTestFixture(count = 1) {
   const h = "a".repeat(64);
-  const fixture = publicClaimComparisonFixture();
+  const fixture = publicClaimComparisonFixture(count);
   const prepared = preparePublicClaimComparison(fixture.company, fixture.select());
   const request = buildPublicClaimComparisonRequest(fixture.company, {
     requestVersion: publicClaimComparisonRequestVersion, model: "synthetic", selection: fixture.select(),

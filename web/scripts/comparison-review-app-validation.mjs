@@ -97,7 +97,33 @@ try {
   assert.equal(posts.length, 1);
   assert.deepEqual(posts[0], { path: endpoint, body: JSON.stringify(fixture.query) });
   record("real loopback POST renders the fixed synthetic result through the existing receiver");
+  const displayed = page.getByTestId("example-result");
+  const opinion = fixture.result.historical.result.comparison.comparison;
+  assert.equal(await displayed.getByRole("heading", { name: "저장된 검토 의견", exact: true }).count(), 1);
+  assert.equal(await displayed.getByTestId("overall-relation").textContent(), "전체 판단: 판단 유보");
+  assert.equal(await displayed.getByTestId("overall-reason").textContent(), opinion.overall.reason);
+  for (const source of fixture.result.historical.prepared.input.selectedEvidence) {
+    const row = displayed.locator('[data-source-id="' + source.sourceId + '"]');
+    const stored = opinion.evidence.find((e) => e.sourceId === source.sourceId);
+    assert.equal(await row.getByRole("heading", { name: source.metadata.title, exact: true }).count(), 1);
+    assert.equal(await row.getByText(stored.reason, { exact: true }).count(), 1);
+    assert.deepEqual(await row.locator("blockquote").allTextContents(), stored.quotes);
+    assert.equal(await row.getByTestId("next-check").textContent(), stored.nextCheck || "저장된 추가 확인 메모가 없습니다.");
+    assert.equal(await row.getByTestId("source-excerpt").isVisible(), false);
+    await row.locator("summary").click();
+    assert.equal(await row.getByTestId("source-excerpt").textContent(), source.excerpt);
+    assert.equal(await row.getByTestId("source-excerpt").isVisible(), true);
+  }
+  assert.equal(posts.length, 1);
+  record("4I52 original stored opinions and matching source excerpts render without additional HTTP");
   await page.screenshot({ path: path.join(output, "result-desktop.png"), fullPage: true });
+  await page.setViewportSize({ width: 390, height: 844 });
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+  assert.equal(await displayed.getByTestId("overall-reason").textContent(), opinion.overall.reason);
+  await page.screenshot({ path: path.join(output, "result-mobile.png"), fullPage: true });
+  assert.equal(posts.length, 1);
+  record("4I52 expanded opinion and original excerpt remain readable on mobile");
+  await page.setViewportSize({ width: 1280, height: 720 });
   await page.getByRole("button", { name: "표시 비우기", exact: true }).click();
   assert.equal(await page.getByTestId("example-result").count(), 0);
   assert.equal(posts.length, 1);

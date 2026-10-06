@@ -17,3 +17,9 @@ it("4I51 actual example data and route load without SDK/SQLite/operational acqui
   expect(typeof POST).toBe("function");
   expect(forbidden).not.toHaveBeenCalled();
 });
+
+import { ComparisonReviewOpinion } from "../components/studio/comparison-review-opinion";
+it("4I52 opinion presentation imports without SDK/SQLite/operational acquisition", () => {
+  expect(typeof ComparisonReviewOpinion).toBe("function");
+  expect(forbidden).not.toHaveBeenCalled();
+});

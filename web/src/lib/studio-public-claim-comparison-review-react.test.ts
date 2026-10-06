@@ -16,7 +16,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { chromium, type BrowserContext, type Page } from "playwright-core";
 import { comparisonReviewTestFixture } from "./studio-public-claim-comparison-review-test-helpers";
-import { comparisonReviewSuccessWire, comparisonReviewErrorWire } from "./studio-public-claim-comparison-review-wire";
+import { comparisonReviewSuccessWire, comparisonReviewErrorWire, type ComparisonReviewWireResult } from "./studio-public-claim-comparison-review-wire";
 import type { ReviewMountFixture } from "../../scripts/comparison-review-react-browser";
 
 let context: BrowserContext, page: Page, bundleText: string, data: ReviewMountFixture;
@@ -343,4 +343,127 @@ it("4I48 repeated parent close and later StrictMode remount cannot create a fres
   expect((await state()).metrics).toMatchObject({ request: 1, terminalNotifications: 1, renderSideEffects: 0 });
   await page.evaluate(() => { window.reviewMount.finishResponse(); window.reviewMount.finishRequest(); });
   await empty(); expect(await display()).toBeNull();
+});
+
+/** 4I52 variants are synthetic presentation tests, never SQL export provenance. */
+async function mount52(change?: (value: ComparisonReviewWireResult) => void, count = 1) {
+  const f = comparisonReviewTestFixture(count), value = f.value();
+  change?.(value);
+  const wire = comparisonReviewSuccessWire(f.query, value);
+  const fixture = { snapshot: { id: value.resultIdentity.selection.companyId, revision: 7 },
+    expected: { ...f.query, selection: value.resultIdentity.selection, binding: value.resultIdentity.binding,
+      sectionKey: value.historical.prepared.input.section.key }, query: f.query,
+    success: wire, error: comparisonReviewErrorWire("READ_BLOCKED") };
+  await page.evaluate((fixture) => { window.reviewMount = window.startReviewMount(fixture, "success"); }, fixture);
+  await page.waitForFunction(() => document.querySelector("#state")?.textContent?.includes('"status":"ATTACHED"'));
+  return value;
+}
+const opinion52 = (value: Awaited<ReturnType<typeof mount52>>) => value.historical.result.comparison!.comparison;
+it.each([
+  ["provided-text-support", "제공된 발췌가 뒷받침함"],
+  ["provided-text-conflict", "제공된 발췌와 상충함"],
+  ["insufficient", "근거 부족"],
+  ["undetermined", "판단 유보"],
+] as const)("4I52 displays the stored %s relation and exact overall/evidence reasons", async (relation, label) => {
+  const value = await mount52((value) => {
+    const opinion = opinion52(value);
+    opinion.overall = { relation, reason: "Overall <script>alert(1)</script>\n原文 그대로" };
+    opinion.evidence[0].relation = relation;
+    opinion.evidence[0].reason = "Evidence & original\n수치 0";
+  });
+  expect(await page.getByTestId("example-result").count()).toBe(0);
+  expect((await state()).metrics.request).toBe(0);
+  await read(); await result();
+  expect(await page.getByTestId("overall-relation").textContent()).toBe("전체 판단: " + label);
+  expect(await page.getByTestId("overall-reason").textContent()).toBe(opinion52(value).overall.reason);
+  const evidence = page.locator('[data-source-id="' + opinion52(value).evidence[0].sourceId + '"]');
+  expect(await evidence.getByText("근거 판단: " + label, { exact: true }).count()).toBe(1);
+  expect(await evidence.getByText(opinion52(value).evidence[0].reason, { exact: true }).count()).toBe(1);
+  expect(await page.getByTestId("example-result").locator("script").count()).toBe(0);
+  expect((await state()).metrics).toMatchObject({ request: 1, renderSideEffects: 0 });
+});
+it("4I52 reversed opinions retain each original source title, excerpt, quote and note by sourceId", async () => {
+  const value = await mount52((value) => {
+    const opinion = opinion52(value);
+    opinion.evidence.forEach((e, i) => { e.reason = "원래 근거 " + i; e.nextCheck = "  Note " + i + "\n原文  "; });
+    opinion.evidence.reverse();
+    opinion.checks = [
+      { dimension: "period", sourceIds: [opinion.evidence[0].sourceId], message: "기간 메모 원문" },
+      { dimension: "other", sourceIds: [], message: "전체 메모 원문" },
+    ];
+  }, 2);
+  await read(); await result();
+  for (const source of value.historical.prepared.input.selectedEvidence) {
+    const evidence = page.locator('[data-source-id="' + source.sourceId + '"]');
+    const stored = opinion52(value).evidence.find((e) => e.sourceId === source.sourceId)!;
+    expect(await evidence.getByRole("heading", { name: source.metadata.title, exact: true }).count()).toBe(1);
+    expect(await evidence.locator("blockquote").allTextContents()).toEqual(stored.quotes);
+    expect(await evidence.getByTestId("next-check").textContent()).toBe(stored.nextCheck);
+    expect(await evidence.getByTestId("source-excerpt").isVisible()).toBe(false);
+    await evidence.locator("summary").click();
+    expect(await evidence.getByTestId("source-excerpt").isVisible()).toBe(true);
+    expect(await evidence.getByTestId("source-excerpt").textContent()).toBe(source.excerpt);
+  }
+  const source = value.historical.prepared.input.selectedEvidence.find((e) => e.sourceId === opinion52(value).checks[0].sourceIds[0])!;
+  expect(await page.getByText("기간 · " + source.metadata.title, { exact: true }).count()).toBe(1);
+  expect(await page.getByText("기타 · 전체 근거", { exact: true }).count()).toBe(1);
+  expect((await state()).metrics.request).toBe(1);
+});
+it.each(["", " \n\t"])( "4I52 blank stored note %j creates no invented next action or quote", async (nextCheck) => {
+  await mount52((value) => { const e = opinion52(value).evidence[0]; e.nextCheck = nextCheck; e.quotes = []; });
+  await read(); await result();
+  expect(await page.getByTestId("next-check").textContent()).toBe("저장된 추가 확인 메모가 없습니다.");
+  expect(await page.getByTestId("example-result").locator("blockquote").count()).toBe(0);
+  expect(await page.getByRole("region", { name: "검토 시 확인할 항목" }).count()).toBe(0);
+  expect(await page.getByTestId("example-result").textContent()).not.toContain("다음 확인: 원문 출처");
+});
+it("4I52 long stored reasons and notes are preserved without truncation or added requests", async () => {
+  const value = await mount52((value) => {
+    opinion52(value).overall.reason = "原".repeat(2000);
+    opinion52(value).evidence[0].nextCheck = "확".repeat(1998) + "\n끝";
+  });
+  await read(); await result();
+  expect(await page.getByTestId("overall-reason").textContent()).toBe(opinion52(value).overall.reason);
+  expect(await page.getByTestId("next-check").textContent()).toBe(opinion52(value).evidence[0].nextCheck);
+  expect((await state()).metrics.request).toBe(1);
+});
+it.each(["unknown-source", "duplicate-source", "foreign-quote", "unknown-check"] as const)(
+  "4I52 invalid %s response cannot display a mismatched opinion", async (fault) => {
+    const f = comparisonReviewTestFixture(2), value = f.value();
+    const wire = JSON.parse(comparisonReviewSuccessWire(f.query, value));
+    const opinion = wire.result.historical.result.comparison.comparison;
+    if (fault === "unknown-source") opinion.evidence[0].sourceId = "00000000-0000-4000-8000-000000000000";
+    if (fault === "duplicate-source") opinion.evidence[0].sourceId = opinion.evidence[1].sourceId;
+    if (fault === "foreign-quote") opinion.evidence[0].quotes = ["존재하지 않는 인용"];
+    if (fault === "unknown-check") opinion.checks = [{ dimension: "other",
+      sourceIds: ["00000000-0000-4000-8000-000000000000"], message: "근거 없음" }];
+    const fixture = { ...data, snapshot: { id: value.resultIdentity.selection.companyId, revision: 7 },
+      expected: { ...f.query, selection: value.resultIdentity.selection, binding: value.resultIdentity.binding,
+        sectionKey: value.historical.prepared.input.section.key }, query: f.query, success: JSON.stringify(wire) };
+    await page.evaluate((fixture) => { window.reviewMount = window.startReviewMount(fixture, "success"); }, fixture);
+    await page.waitForFunction(() => document.querySelector("#state")?.textContent?.includes('"status":"ATTACHED"'));
+    await read();
+    await page.waitForFunction(() => document.querySelector("#state")?.textContent?.includes('"kind":"error"'));
+    expect(await page.getByTestId("example-result").count()).toBe(0);
+    expect((await state()).metrics.request).toBe(1);
+});
+it.each(["snapshot", "revision", "selection", "dirty", "blocked", "closed", "aborted"])(
+  "4I52 current %s change removes the full opinion DOM without rereading", async (kind) => {
+    await mount52(); await read(); await result();
+    expect(await page.getByTestId("example-result").count()).toBe(1);
+    await page.evaluate((kind) => window.reviewMount.update(kind), kind);
+    expect(await page.getByTestId("example-result").count()).toBe(0);
+    await page.evaluate(() => window.reviewMount.update("restore"));
+    expect(await page.getByTestId("example-result").count()).toBe(0);
+    expect((await state()).metrics).toMatchObject({ request: 1, renderSideEffects: 0 });
+});
+it("4I52 parent close removes all opinion text without changing parent props", async () => {
+  await mount52(); await read(); await result();
+  const before = await state();
+  expect(await page.getByTestId("example-result").count()).toBe(1);
+  await page.evaluate(() => window.reviewMount.parentClose()); await closedDisplay();
+  expect(await page.getByTestId("example-result").count()).toBe(0);
+  expect((await state()).frameOpen).toBe(true);
+  expect((await state()).metrics).toMatchObject({ request: 1, rendersRequested: before.metrics.rendersRequested,
+    terminalNotifications: 1, renderSideEffects: 0 });
 });
