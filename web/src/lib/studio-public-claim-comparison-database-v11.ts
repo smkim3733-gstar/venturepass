@@ -1223,6 +1223,14 @@ export function createIsolatedPublicComparisonExecution(
   companyGuard: ComparisonCompanyGuard,
   driver: SyntheticComparisonDriver,
 ) {
+  return createComparisonExecutionLifetime(session, companyGuard, driver).execution;
+}
+
+function createComparisonExecutionLifetime(
+  session: ComparisonStorageSession,
+  companyGuard: ComparisonCompanyGuard,
+  driver: SyntheticComparisonDriver,
+) {
   const lease = Object.freeze({});
   let phase: ExecutionPhase = "closed",
     retired = false,
@@ -1869,7 +1877,7 @@ export function createIsolatedPublicComparisonExecution(
     }
     return inspect();
   }
-  return Object.freeze({
+  const execution = Object.freeze({
     execute,
     recover,
     inspect,
@@ -1880,4 +1888,92 @@ export function createIsolatedPublicComparisonExecution(
       return inspect();
     },
   });
+  return {
+    execution,
+    // This closure never leaves the module or accepts a public observation as proof.
+    // No capture/active/phase count can substitute for the original lease and IO lifetime.
+    canRelease: () =>
+      !leaseActive && !executing && !companyReadOpen && !pending && !dispatchUncertain &&
+      !owners.has(owner) && (!network || networkDone) && (!sdkEntered || sdkDone) &&
+      (!bodyBoundary || (ioDone && !bodyBoundary.inspect().cleanupFailed)) &&
+      (!command || driverDone || (!dispatchCommitObserved && !startAttempted)),
+  };
+}
+
+type IsolatedComparisonLifetime = ReturnType<typeof createComparisonExecutionLifetime>;
+type IsolatedComparisonView = ReturnType<IsolatedComparisonLifetime["execution"]["inspect"]>;
+export type IsolatedPublicComparisonService = Readonly<{
+  execute(command: unknown, current: unknown): Promise<IsolatedComparisonView>;
+  recover(selection: unknown): IsolatedComparisonView;
+  inspect(): Readonly<{
+    source: "synthetic-comparison-service";
+    status: "ready" | "draining" | "closed";
+    activeCalls: number;
+    execution: IsolatedComparisonView;
+    owner: null;
+    runtimeObserved: false;
+    authority: typeof comparisonPlanAuthority;
+  }>;
+  retire(): ReturnType<IsolatedPublicComparisonService["inspect"]>;
+}>;
+
+export function createIsolatedPublicComparisonService(
+  session: ComparisonStorageSession,
+  companyGuard: ComparisonCompanyGuard,
+  driver: SyntheticComparisonDriver,
+): IsolatedPublicComparisonService {
+  // Does not inspect current configuration, command, driver authenticity or credentials.
+  // The engine owns original-nonce-first validation when execute is explicitly called.
+  let lifetime: IsolatedComparisonLifetime | undefined =
+    createComparisonExecutionLifetime(session, companyGuard, driver);
+  let last = lifetime.execution.inspect();
+  let retired = false;
+  const pending = new Set<Promise<IsolatedComparisonView>>();
+  function refresh() {
+    if (!lifetime) return;
+    last = lifetime.execution.inspect();
+    if (retired && pending.size === 0 && lifetime.canRelease()) {
+      lifetime = undefined;
+    }
+  }
+  const inspect: IsolatedPublicComparisonService["inspect"] = () => {
+    refresh();
+    return Object.freeze({
+      source: "synthetic-comparison-service",
+      status: !lifetime ? "closed" : retired ? "draining" : "ready",
+      activeCalls: pending.size,
+      execution: last,
+      owner: null,
+      runtimeObserved: false,
+      authority: comparisonPlanAuthority,
+    });
+  };
+  const service: IsolatedPublicComparisonService = Object.freeze({
+    async execute(command: unknown, current: unknown) {
+      if (retired || !lifetime) fail("PUBLIC_COMPARISON_SERVICE_RETIRED");
+      const call = lifetime.execution.execute(command, current);
+      pending.add(call); // A replay observation must not replace the original pending promise.
+      try {
+        return await call;
+      } finally {
+        pending.delete(call);
+        refresh();
+      }
+    },
+    recover(selection: unknown) {
+      if (!lifetime) fail("PUBLIC_COMPARISON_SERVICE_CLOSED");
+      try {
+        return lifetime.execution.recover(selection);
+      } finally {
+        refresh();
+      }
+    },
+    inspect,
+    retire() {
+      retired = true;
+      lifetime?.execution.retire();
+      return inspect();
+    },
+  });
+  return service;
 }
