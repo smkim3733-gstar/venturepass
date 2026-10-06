@@ -1,3 +1,4 @@
+import { preparePublicClaimComparison } from "./studio-public-claim-comparison";
 import {
   comparisonDispatchV2CommandSchema,
   createComparisonTransmissionV2Review,
@@ -1283,6 +1284,9 @@ for (const mode of ["partial-close", "past-database"] as const)
         writeGuardedPublicComparisonV13(g.session, "settle-finalize", i.command, i.current),
       ).toThrow();
       expect(() => reconcilePublicComparisonStorageWitnessV3(g.session)).toThrow();
+      const service = createIsolatedPublicComparisonService(g.session, g.cap, createSyntheticComparisonDriver(forbidden));
+      expect(() => service.recoverPostcapture("settle-finalize", i.command)).toThrow();
+      expect(service.retire()).toMatchObject({ status: "draining", postcapture: { status: "recovery-required", commandDigest: digest(i.command) } });
       expect(snapshot(g.db)).toEqual(stable);
     },
     limit,
@@ -3118,7 +3122,8 @@ it("4I28 service cannot release unknown with no capture and all visible promises
   const safe = JSON.stringify(service.inspect());
   for (const privateValue of [comparisonSyntheticWireKey, directory, JSON.stringify(response)])
     expect(safe).not.toContain(privateValue);
-  expect(Object.keys(service)).toEqual(["execute", "recover", "inspect", "retire"]);
+  expect(() => service.previewPostcapture({ runId: command.runId, dispatchCommandDigest: digest(command) })).toThrow(/EXECUTION_PENDING/);
+  expect(Object.keys(service)).toEqual(["execute", "recover", "previewPostcapture", "writePostcapture", "recoverPostcapture", "inspect", "retire"]);
 }, limit);
 
 for (const mode of ["unused", "invalid-command"] as const)
@@ -3213,6 +3218,7 @@ it("4I28 service retains late SDK capture and caller projection failure until or
   expect(service.inspect()).toMatchObject({ status: "draining", activeCalls: 1,
     execution: { capturePersisted: true, retainedCaptureCount: 1, promiseSettled: false } });
   expect(() => beginComparisonStorageSession(g.session)).toThrow(/BUSY/);
+  expect(() => service.previewPostcapture({ runId: command.runId, dispatchCommandDigest: digest(command) })).toThrow(/EXECUTION_PENDING/);
   drain.resolve();
   expect(await running).toMatchObject({ phase: "closed", capturePersisted: true });
   expect(await projection).toBe("failed");
@@ -3338,3 +3344,348 @@ it("4I28 service waits for original read after cancellation already settled", as
   expect(() => beginComparisonStorageSession(g.session)).toThrow(/BUSY/);
   expect(network).toHaveBeenCalledTimes(1);
 }, limit);
+
+
+// 4I30: retained service postcapture handoff; existing SQL13 fixture and writer stay authoritative.
+function service30(g: ReturnType<typeof guarded>) {
+  const start = vi.fn(async () => { throw Error("storage-only must not start"); });
+  const service = createIsolatedPublicComparisonService(g.session, g.cap, createSyntheticComparisonDriver(start));
+  const b = state13(g).transmissionBindings[0];
+  const selected = { runId: b.runId, dispatchCommandDigest: digest(b.command) };
+  return { service, start, selected };
+}
+function commands30(p: ReturnType<ReturnType<typeof service30>["service"]["previewPostcapture"]>) {
+  const common = {
+    commandVersion: 1, purpose: "compare-public-claim", runId: p.runId,
+    transmissionBindingDigest: p.transmissionBindingDigest, dispatchEventDigest: p.dispatchEventDigest,
+    responseArtifactSha256: p.responseArtifactSha256, expectedRunHead: p.expectedRunHead,
+  };
+  return {
+    result: comparisonResultCommandSchema.parse({ ...common, clientRequestId: randomUUID(),
+      kind: "record-public-comparison-result", responseArtifactByteLength: p.responseArtifactByteLength,
+      expectedValidatedArtifactSha256: p.expectedValidatedArtifactSha256 }),
+    close: () => comparisonCloseCommandSchema.parse({ ...common, clientRequestId: randomUUID(),
+      kind: "settle-finalize-public-comparison", comparisonEventDigest: p.comparisonEventDigest,
+      usagePolicyDigest: p.usage.usagePolicyDigest ?? bad, expectedAssessmentDigest: p.expectedAssessmentDigest ?? bad,
+      expectedBudgetHead: p.expectedBudgetHead }),
+  };
+}
+const postLimit30 = 300000; // Several full SQL13 audits/explicit phases in each end-to-end scenario.
+it("4I30 storage-only preview is read-only; explicit three/eight rows and old nonce replay remain separate", () => {
+  const g = throughCapture(), { service, start, selected } = service30(g);
+  const before = snapshot(g.db), files = witnessFiles(g);
+  const p = service.previewPostcapture(selected);
+  expect(service.previewPostcapture(selected)).toEqual(p);
+  expect(snapshot(g.db)).toEqual(before);
+  expect(witnessFiles(g)).toEqual(files);
+  const command = commands30(p).result, current = { at: later, eventId: randomUUID() };
+  expect(service.writePostcapture("record-result", command, current)).toMatchObject({
+    status: "committed", insertedRows: 3, commitObserved: true, witnessMatched: true, owner: null, runtimeObserved: false,
+  });
+  expect(state13(g).reservation.archive.financial.events).toHaveLength(1);
+  g.companyDb.prepare("DELETE FROM studio_cases WHERE id=?").run(fixture.company.id);
+  const next = service.previewPostcapture(selected), close = commands30(next).close(), closeCurrent = closeInput(g).current;
+  expect(service.writePostcapture("settle-finalize", close, closeCurrent)).toMatchObject({ status: "committed", insertedRows: 8 });
+  const stable = snapshot(g.db), journal = witnessFiles(g);
+  expect(service.writePostcapture("record-result", command, explode())).toMatchObject({ status: "replay", insertedRows: 0, commitObserved: false });
+  expect(service.recoverPostcapture("settle-finalize", close)).toMatchObject({ status: "replay", insertedRows: 0, witnessMatched: true });
+  expect(snapshot(g.db)).toEqual(stable);
+  expect(witnessFiles(g)).toEqual(journal);
+  expect(() => service.writePostcapture("settle-finalize", { ...close, expectedAssessmentDigest: bad }, explode())).toThrow();
+  expect(() => service.writePostcapture("settle-finalize", { ...close, clientRequestId: closeCurrent.usageNonce }, explode())).toThrow();
+  expect(() => service.previewPostcapture({ ...selected, dispatchCommandDigest: bad })).toThrow(/RUN_CHANGED/);
+  expect(() => service.previewPostcapture({ ...selected, runId: randomUUID() })).toThrow(/RUN_CHANGED/);
+  expect(() => service.previewPostcapture({ ...selected, authority: true })).toThrow();
+  const safe = JSON.stringify({ preview: next, view: service.inspect() });
+  for (const value of [directory, comparisonSyntheticWireKey, JSON.stringify(response), "recordedRows", "records", "apiKey"])
+    expect(safe).not.toContain(value);
+  expect(start).not.toHaveBeenCalled();
+  expect(service.retire().status).toBe("closed");
+}, postLimit30);
+
+it("4I30 original pending execution denies handoff; retire retains late capture then permits explicit storage", async () => {
+  const { g, command, current } = ownerFixture22(), ready = deferred22<void>(), net = deferred22<Response>();
+  const network = vi.fn(() => { ready.resolve(); return net.promise; });
+  const service = createIsolatedPublicComparisonService(g.session, g.cap,
+    createSyntheticComparisonSdkDriver((o) => ({ responses: { create: async (body, request) =>
+      (await o.fetch("https://api.openai.com/v1/responses", { ...sdkWire24(body), signal: request.signal })).json(),
+    } }), network));
+  const selected = { runId: command.runId, dispatchCommandDigest: digest(command) };
+  const running = service.execute(command, current);
+  await Promise.race([ready.promise, running.then(() => { throw Error("start missing"); })]);
+  expect(() => service.previewPostcapture(selected)).toThrow(/EXECUTION_PENDING/);
+  expect(() => service.writePostcapture("record-result", {}, explode())).toThrow(/EXECUTION_PENDING/);
+  expect(service.retire().status).toBe("draining");
+  net.resolve(new Response(JSON.stringify(response)));
+  expect((await running).capturePersisted).toBe(true);
+  expect(service.inspect().status).toBe("closed");
+  expect(() => service.previewPostcapture({ ...selected, dispatchCommandDigest: bad })).toThrow(/RUN_CHANGED/);
+  const p = service.previewPostcapture(selected);
+  expect(service.writePostcapture("record-result", commands30(p).result, { at: later, eventId: randomUUID() }).insertedRows).toBe(3);
+  expect(network).toHaveBeenCalledTimes(1);
+  expect(state13(g).reservation.archive.financial.events).toHaveLength(1);
+}, postLimit30);
+
+for (const mode of ["missing", "binding3", "zero", "excess", "refusal", "incomplete"] as const)
+  it("4I30 explicit service close preserves original policy for " + mode, () => {
+    const value = mode === "missing" ? { ...response, usage: undefined } :
+      mode === "zero" || mode === "excess" ? { ...response, usage: {
+        input_tokens: mode === "zero" ? 0 : 999999, output_tokens: mode === "zero" ? 0 : 999999,
+        total_tokens: mode === "zero" ? 0 : 1999998,
+        input_tokens_details: { cached_tokens: 0 }, output_tokens_details: { reasoning_tokens: 0 },
+      } } : { ...response, status: mode === "incomplete" ? "incomplete" : "completed",
+        output: mode === "refusal" ? [{ type: "message", content: [{ type: "refusal", refusal: "No" }] }] : [] };
+    const g = mode === "binding3" ? setup12() : throughCapture(value);
+    if (mode === "binding3") { dispatch(g); mark(g); save(g); migrateGuardedPublicComparisonDatabaseV13(g.session); }
+    const { service, selected, start } = service30(g);
+    const p = service.previewPostcapture(selected);
+    if (mode === "refusal" || mode === "incomplete") expect(p.comparisonState).toBe(mode === "refusal" ? "response-unsupported" : "response-incomplete");
+    expect(service.writePostcapture("record-result", commands30(p).result,
+      { at: later, eventId: randomUUID() }).insertedRows).toBe(3);
+    const next = service.previewPostcapture(selected), c = commands30(next).close(), cur = closeInput(g).current;
+    expect(next.database).toMatchObject({ comparisonRecorded: true, costSettled: false, finalized: false, currentContextVerified: false });
+    expect(next.database.runHeldBytes).toBeGreaterThan(0);
+    expect(BigInt(next.database.scopeHeldUnits)).toBeGreaterThan(BigInt(0));
+    const before = snapshot(g.db), files = witnessFiles(g);
+    const result = service.writePostcapture("settle-finalize", c,
+      mode === "missing" || mode === "binding3" ? explode() : cur);
+    if (mode === "missing" || mode === "binding3") {
+      expect(result).toMatchObject({ status: "blocked", insertedRows: 0 });
+      expect(snapshot(g.db)).toEqual(before);
+      expect(witnessFiles(g)).toEqual(files);
+      expect(service.inspect().postcapture.status).toBe("blocked");
+      expect(state13(g).reservation.archive.financial.events).toHaveLength(1);
+    } else {
+      expect(result).toMatchObject({ status: "committed", insertedRows: 8 });
+      const s = state13(g).reservation, money = s.archive.financial.events.at(-1)!;
+      if (money.payload.kind !== "recognize-comparison-usage") throw Error("money");
+      if (mode === "zero") expect(money.payload.recognizedUnits).toBe("0");
+      if (mode === "excess") {
+        expect(BigInt(money.payload.recognizedUnits)).toBeGreaterThan(BigInt(s.archive.records.runs[0].manifest.reservedUnits));
+        expect(BigInt(money.payload.boundExcessUnits)).toBeGreaterThan(BigInt(0));
+      }
+      expect(s.archive.records.events.at(-1)!.payload.kind).toBe("finalized");
+      expect(service.previewPostcapture(selected).database).toMatchObject({ costSettled: true, finalized: true, runHeldBytes: 0, scopeHeldUnits: "0", currentContextVerified: false });
+    }
+    expect(start).not.toHaveBeenCalled();
+    expect(service.retire().status).toBe("closed");
+  }, postLimit30);
+
+for (const operation of ["record-result", "settle-finalize"] as const)
+  for (const fault of ["commit", "ack", "lease", "ack-rollback"] as const)
+    it("4I30 service " + operation + " " + fault + " retains original command and recovers exact rows only", () => {
+      const g = operation === "record-result" ? throughCapture() : throughResult();
+      const i = operation === "record-result" ? resultInput(g) : closeInput(g);
+      const originalCommand = structuredClone(i.command), { service, start } = service30(g);
+      const exec = g.db.exec.bind(g.db), end = storageWitness22.endComparisonStorageSession;
+      let writing = false, lost = false;
+      const io = vi.spyOn(journalIO, "writeJournalJson").mockImplementation((file, value, ...args) => {
+        const kind = (value as { payload: { type: string } }).payload.type;
+        if (kind === "intent") writing = true;
+        if (writing && kind === "ack" && (fault === "ack" || fault === "ack-rollback")) throw Error("postcapture ack lost");
+        return originalWrite(file, value, ...args);
+      });
+      const sql = vi.spyOn(g.db, "exec").mockImplementation((statement) => {
+        if (fault === "ack-rollback" && writing && statement === "ROLLBACK") throw Error("postcapture rollback lost");
+        exec(statement);
+        if (fault === "commit" && writing && !lost && statement === "COMMIT") { lost = true; throw Error("postcapture commit return lost"); }
+      });
+      const lease = vi.spyOn(storageWitness22, "endComparisonStorageSession").mockImplementation((s) => {
+        if (fault === "lease" && writing) throw Error("postcapture lease close lost");
+        return end(s);
+      });
+      try {
+        expect(() => service.writePostcapture(operation, i.command, i.current)).toThrow();
+        expect(service.retire()).toMatchObject({ status: "draining", postcapture: {
+          status: "recovery-required", commandDigest: digest(originalCommand),
+        } });
+        const stable = snapshot(g.db), files = witnessFiles(g);
+        expect(() => service.writePostcapture(operation, originalCommand, explode())).toThrow(/RECOVERY_REQUIRED/);
+        expect(() => service.recoverPostcapture(operation, { ...originalCommand, responseArtifactSha256: bad })).toThrow(/ORIGINAL_COMMAND_REQUIRED/);
+        expect(snapshot(g.db)).toEqual(stable);
+        expect(witnessFiles(g)).toEqual(files);
+      } finally { sql.mockRestore(); io.mockRestore(); lease.mockRestore(); }
+      // Mutating the caller's input cannot alter the retained command/current or internal close nonces.
+      i.command.responseArtifactSha256 = bad;
+      const stable = snapshot(g.db);
+      expect(service.recoverPostcapture(operation, originalCommand)).toMatchObject({
+        status: "replay", insertedRows: 0, commitObserved: false, witnessMatched: true,
+      });
+      expect(snapshot(g.db)).toEqual(stable);
+      expect(service.inspect()).toMatchObject({ status: "closed", postcapture: { status: "stored", commandDigest: null, cleanupRequired: false } });
+      expect(start).not.toHaveBeenCalled();
+    }, postLimit30);
+
+for (const operation of ["record-result", "settle-finalize"] as const)
+  it("4I30 service " + operation + " absent rows cannot become a new write during recovery", () => {
+    const g = operation === "record-result" ? throughCapture() : throughResult();
+    const i = operation === "record-result" ? resultInput(g) : closeInput(g);
+    const { service } = service30(g), before = snapshot(g.db), insert = injectInsert(g.db, 2);
+    expect(() => service.writePostcapture(operation, i.command, i.current)).toThrow();
+    insert.mockRestore();
+    expect(snapshot(g.db)).toEqual(before);
+    const files = witnessFiles(g);
+    expect(() => service.recoverPostcapture(operation, i.command)).toThrow(/RECORD_NOT_FOUND/);
+    expect(snapshot(g.db)).toEqual(before);
+    expect(witnessFiles(g)).toEqual(files);
+    expect(service.retire().status).toBe("draining");
+    const reopened = openComparisonStorageSession(g.paths, selection);
+    try {
+      const next = createIsolatedPublicComparisonService(reopened, g.cap, createSyntheticComparisonDriver(forbidden));
+      expect(() => next.recoverPostcapture(operation, i.command)).toThrow(/RECORD_NOT_FOUND/);
+      expect(next.retire().status).toBe("draining");
+      expect(snapshot(g.db)).toEqual(before);
+      expect(witnessFiles(g)).toEqual(files);
+    } finally { closeComparisonStorageSession(reopened); }
+  }, postLimit30);
+
+it("4I30 storage-only restart acknowledges an original command without owner driver or new rows", () => {
+  const g = throughCapture(), i = resultInput(g), { service } = service30(g);
+  const io = vi.spyOn(journalIO, "writeJournalJson").mockImplementation((file, value, ...args) => {
+    if ((value as { payload: { type: string } }).payload.type === "ack") throw Error("ack lost");
+    return originalWrite(file, value, ...args);
+  });
+  expect(() => service.writePostcapture("record-result", i.command, i.current)).toThrow();
+  io.mockRestore();
+  const before = snapshot(g.db), reopened = openComparisonStorageSession(g.paths, selection);
+  try {
+    const next = createIsolatedPublicComparisonService(reopened, g.cap, createSyntheticComparisonDriver(forbidden));
+    expect(next.recoverPostcapture("record-result", i.command)).toMatchObject({
+      status: "replay", commitObserved: false, insertedRows: 0, witnessMatched: true, owner: null,
+    });
+    expect(next.inspect().execution.startAttempted).toBe(false);
+    expect(snapshot(g.db)).toEqual(before);
+    expect(next.retire().status).toBe("closed");
+    // The still-live original object must explicitly observe its own acknowledgement.
+    expect(service.retire().status).toBe("draining");
+    expect(service.recoverPostcapture("record-result", i.command).witnessMatched).toBe(true);
+    expect(service.inspect().status).toBe("closed");
+  } finally { closeComparisonStorageSession(reopened); }
+}, postLimit30);
+
+it("4I30 read cleanup and competing storage lease never close another invocation", () => {
+  const g = throughCapture(), { service, selected } = service30(g), before = snapshot(g.db);
+  beginComparisonStorageSession(g.session);
+  expect(() => service.previewPostcapture(selected)).toThrow(/BUSY/);
+  expect(service.inspect().postcapture.cleanupRequired).toBe(false);
+  expect(() => beginComparisonStorageSession(g.session)).toThrow(/BUSY/);
+  endComparisonStorageSession(g.session);
+  const end = storageWitness22.endComparisonStorageSession;
+  const spy = vi.spyOn(storageWitness22, "endComparisonStorageSession").mockImplementation(() => { throw Error("read cleanup lost"); });
+  expect(() => service.previewPostcapture(selected)).toThrow(/LEASE_CLEANUP_REQUIRED/);
+  expect(service.retire()).toMatchObject({ status: "draining", postcapture: { cleanupRequired: true } });
+  spy.mockRestore();
+  expect(service.previewPostcapture(selected).runId).toBe(selected.runId);
+  expect(service.inspect()).toMatchObject({ status: "closed", postcapture: { cleanupRequired: false } });
+  beginComparisonStorageSession(g.session); end(g.session);
+  expect(snapshot(g.db)).toEqual(before);
+}, postLimit30);
+
+it("4I30 unused private release does not replace capture or authorize stale result/close commands", () => {
+  const g = setup13(), d = dispatch13(g), { service, selected, start } = service30(g);
+  expect(() => service.previewPostcapture(selected)).toThrow();
+  expect(service.retire().status).toBe("closed");
+  save13(g);
+  const p = service.previewPostcapture(selected), c = commands30(p).result, before = snapshot(g.db), files = witnessFiles(g);
+  expect(() => service.writePostcapture("record-result", { ...c, expectedRunHead: { ...c.expectedRunHead, headDigest: bad } },
+    { at: later, eventId: randomUUID() })).toThrow();
+  expect(() => service.writePostcapture("record-result", { ...c, responseArtifactSha256: bad },
+    { at: later, eventId: randomUUID() })).toThrow();
+  expect(snapshot(g.db)).toEqual(before); expect(witnessFiles(g)).toEqual(files);
+  expect(service.writePostcapture("record-result", c, { at: later, eventId: randomUUID() }).insertedRows).toBe(3);
+  const close = closeInput(g), stable = snapshot(g.db);
+  expect(() => service.writePostcapture("settle-finalize", { ...close.command, expectedBudgetHead: { ...close.command.expectedBudgetHead, headDigest: bad } }, close.current)).toThrow();
+  expect(() => service.writePostcapture("settle-finalize", close.command, { ...close.current, usageNonce: d.input.command.clientRequestId })).toThrow();
+  expect(snapshot(g.db)).toEqual(stable);
+  expect(service.inspect().postcapture.commandDigest).toBeNull();
+  expect(start).not.toHaveBeenCalled();
+}, postLimit30);
+
+it("4I30 lost public projection retains committed command until exact explicit recovery", () => {
+  const g = throughCapture(), i = resultInput(g), { service } = service30(g), freeze = Object.freeze;
+  const spy = vi.spyOn(Object, "freeze").mockImplementation((value) => {
+    if (value && typeof value === "object" && "source" in value &&
+        value.source === "synthetic-comparison-postcapture") throw Error("public projection lost");
+    return freeze(value);
+  });
+  expect(() => service.writePostcapture("record-result", i.command, i.current)).toThrow(/projection lost/);
+  spy.mockRestore();
+  expect(service.retire()).toMatchObject({ status: "draining", postcapture: { commandDigest: digest(i.command) } });
+  const stable = snapshot(g.db);
+  expect(service.recoverPostcapture("record-result", i.command)).toMatchObject({ status: "replay", insertedRows: 0, witnessMatched: true });
+  expect(snapshot(g.db)).toEqual(stable);
+  expect(service.inspect().status).toBe("closed");
+}, postLimit30);
+
+
+it("4I30 recovery of an older result cannot acknowledge a different pending close command", () => {
+  const g = throughCapture(), result = resultInput(g), { service } = service30(g);
+  service.writePostcapture("record-result", result.command, result.current);
+  const close = closeInput(g);
+  const io = vi.spyOn(journalIO, "writeJournalJson").mockImplementation((file, value, ...args) => {
+    if ((value as { payload: { type: string } }).payload.type === "ack") throw Error("close ack lost");
+    return originalWrite(file, value, ...args);
+  });
+  expect(() => service.writePostcapture("settle-finalize", close.command, close.current)).toThrow();
+  io.mockRestore();
+  const old = createIsolatedPublicComparisonService(g.session, g.cap, createSyntheticComparisonDriver(forbidden));
+  const stable = snapshot(g.db), files = witnessFiles(g);
+  expect(() => old.recoverPostcapture("record-result", result.command)).toThrow();
+  expect(snapshot(g.db)).toEqual(stable);
+  expect(witnessFiles(g)).toEqual(files);
+  expect(old.retire().status).toBe("draining");
+  expect(service.recoverPostcapture("settle-finalize", close.command).witnessMatched).toBe(true);
+  expect(old.recoverPostcapture("record-result", result.command).witnessMatched).toBe(true);
+  expect(old.inspect().status).toBe("closed");
+  expect(snapshot(g.db)).toEqual(stable);
+}, postLimit30);
+
+for (const mode of ["ready", "quote-rejected"] as const)
+  it("4I30 service stores " + mode + " comparison with manual-unverified current-context authority", () => {
+    const prepared = preparePublicClaimComparison(fixture.company, fixture.request.command.selection);
+    const output = {
+      preparationDigest: prepared.preparationDigest,
+      claimQuote: mode === "ready" ? prepared.input.claimQuote : "synthetic quote not in original",
+      overall: { relation: "undetermined", reason: "Synthetic comparison only" },
+      evidence: prepared.input.selectedEvidence.map((e) => ({ sourceId: e.sourceId,
+        relation: "undetermined", quotes: [], reason: "Needs review", nextCheck: "" })),
+      checks: [],
+    };
+    const g = throughCapture({ ...response, output: [{ type: "message", role: "assistant",
+      status: "completed", content: [{ type: "output_text", text: JSON.stringify(output) }] }] });
+    const { service, selected, start } = service30(g);
+    const p = service.previewPostcapture(selected), command = commands30(p).result;
+    expect(p.comparisonState).toBe(mode === "ready" ? "comparison-ready" : "comparison-rejected");
+    p.expectedRunHead.headDigest = bad;
+    p.responseArtifactSha256 = bad;
+    selected.dispatchCommandDigest = bad;
+    expect(service.writePostcapture("record-result", command, { at: later, eventId: randomUUID() }).insertedRows).toBe(3);
+    const state = state13(g);
+    const raw = state.reservation.archive.records.artifacts.find((a) => a.key === "comparison-validated")!.body;
+    expect(JSON.parse(raw)).toMatchObject({ source: "supplied-response", evidenceOrigin: "manual-unverified",
+      currentContextVerified: false, state: mode === "ready" ? "comparison-ready" : "comparison-rejected" });
+    const b = state.transmissionBindings[0];
+    const reviewed = service.previewPostcapture({ runId: b.runId, dispatchCommandDigest: digest(b.command) });
+    expect(reviewed.responseArtifactSha256).toBe(command.responseArtifactSha256);
+    expect(reviewed.database).toMatchObject({ comparisonRecorded: true, costSettled: false, finalized: false, currentContextVerified: false });
+    expect(start).not.toHaveBeenCalled();
+    expect(service.retire().status).toBe("closed");
+  }, postLimit30);
+
+it("4I30 postcapture selection cannot cross the original session or company file", () => {
+  const g = throughCapture(), other = setup13(false), { selected } = service30(g);
+  const driver = createSyntheticComparisonDriver(forbidden);
+  const wrongCompany = createIsolatedPublicComparisonService(g.session, other.cap, driver);
+  const wrongSession = createIsolatedPublicComparisonService(other.session, g.cap, driver);
+  const otherService = createIsolatedPublicComparisonService(other.session, other.cap, driver);
+  const command = resultInput(g).command;
+  const before = [snapshot(g.db), snapshot(other.db)], files = [witnessFiles(g), witnessFiles(other)];
+  expect(() => wrongCompany.previewPostcapture(selected)).toThrow(/COMPANY_FILE_CHANGED/);
+  expect(() => wrongCompany.writePostcapture("record-result", command, explode())).toThrow(/COMPANY_FILE_CHANGED/);
+  expect(() => wrongSession.previewPostcapture(selected)).toThrow(/COMPANY_FILE_CHANGED/);
+  expect(() => otherService.previewPostcapture(selected)).toThrow(/RUN_CHANGED/);
+  expect([snapshot(g.db), snapshot(other.db)]).toEqual(before);
+  expect([witnessFiles(g), witnessFiles(other)]).toEqual(files);
+  for (const service of [wrongCompany, wrongSession, otherService])
+    expect(service.retire().status).toBe("closed");
+}, postLimit30);

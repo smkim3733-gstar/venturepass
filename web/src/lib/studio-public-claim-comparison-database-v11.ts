@@ -40,7 +40,7 @@ import {
   planPreparedComparisonStorageCommand,
   inspectedComparisonStorageCommand,
 } from "./studio-public-claim-comparison-reservation";
-import { comparisonPlanAuthority, comparisonSha } from "./studio-public-claim-comparison-financial";
+import { comparisonPlanAuthority, comparisonSha, comparisonHashSchema } from "./studio-public-claim-comparison-financial";
 import type { PublicComparisonCoverage } from "./studio-public-claim-comparison-budget";
 
 import {
@@ -59,6 +59,10 @@ import {
 } from "./studio-public-claim-comparison-transmission";
 import { publicComparisonV13InsertGates } from "./studio-public-claim-comparison-database-v13-schema";
 import {
+  createComparisonPostcapturePreview,
+  planComparisonPostcapture,
+  comparisonResultCommandSchema,
+  comparisonCloseCommandSchema,
   comparisonDispatchV2CommandSchema,
   type ComparisonTransmissionV2Review,
   inspectComparisonTransmissionV4State,
@@ -821,6 +825,15 @@ export function cancelPublicComparisonDatabase(
 }
 
 /** Explicit internal server composition. No route/UI/dispatcher, no actual-price or consent authority. */
+type ComparisonStorageCall = {
+  session: ComparisonStorageSession;
+  connection: ReturnType<typeof beginComparisonStorageSession>;
+  commitObserved: boolean;
+};
+function finishComparisonStorageCall(call: ComparisonStorageCall) {
+  try { endComparisonStorageSession(call.session); }
+  catch { throw observedError("PUBLIC_COMPARISON_LEASE_CLEANUP_REQUIRED", call.commitObserved); }
+}
 function guardedWrite(
   session: ComparisonStorageSession,
   operation: Operation,
@@ -843,11 +856,7 @@ function guardedWrite(
     );
     throw error;
   } finally {
-    try {
-      endComparisonStorageSession(session);
-    } catch {
-      throw observedError("PUBLIC_COMPARISON_LEASE_CLEANUP_REQUIRED", commitObserved);
-    }
+    finishComparisonStorageCall({ session, connection: { db, selection }, commitObserved });
   }
 }
 export function reserveGuardedPublicComparison(
@@ -1099,11 +1108,14 @@ function reconcileVersionedWitness(
   session: ComparisonStorageSession,
   version: 12 | 13,
   ownedLease?: OwnedComparisonLease,
+  storageCall?: ComparisonStorageCall,
 ) {
   const active = ownedLease ? ownedComparisonLeases.get(ownedLease) : undefined;
   if (ownedLease && (!active || active.session !== session || version !== 13))
     fail("PUBLIC_COMPARISON_OWNER_REQUIRED");
-  const { db, selection } = active ?? beginComparisonStorageSession(session);
+  if (storageCall && (ownedLease || storageCall.session !== session || version !== 13))
+    fail("PUBLIC_COMPARISON_OWNER_REQUIRED");
+  const { db, selection } = active ?? storageCall?.connection ?? beginComparisonStorageSession(session);
   enter(db);
   try {
     db.exec("BEGIN IMMEDIATE");
@@ -1147,7 +1159,7 @@ function reconcileVersionedWitness(
     return rollback(db, e, false);
   } finally {
     busy.delete(db);
-    if (!active) endComparisonStorageSession(session);
+    if (!active && !storageCall) endComparisonStorageSession(session);
   }
 }
 
@@ -1247,6 +1259,7 @@ function createComparisonExecutionLifetime(
     hookEntered = false,
     syntheticStartObserved = false;
   let command: z.infer<typeof comparisonDispatchV2CommandSchema> | undefined;
+  let replaySelection: { runId: string; dispatchCommandDigest: string } | null = null;
   let postCheckpoint: ReturnType<typeof checkpoint> | undefined;
   let preDispatchCheckpoint: ReturnType<typeof checkpoint> | undefined;
   let boundary: ReturnType<typeof preparePublicComparisonTransportBoundary> | undefined;
@@ -1702,6 +1715,7 @@ function createComparisonExecutionLifetime(
         rawCommand,
       );
       if (prepared.status === "replay") {
+        replaySelection ??= { runId: prepared.command.runId, dispatchCommandDigest: digest(prepared.command) };
         const stored = write(
           active.db,
           active.selection,
@@ -1890,6 +1904,7 @@ function createComparisonExecutionLifetime(
   });
   return {
     execution,
+    originalSelection: () => command ? { runId: command.runId, dispatchCommandDigest: digest(command) } : replaySelection,
     // This closure never leaves the module or accepts a public observation as proof.
     // No capture/active/phase count can substitute for the original lease and IO lifetime.
     canRelease: () =>
@@ -1900,16 +1915,56 @@ function createComparisonExecutionLifetime(
   };
 }
 
+type PostcaptureOperation = "record-result" | "settle-finalize";
+const postcaptureSelection = z.object({
+  runId: z.string().uuid(),
+  dispatchCommandDigest: comparisonHashSchema,
+}).strict();
+type PostcaptureSelection = z.infer<typeof postcaptureSelection>;
+type PostcapturePreview = Omit<ReturnType<typeof createComparisonPostcapturePreview>, "source"> & {
+  source: "synthetic-comparison-postcapture";
+  runtimeObserved: false;
+  runId: string;
+  dispatchCommandDigest: string;
+  transmissionBindingDigest: string;
+  dispatchEventDigest: string;
+  expectedRunHead: { revision: number; headDigest: string };
+  expectedBudgetHead: { revision: number; headDigest: string | null };
+  comparisonEventDigest: string | null;
+  database: { comparisonRecorded: boolean; costSettled: boolean; finalized: boolean;
+    currentContextVerified: false; runHeldBytes: number; scopeHeldUnits: string; scopeRecognizedUnits: string };
+};
+type PostcaptureReceipt = Readonly<{
+  source: "synthetic-comparison-postcapture";
+  status: "committed" | "replay" | "blocked";
+  runId: string;
+  commandDigest: string;
+  insertedRows: number;
+  commitObserved: boolean;
+  witnessMatched: boolean;
+  owner: null;
+  runtimeObserved: false;
+  authority: typeof comparisonPlanAuthority;
+}>;
 type IsolatedComparisonLifetime = ReturnType<typeof createComparisonExecutionLifetime>;
 type IsolatedComparisonView = ReturnType<IsolatedComparisonLifetime["execution"]["inspect"]>;
 export type IsolatedPublicComparisonService = Readonly<{
   execute(command: unknown, current: unknown): Promise<IsolatedComparisonView>;
   recover(selection: unknown): IsolatedComparisonView;
+  previewPostcapture(selection: unknown): PostcapturePreview;
+  writePostcapture(operation: PostcaptureOperation, command: unknown, current?: unknown): PostcaptureReceipt;
+  recoverPostcapture(operation: PostcaptureOperation, command: unknown): PostcaptureReceipt;
   inspect(): Readonly<{
     source: "synthetic-comparison-service";
     status: "ready" | "draining" | "closed";
     activeCalls: number;
     execution: IsolatedComparisonView;
+    postcapture: Readonly<{
+      status: "unused" | "review" | "stored" | "blocked" | "recovery-required";
+      runId: string | null;
+      commandDigest: string | null;
+      cleanupRequired: boolean;
+    }>;
     owner: null;
     runtimeObserved: false;
     authority: typeof comparisonPlanAuthority;
@@ -1922,58 +1977,226 @@ export function createIsolatedPublicComparisonService(
   companyGuard: ComparisonCompanyGuard,
   driver: SyntheticComparisonDriver,
 ): IsolatedPublicComparisonService {
-  // Does not inspect current configuration, command, driver authenticity or credentials.
-  // The engine owns original-nonce-first validation when execute is explicitly called.
   let lifetime: IsolatedComparisonLifetime | undefined =
     createComparisonExecutionLifetime(session, companyGuard, driver);
   let last = lifetime.execution.inspect();
-  let retired = false;
+  let original: PostcaptureSelection | null = null;
+  let selected: PostcaptureSelection | null = null;
+  let retired = false, postBusy = false;
+  let storage: ComparisonStorageCall | undefined;
+  let postStatus: ReturnType<IsolatedPublicComparisonService["inspect"]>["postcapture"]["status"] = "unused";
+  // Kept only for uncertain writes. Recovery never substitutes a fresh command/current/nonce.
+  let retained: { operation: PostcaptureOperation; command: unknown; current?: unknown } | undefined;
   const pending = new Set<Promise<IsolatedComparisonView>>();
   function refresh() {
     if (!lifetime) return;
     last = lifetime.execution.inspect();
-    if (retired && pending.size === 0 && lifetime.canRelease()) {
-      lifetime = undefined;
+    original = lifetime.originalSelection() ?? original;
+    if (retired && pending.size === 0 && lifetime.canRelease()) lifetime = undefined;
+  }
+  function requireHandoff() {
+    refresh();
+    if (postBusy || pending.size || (lifetime && !lifetime.canRelease()))
+      fail("PUBLIC_COMPARISON_POSTCAPTURE_EXECUTION_PENDING");
+  }
+  function cleanStorage() {
+    if (!storage) return;
+    // Only this service's successful acquisition can reach this explicit cleanup.
+    if (storage.connection.db.isTransaction) storage.connection.db.exec("ROLLBACK");
+    finishComparisonStorageCall(storage);
+    storage = undefined;
+  }
+  function withStorage<T>(work: (call: ComparisonStorageCall) => T): T {
+    if (storage) fail("PUBLIC_COMPARISON_POSTCAPTURE_CLEANUP_REQUIRED");
+    storage = { session, connection: beginComparisonStorageSession(session), commitObserved: false };
+    const call = storage;
+    try {
+      return work(call);
+    } catch (error) {
+      call.commitObserved ||= !!(error && typeof error === "object" && "commitObserved" in error && error.commitObserved === true);
+      throw error;
+    } finally {
+      try {
+        finishComparisonStorageCall(call);
+        storage = undefined;
+      } catch (error) {
+        postStatus = "recovery-required";
+        throw error;
+      }
+    }
+  }
+  function read(call: ComparisonStorageCall) {
+    const { db, selection } = call.connection;
+    const a = inspectVersionedDatabase(db, selection, 13);
+    checkComparisonWitnessCompany(session, companyGuard, 3);
+    return {
+      a,
+      state: a.transmission!.state,
+      cp: checkpoint(db, { ...a, state: a.inspection.state }, a.inspection),
+    };
+  }
+  function select(state: ReturnType<typeof read>["state"], raw: unknown) {
+    assertPublicComparisonDataOnly(raw);
+    const requested = postcaptureSelection.parse(raw);
+    if ((original && digest(original) !== digest(requested)) ||
+        (selected && digest(selected) !== digest(requested)))
+      fail("PUBLIC_COMPARISON_POSTCAPTURE_RUN_CHANGED");
+    const binding = state.transmissionBindings.find((b) => b.runId === requested.runId);
+    if (!binding || digest(binding.command) !== requested.dispatchCommandDigest)
+      fail("PUBLIC_COMPARISON_POSTCAPTURE_RUN_CHANGED");
+    return { requested, binding };
+  }
+  function parseCommand(operation: PostcaptureOperation, raw: unknown) {
+    if (operation !== "record-result" && operation !== "settle-finalize")
+      fail("PUBLIC_COMPARISON_POSTCAPTURE_OPERATION");
+    assertPublicComparisonDataOnly(raw);
+    return (operation === "record-result" ? comparisonResultCommandSchema : comparisonCloseCommandSchema).parse(raw);
+  }
+  function storageOperation(operation: PostcaptureOperation, raw: unknown, current: unknown, recovery: boolean) {
+    requireHandoff();
+    const command = parseCommand(operation, raw);
+    if (retained && (retained.operation !== operation || digest(retained.command) !== digest(command)))
+      fail("PUBLIC_COMPARISON_POSTCAPTURE_ORIGINAL_COMMAND_REQUIRED");
+    if (!recovery && (retained || storage))
+      fail("PUBLIC_COMPARISON_POSTCAPTURE_RECOVERY_REQUIRED");
+    postBusy = true;
+    try {
+      if (recovery) {
+        retained ??= { operation, command: structuredClone(command) };
+        cleanStorage();
+      }
+      const receipt = withStorage((call) => {
+        const { state, cp } = read(call);
+        const b = state.transmissionBindings.find((b) => b.runId === command.runId);
+        const { requested } = select(state, {
+          runId: command.runId, dispatchCommandDigest: b ? digest(b.command) : "",
+        });
+        // This full original nonce/command audit precedes all inspection of current.
+        const prepared = prepareComparisonV4StorageCommand(state, operation, command);
+        if (recovery && prepared.status !== "replay") {
+          selected = requested;
+          retained ??= { operation, command: structuredClone(command) };
+          fail("PUBLIC_COMPARISON_POSTCAPTURE_RECORD_NOT_FOUND");
+        }
+        if (prepared.status !== "replay") {
+          checkComparisonWitness(session, cp, 3);
+          const plan = planComparisonPostcapture(state, command, current);
+          if (plan.status !== "blocked") {
+            assertPublicComparisonDataOnly(current);
+            retained = { operation, command: structuredClone(command), current: structuredClone(current) };
+          }
+        } else retained ??= { operation, command: structuredClone(command) };
+        selected = requested;
+        let result: Pick<ReturnType<typeof write>, "status" | "insertedRows" | "commitObserved" | "witnessMatched">;
+        if (recovery) {
+          try { checkComparisonWitness(session, cp, 3); }
+          catch {
+            checkComparisonWitnessPending(session, command.clientRequestId, digest(command), 3);
+            reconcileVersionedWitness(session, 13, undefined, call);
+          }
+          const durable = read(call);
+          const recorded = prepareComparisonV4StorageCommand(durable.state, operation, command);
+          if (recorded.status !== "replay") fail("PUBLIC_COMPARISON_POSTCAPTURE_RECORD_NOT_FOUND");
+          checkComparisonWitness(session, durable.cp, 3);
+          // Recovery has no INSERT-capable writer invocation, even after the first audit/ack.
+          result = { status: "replay", insertedRows: 0, commitObserved: false, witnessMatched: true };
+        } else {
+          result = write(call.connection.db, call.connection.selection, operation, command,
+            prepared.status === "replay" ? undefined : retained?.current, session, 13);
+        }
+        call.commitObserved = result.commitObserved;
+        postStatus = result.status === "blocked" ? "blocked" : result.witnessMatched ? "stored" : "recovery-required";
+        // No archive, canonical bytes, row vectors, paths or capabilities leave this service.
+        return Object.freeze({
+          source: "synthetic-comparison-postcapture" as const,
+          status: result.status,
+          runId: command.runId,
+          commandDigest: digest(command),
+          insertedRows: result.insertedRows,
+          commitObserved: result.commitObserved,
+          witnessMatched: result.witnessMatched,
+          owner: null,
+          runtimeObserved: false as const,
+          authority: comparisonPlanAuthority,
+        });
+      });
+      if (receipt.witnessMatched) retained = undefined;
+      return receipt;
+    } catch (error) {
+      if (retained || storage) postStatus = "recovery-required";
+      throw error;
+    } finally {
+      postBusy = false;
+      refresh();
     }
   }
   const inspect: IsolatedPublicComparisonService["inspect"] = () => {
     refresh();
     return Object.freeze({
       source: "synthetic-comparison-service",
-      status: !lifetime ? "closed" : retired ? "draining" : "ready",
+      status: retired ? (!lifetime && !postBusy && !retained && !storage ? "closed" : "draining") : "ready",
       activeCalls: pending.size,
       execution: last,
+      postcapture: Object.freeze({ status: postStatus, runId: selected?.runId ?? null,
+        commandDigest: retained ? digest(retained.command) : null, cleanupRequired: !!storage }),
       owner: null,
       runtimeObserved: false,
       authority: comparisonPlanAuthority,
     });
   };
-  const service: IsolatedPublicComparisonService = Object.freeze({
+  return Object.freeze({
     async execute(command: unknown, current: unknown) {
-      if (retired || !lifetime) fail("PUBLIC_COMPARISON_SERVICE_RETIRED");
-      const call = lifetime.execution.execute(command, current);
-      pending.add(call); // A replay observation must not replace the original pending promise.
-      try {
-        return await call;
-      } finally {
-        pending.delete(call);
-        refresh();
+      if (retired || !lifetime || selected || postBusy || storage || retained)
+        fail("PUBLIC_COMPARISON_SERVICE_RETIRED");
+      if (original) {
+        assertPublicComparisonDataOnly(command);
+        if (digest(command) !== original.dispatchCommandDigest) fail("PUBLIC_COMPARISON_POSTCAPTURE_RUN_CHANGED");
       }
+      const call = lifetime.execution.execute(command, current);
+      pending.add(call);
+      try { return await call; }
+      finally { pending.delete(call); refresh(); }
     },
     recover(selection: unknown) {
       if (!lifetime) fail("PUBLIC_COMPARISON_SERVICE_CLOSED");
+      try { return lifetime.execution.recover(selection); }
+      finally { refresh(); }
+    },
+    previewPostcapture(raw: unknown) {
+      requireHandoff();
+      if (retained) fail("PUBLIC_COMPARISON_POSTCAPTURE_RECOVERY_REQUIRED");
+      postBusy = true;
       try {
-        return lifetime.execution.recover(selection);
-      } finally {
-        refresh();
-      }
+        cleanStorage(); // An explicit read can finish only its own previously failed read cleanup.
+        return withStorage((call) => {
+          const { a, state, cp } = read(call);
+          const { requested, binding } = select(state, raw);
+          checkComparisonWitness(session, cp, 3);
+          const preview = createComparisonPostcapturePreview(state, requested.runId);
+          const events = state.reservation.archive.records.events.filter((e) => e.runId === requested.runId);
+          const head = events.at(-1)!;
+          const run = a.inspection.view.native.runs.find((r) => r.runId === requested.runId)!;
+          selected = requested;
+          postStatus = "review";
+          return structuredClone({ ...preview, source: "synthetic-comparison-postcapture" as const,
+            runtimeObserved: false as const, ...requested,
+            transmissionBindingDigest: binding.recordDigest,
+            dispatchEventDigest: binding.dispatchEventDigest,
+            expectedRunHead: { revision: head.revision, headDigest: head.eventDigest },
+            expectedBudgetHead: { revision: a.inspection.view.native.revision, headDigest: a.inspection.view.native.headDigest },
+            comparisonEventDigest: events.find((e) => e.payload.kind === "comparison-recorded")?.eventDigest ?? null,
+            database: { comparisonRecorded: run.comparisonRecorded, costSettled: run.costSettled,
+              finalized: run.finalized, currentContextVerified: false as const, runHeldBytes: run.heldBytes,
+              scopeHeldUnits: a.inspection.view.native.heldUnits, scopeRecognizedUnits: a.inspection.view.native.recognizedUnits },
+          });
+        });
+      } finally { postBusy = false; refresh(); }
     },
+    writePostcapture: (operation: PostcaptureOperation, command: unknown, current?: unknown) =>
+      storageOperation(operation, command, current, false),
+    recoverPostcapture: (operation: PostcaptureOperation, command: unknown) =>
+      storageOperation(operation, command, undefined, true),
     inspect,
-    retire() {
-      retired = true;
-      lifetime?.execution.retire();
-      return inspect();
-    },
+    retire() { retired = true; lifetime?.execution.retire(); return inspect(); },
   });
-  return service;
 }
