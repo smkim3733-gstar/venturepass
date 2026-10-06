@@ -323,3 +323,167 @@ it("4I44 an outer attach superseded during cleanup never returns the newer view 
   const y = prepared(s, fixture(), inner!); await complete(s, y);
   expect(s.selectDisplay(y.view, y.frame)?.kind).toBe("result");
 });
+
+it("4I48 close publishes one final immutable closed snapshot and rejects every new admission", async () => {
+  const { r, s } = screen(), x = prepared(s); await complete(s, x);
+  const observed: ReturnType<typeof s.getSnapshot>[] = [], admission: unknown[] = [];
+  s.subscribe(x.view, () => {
+    observed.push(s.getSnapshot());
+    admission.push(s.attachView(), s.subscribe(x.view, vi.fn()),
+      s.prepare(x.view, x.f.inputs), s.start(x.view, x.handle, x.frame));
+    s.close();
+  });
+  s.close(); expect(observed).toEqual([]);
+  await flush();
+  expect(observed).toHaveLength(1);
+  expect(observed[0]).toMatchObject({ viewToken: null, ticket: null, display: null,
+    state: { closed: true, canPrepare: false, occupied: false, canForget: true } });
+  expect(Object.isFrozen(observed[0])).toBe(true);
+  expect(admission).toEqual([null, null, { ok: false, code: "CLOSED" }, { ok: false, code: "CLOSED" }]);
+  expect(s.selectDisplay(x.view, x.frame)).toBeNull();
+  expect(r.inspect().closed).toBe(true); expect(x.f.port).toHaveBeenCalledTimes(1);
+});
+it("4I48 closing an early error clears display once while original Request completion remains pending", async () => {
+  const done = deferred<void>(), io = { ...ended, settled: false };
+  const f = fixture(() => ({ response: Promise.resolve(new Response(comparisonReviewErrorWire("READ_BLOCKED"),
+    { status: 409, headers })), completion: done.promise, inspect: () => io }));
+  const { s } = screen(), x = prepared(s, f); s.start(x.view, x.handle, x.frame);
+  await x.handle.delivery; await x.handle.responseCompletion; await flush();
+  expect(s.selectDisplay(x.view, x.frame)?.kind).toBe("error");
+  const listener = vi.fn(); s.subscribe(x.view, listener); s.close(); await flush();
+  expect(listener).toHaveBeenCalledTimes(1);
+  expect(s.getSnapshot()).toMatchObject({ display: null, state: { closed: true, occupied: true, canForget: false } });
+  io.settled = true; done.resolve(); await x.handle.completion; await flush();
+  expect(s.getSnapshot().state).toMatchObject({ occupied: false, canForget: true });
+  expect(listener).toHaveBeenCalledTimes(1);
+});
+it("4I48 close coalesces an already queued ordinary change into only the final closed notice", async () => {
+  const { s } = screen(), view = s.attachView()!, f = fixture();
+  const snapshots: ReturnType<typeof s.getSnapshot>[] = [];
+  s.subscribe(view, () => snapshots.push(s.getSnapshot()));
+  const x = prepared(s, f, view); s.close(); s.close();
+  await x.handle.completion; await flush();
+  expect(snapshots).toHaveLength(1);
+  expect(snapshots[0]).toMatchObject({ viewToken: null, ticket: null, display: null,
+    state: { closed: true, creating: false, canPrepare: false } });
+  expect(f.port).not.toHaveBeenCalled();
+});
+it.each(["same-view", "new-view"])("4I48 %s old unsubscribe cannot cancel the current terminal registration", async (kind) => {
+  const { s } = screen(), oldView = s.attachView()!, old = vi.fn(), current = vi.fn();
+  const oldOff = s.subscribe(oldView, old)!;
+  const view = kind === "new-view" ? s.attachView()! : oldView;
+  s.subscribe(view, current); s.close(); oldOff();
+  expect(s.detachView(oldView)).toBe(false);
+  await flush(); expect(old).not.toHaveBeenCalled(); expect(current).toHaveBeenCalledTimes(1);
+});
+it.each(["before", "after"])("4I48 current unsubscribe %s close cancels its terminal callback without a replacement", async (when) => {
+  const { s } = screen(), view = s.attachView()!, listener = vi.fn(), off = s.subscribe(view, listener)!;
+  if (when === "before") off();
+  s.close(); if (when === "after") off();
+  off(); await flush();
+  expect(listener).not.toHaveBeenCalled(); expect(s.subscribe(view, vi.fn())).toBeNull();
+  expect(s.getSnapshot().state.closed).toBe(true);
+});
+it("4I48 detach and close without a current subscriber never resurrect a registration", async () => {
+  const { s } = screen(), view = s.attachView()!, listener = vi.fn();
+  s.subscribe(view, listener); s.detachView(view); s.close(); await flush();
+  expect(listener).not.toHaveBeenCalled(); expect(s.attachView()).toBeNull();
+});
+it("4I48 close inside an ordinary listener sends a single deferred terminal notice without recursion", async () => {
+  const { s } = screen(), view = s.attachView()!, states: boolean[] = [];
+  let depth = 0, maximum = 0;
+  s.subscribe(view, () => {
+    depth++; maximum = Math.max(maximum, depth);
+    states.push(s.getSnapshot().state.closed); s.close(); depth--;
+  });
+  const x = prepared(s, fixture(), view); await x.handle.completion; await flush();
+  expect(states).toEqual([false, true]); expect(maximum).toBe(1);
+  expect(x.f.port).not.toHaveBeenCalled();
+});
+it("4I48 an ordinary listener that closes then throws is retired before its terminal notice", async () => {
+  const { s } = screen(), view = s.attachView()!, listener = vi.fn(() => { s.close(); throw Error("PRIVATE"); });
+  s.subscribe(view, listener); const x = prepared(s, fixture(), view);
+  await x.handle.completion; await flush();
+  expect(listener).toHaveBeenCalledTimes(1);
+  expect(s.getSnapshot()).toMatchObject({ notificationFailed: true, display: null, state: { closed: true } });
+  expect(JSON.stringify(s.getSnapshot())).not.toContain("PRIVATE");
+});
+it("4I48 terminal listener failure is not an I/O cleanup failure and never retries", async () => {
+  const { r, s } = screen(), view = s.attachView()!, listener = vi.fn(() => { throw Error("PRIVATE"); });
+  s.subscribe(view, listener); s.close(); await flush(); s.close(); await flush();
+  expect(listener).toHaveBeenCalledTimes(1);
+  expect(s.getSnapshot()).toMatchObject({ notificationFailed: true, state: { canForget: true, observerFailed: false } });
+  expect(r.inspect()).toMatchObject({ occupied: false, observerFailed: false });
+  expect(JSON.stringify(s.getSnapshot())).not.toContain("PRIVATE");
+});
+it("4I48 close while creating retains the hidden original invocation and publishes only after the outer boundary", async () => {
+  const { r, s } = screen(), view = s.attachView()!, f = fixture(), input = { ...f.inputs };
+  const observed: ReturnType<typeof s.getSnapshot>[] = [], inner: ReturnType<typeof s.getSnapshot>[] = [];
+  s.subscribe(view, () => observed.push(s.getSnapshot()));
+  Object.defineProperty(input, "snapshot", { get() {
+    s.close(); inner.push(s.getSnapshot()); return f.snapshot;
+  } });
+  expect(s.prepare(view, input)).toMatchObject({ ok: false, code: "CLOSED" });
+  expect(observed).toEqual([]); expect(inner.every((v) => !v.state.closed)).toBe(true);
+  expect(r.inspect()).toMatchObject({ closed: true, occupied: true });
+  await flush();
+  expect(observed).toHaveLength(1);
+  expect(observed[0]).toMatchObject({ viewToken: null, ticket: null, display: null, state: { closed: true, creating: false } });
+  expect(s.getSnapshot().state).toMatchObject({ occupied: false, canForget: true });
+  expect(f.port).not.toHaveBeenCalled();
+});
+it("4I48 close from original inspect never publishes an intermediate terminal snapshot", async () => {
+  let hook = () => {};
+  const f = fixture(() => ({ response: Promise.resolve(f.response()), completion: Promise.resolve(),
+    inspect: () => { hook(); return ended; } }));
+  const { s } = screen(), x = prepared(s, f); await complete(s, x);
+  const before = s.getSnapshot(), inner: ReturnType<typeof s.getSnapshot>[] = [], listener = vi.fn();
+  s.subscribe(x.view, listener);
+  hook = () => { hook = () => {}; s.close(); inner.push(s.getSnapshot()); };
+  s.commitFrame(x.view, x.handle, x.frame);
+  expect(inner).toEqual([before]); expect(listener).not.toHaveBeenCalled();
+  await flush(); expect(listener).toHaveBeenCalledTimes(1);
+  expect(s.getSnapshot()).toMatchObject({ display: null, viewToken: null, state: { closed: true, canPrepare: false } });
+});
+it("4I48 close inside explicit start preserves one port and defers the terminal observation", async () => {
+  const { s } = screen(), listener = vi.fn();
+  const f = fixture(() => { s.close(); return { response: Promise.resolve(f.response()),
+    completion: Promise.resolve(), inspect: () => ended }; });
+  const x = prepared(s, f); s.subscribe(x.view, listener);
+  s.start(x.view, x.handle, x.frame);
+  expect(listener).not.toHaveBeenCalled();
+  await x.handle.completion; await flush();
+  expect(listener).toHaveBeenCalledTimes(1); expect(f.port).toHaveBeenCalledTimes(1);
+  expect(s.getSnapshot().state).toMatchObject({ closed: true, occupied: false });
+});
+it("4I48 abort callback reentry cannot reopen admission or repeat cancellation", async () => {
+  const { s } = screen(), done = deferred<void>(), response = deferred<Response>(), io = { ...ended, settled: false }, abort = vi.fn(() => s.close());
+  const f = fixture((_query, signal) => {
+    signal.addEventListener("abort", abort, { once: true });
+    return { response: response.promise, completion: done.promise, inspect: () => io };
+  });
+  const x = prepared(s, f); s.start(x.view, x.handle, x.frame); await flush();
+  const listener = vi.fn(); s.subscribe(x.view, listener); s.close(); await flush();
+  expect(abort).toHaveBeenCalledTimes(1); expect(listener).toHaveBeenCalledTimes(1);
+  expect(s.getSnapshot().state).toMatchObject({ closed: true, occupied: true, canForget: false });
+  response.resolve(f.response()); io.settled = true; done.resolve(); await x.handle.completion; await flush();
+  expect(listener).toHaveBeenCalledTimes(1); expect(s.getSnapshot().state.occupied).toBe(false);
+});
+it.each(["cleanup-failed", "unavailable"])("4I48 %s remains occupied after the final notice without additional subscriptions", async (kind) => {
+  const f = fixture(kind === "unavailable" ? (() => { throw Error("PRIVATE"); }) :
+    (() => ({ response: Promise.resolve(f.response()), completion: Promise.resolve(),
+      inspect: () => ({ ...ended, cleanupFailed: true }) })));
+  const { s } = screen(), x = prepared(s, f); s.start(x.view, x.handle, x.frame);
+  await x.handle.delivery; await x.handle.responseCompletion; await flush();
+  const listener = vi.fn(); s.subscribe(x.view, listener); s.close(); await flush();
+  expect(listener).toHaveBeenCalledTimes(1);
+  expect(s.getSnapshot()).toMatchObject({ display: null, state: { closed: true, occupied: true, canForget: false } });
+  s.close(); await flush(); expect(listener).toHaveBeenCalledTimes(1); expect(f.port).toHaveBeenCalledTimes(1);
+});
+it("4I48 getters and repeated close after final notification perform no transport inspection or scheduling", async () => {
+  const { s } = screen(), x = prepared(s); await complete(s, x);
+  s.subscribe(x.view, vi.fn()); s.close(); await flush();
+  const snapshot = s.getSnapshot(), timer = vi.spyOn(globalThis, "setTimeout"), queued = vi.spyOn(globalThis, "queueMicrotask");
+  for (let i = 0; i < 20; i++) { s.close(); expect(s.getSnapshot()).toBe(snapshot); expect(s.selectDisplay(x.view, x.frame)).toBeNull(); }
+  expect(timer).not.toHaveBeenCalled(); expect(queued).not.toHaveBeenCalled();
+});

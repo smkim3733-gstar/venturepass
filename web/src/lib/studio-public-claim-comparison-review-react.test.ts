@@ -255,3 +255,92 @@ it("4I46 completed detached I/O is observed on later subscription without a repe
   expect((await state()).metrics).toMatchObject({ request: 1, close: 0, renderSideEffects: 0 });
   expect(await display()).toBeNull();
 });
+
+async function closedDisplay() {
+  await page.waitForFunction(() => {
+    const raw = document.querySelector("#state")?.textContent;
+    if (!raw) return false;
+    const value = JSON.parse(raw);
+    return value.status === "NOT_ATTACHED" && value.display === null && value.canPrepare === false;
+  });
+}
+it.each(["success", "error"] as const)("4I48 parentClose alone clears the displayed %s without props update or forced render", async (mode) => {
+  await mount(mode); await read();
+  if (mode === "success") await result();
+  else await page.waitForFunction(() => document.querySelector("#state")?.textContent?.includes('"kind":"error"'));
+  const before = await state();
+  expect(await display()).not.toBeNull();
+  await page.evaluate(() => window.reviewMount.parentClose());
+  await closedDisplay();
+  const after = await state();
+  expect(after.frameOpen).toBe(true);
+  expect(after.metrics).toMatchObject({ rendersRequested: before.metrics.rendersRequested,
+    terminalNotifications: 1, request: 1, prepare: 1, start: 1, renderSideEffects: 0 });
+  expect(after.retained.closed).toBe(true);
+  if (mode === "error") {
+    expect(after.retained).toMatchObject({ occupied: true, canForget: false });
+    await page.evaluate(() => window.reviewMount.finishRequest()); await empty();
+    expect((await state()).metrics.terminalNotifications).toBe(1);
+  }
+});
+it("4I48 terminal UI notice does not release pending original I/O or resubscribe after late completion", async () => {
+  await mount("pending"); await read(); await page.evaluate(() => window.reviewMount.parentClose()); await closedDisplay();
+  const before = await state();
+  expect(before.retained).toMatchObject({ closed: true, occupied: true, canForget: false });
+  expect(before.signalAborted).toBe(true);
+  await page.evaluate(() => window.reviewMount.finishResponse());
+  await page.waitForFunction(() => window.reviewMount.snapshot().retained.responseCompleted);
+  expect((await state()).retained.occupied).toBe(true);
+  await page.evaluate(() => window.reviewMount.finishRequest()); await empty();
+  expect((await state()).metrics).toMatchObject({ notifications: before.metrics.notifications,
+    subscribe: before.metrics.subscribe, request: 1, terminalNotifications: 1 });
+  expect(await display()).toBeNull();
+});
+it.each(["cleanup-failed", "unavailable"] as const)("4I48 %s remains retained after visible terminal closure", async (mode) => {
+  await mount(mode); await read();
+  if (mode === "cleanup-failed") {
+    await page.evaluate(() => { window.reviewMount.finishResponse(); window.reviewMount.finishRequest(true); });
+    await page.waitForFunction(() => window.reviewMount.snapshot().retained.requestCompleted);
+  } else await page.waitForFunction(() => window.reviewMount.snapshot().retained.io?.requestStatus === "unavailable");
+  await page.evaluate(() => window.reviewMount.parentClose()); await closedDisplay();
+  expect((await state()).retained).toMatchObject({ closed: true, occupied: true, canForget: false });
+  expect(await page.evaluate(() => window.reviewMount.read())).toBe("CLOSED");
+  expect((await state()).metrics).toMatchObject({ request: 1, terminalNotifications: 1 });
+});
+it.each(["child", "root"])("4I48 close followed by immediate %s unmount cancels its terminal subscription but retains the original call", async (kind) => {
+  await mount("pending"); await read();
+  await page.evaluate((kind) => {
+    window.reviewMount.parentClose();
+    if (kind === "root") window.reviewMount.dispose(); else window.reviewMount.unmount();
+  }, kind);
+  expect(await page.locator("#state").count()).toBe(0);
+  expect((await state()).metrics.terminalNotifications).toBe(0);
+  expect((await state()).retained).toMatchObject({ closed: true, occupied: true });
+  await page.evaluate(() => { window.reviewMount.finishResponse(); window.reviewMount.finishRequest(); });
+  await empty(); expect((await state()).metrics.request).toBe(1);
+});
+it("4I48 close before React subscription does not attach a replacement or create a request", async () => {
+  await page.evaluate((data) => { window.reviewMount = window.startReviewMount(data, "close-on-attach"); }, data);
+  await closedDisplay();
+  expect((await state()).metrics).toMatchObject({ request: 0, prepare: 0, start: 0, close: 1, terminalNotifications: 0 });
+  expect((await state()).retained).toMatchObject({ closed: true, occupied: false });
+});
+it.each(["prepare", "construction"])("4I48 close during %s never starts another request or loses hidden completion", async (kind) => {
+  await mount("pending");
+  await page.evaluate((kind) => kind === "prepare" ? window.reviewMount.closeDuringPrepare() : window.reviewMount.closeDuringConstruction(), kind);
+  expect(await page.evaluate(() => window.reviewMount.read())).toBe("CLOSED");
+  await closedDisplay(); await empty();
+  expect((await state()).metrics).toMatchObject({ request: 0, prepare: 1,
+    start: kind === "prepare" ? 1 : 0, close: 1, terminalNotifications: 1 });
+});
+it("4I48 repeated parent close and later StrictMode remount cannot create a fresh holder or resurrect display", async () => {
+  await mount("pending"); await read(); await page.evaluate(() => window.reviewMount.parentClose()); await closedDisplay();
+  await page.evaluate(() => { window.reviewMount.parentClose(); window.reviewMount.parentClose(); });
+  expect((await state()).metrics.terminalNotifications).toBe(1);
+  await page.evaluate(() => window.reviewMount.remount()); await closedDisplay();
+  expect(await page.evaluate(() => window.reviewMount.read())).toBe("STALE_VIEW");
+  expect((await state()).retained).toMatchObject({ closed: true, occupied: true, canForget: false });
+  expect((await state()).metrics).toMatchObject({ request: 1, terminalNotifications: 1, renderSideEffects: 0 });
+  await page.evaluate(() => { window.reviewMount.finishResponse(); window.reviewMount.finishRequest(); });
+  await empty(); expect(await display()).toBeNull();
+});

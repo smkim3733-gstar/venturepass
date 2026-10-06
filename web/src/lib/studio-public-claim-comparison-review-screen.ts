@@ -38,30 +38,43 @@ export function createComparisonReviewScreen(retainer: Retainer) {
   let view: Token | null = null, handle: Handle | null = null, frame: Frame | null = null;
   let closed = false, invalidated = false, busy = false, notifying = false, epoch = 0;
   let notificationFailed = false, observationFailed = false, queued = false;
-  let subscriber: { view: Token; listener: () => void } | undefined;
+  type Registration = { view: Token; listener: () => void; active: boolean };
+  let subscriber: Registration | undefined, terminal: Registration | undefined;
   let candidate: DeepReadonly<Outcome> = null;
   const capture = () => Object.freeze({ viewToken: view, ticket: handle?.ticket ?? null,
     state: r.getSnapshot(), display: candidate, notificationFailed, observationFailed });
   let snapshot = capture();
 
+  function retire(registration: Registration | undefined) {
+    if (!registration) return;
+    registration.active = false;
+    if (subscriber === registration) subscriber = undefined;
+    if (terminal === registration) terminal = undefined;
+  }
   function publish() {
+    if (busy) return; // Reentrant close is published by the outer observation's finally.
     const next = capture();
     if (next.viewToken === snapshot.viewToken && next.ticket === snapshot.ticket &&
         next.state === snapshot.state && next.display === snapshot.display &&
         next.notificationFailed === snapshot.notificationFailed && next.observationFailed === snapshot.observationFailed) return;
     snapshot = next;
-    if (queued || !subscriber) return;
+    if (queued || !(terminal ?? subscriber)?.active) return;
     queued = true;
     queueMicrotask(() => {
       queued = false;
-      const registration = subscriber;
-      if (!registration || view !== registration.view) return;
+      const ending = terminal;
+      const registration = ending ?? subscriber;
+      terminal = undefined; // Consume the single final notification before listener reentry.
+      if (!registration?.active || (!ending && (closed || view !== registration.view))) return;
       notifying = true;
       try { registration.listener(); }
       catch {
-        if (subscriber === registration) subscriber = undefined;
+        retire(registration);
         notificationFailed = true;
-      } finally { notifying = false; publish(); }
+      } finally {
+        if (ending) retire(registration);
+        notifying = false; publish();
+      }
     });
   }
   function current(token: Token, call: Handle | null = handle) {
@@ -117,7 +130,7 @@ export function createComparisonReviewScreen(retainer: Retainer) {
     },
     attachView() {
       if (closed) return null;
-      subscriber = undefined; view = null; handle = null; frame = null; invalidated = false;
+      retire(subscriber); view = null; handle = null; frame = null; invalidated = false;
       clearCandidate(); const turn = epoch;
       const next = r.attachView();
       if (turn === epoch && !closed) view = next;
@@ -125,14 +138,16 @@ export function createComparisonReviewScreen(retainer: Retainer) {
     },
     detachView(token: Token) {
       if (!view || view !== token) return false;
-      subscriber = undefined; view = null; handle = null; invalidate();
+      retire(subscriber); view = null; handle = null; invalidate();
       const result = r.detachView(token); refresh(); return result;
     },
     subscribe(token: Token, listener: () => void) {
       if (closed || !view || token !== view || typeof listener !== "function") return null;
-      const registration = { view: token, listener };
+      retire(subscriber);
+      const registration = { view: token, listener, active: true };
       subscriber = registration;
-      return () => { if (subscriber === registration) subscriber = undefined; };
+      // This also cancels a pending terminal notification after close has detached the view.
+      return () => retire(registration);
     },
     prepare(token: Token, inputs: Parameters<Retainer["prepare"]>[1]) {
       const blocked = begin(token); if (blocked) return blocked;
@@ -171,8 +186,15 @@ export function createComparisonReviewScreen(retainer: Retainer) {
       refresh(); return released;
     },
     close() {
-      closed = true; subscriber = undefined; view = null; handle = null; invalidate();
-      r.close(); refresh();
+      if (closed) return;
+      closed = true; terminal = subscriber; subscriber = undefined;
+      view = null; handle = null; invalidated = true; frame = null; candidate = null; epoch++;
+      // Keep the current registration only until its final stable notification (or unsubscribe).
+      // Request cancellation can reenter close/inspect; never publish that intermediate state.
+      const wasBusy = busy;
+      busy = true;
+      try { r.close(); }
+      finally { busy = wasBusy; if (!busy) refresh(); }
     },
   });
 }
