@@ -13,6 +13,11 @@ import type {
   PublicSelectedCellResult,
 } from "@/lib/studio-public-selected-cell";
 import { PublicSelectedCell } from "./public-selected-cell";
+import type {
+  PublicTableMetadataCommand,
+  PublicTableMetadataResult,
+} from "@/lib/studio-public-table-metadata";
+import type { PublicCommentSelection } from "@/lib/studio-public-comment-evidence";
 import { PublicTableMetadata } from "./public-table-metadata";
 import styles from "./guided-workspace.module.css";
 export function PublicResearchLinks({
@@ -21,11 +26,17 @@ export function PublicResearchLinks({
   onCandidate,
   canFillCell = false,
   onCellEvidence,
+  onCommentEvidence,
 }: {
   disabled: boolean;
   canFill?: boolean;
   canFillCell?: boolean;
   onCellEvidence?: (result: PublicSelectedCellResult, command: PublicSelectedCellCommand) => void;
+  onCommentEvidence?: (
+    result: PublicTableMetadataResult,
+    command: PublicTableMetadataCommand,
+    selection: PublicCommentSelection,
+  ) => void;
   onCandidate?: (candidate: PublicResearchCandidate) => void;
 }) {
   const [topic, setTopic] = useState("");
@@ -187,6 +198,8 @@ export function PublicResearchLinks({
                   )}
                   {c.originalUrl && (
                     <PublicTableMetadata
+                      canFillEvidence={canFillCell}
+                      onEvidence={onCommentEvidence}
                       key={JSON.stringify(["metadata", result.retrievedAt, c])}
                       candidate={c}
                       searchResult={result}

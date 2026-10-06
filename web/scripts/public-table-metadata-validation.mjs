@@ -453,6 +453,123 @@ try {
     "CMMT renders original multiline text and related fields safely; missing/null/empty stay distinct on mobile",
   );
 
+  const fillComment = (index) =>
+    result()
+      .getByRole("article")
+      .nth(index)
+      .getByRole("button", { name: "이 주석을 아래 빈 입력칸에 넣기", exact: true });
+  assert.equal(await fillComment(0).isDisabled(), true);
+  assert.equal(await fillComment(2).isDisabled(), true);
+  await panel().getByLabel("공개 자료 제목", { exact: true }).fill("");
+  await panel().getByLabel("원문 발췌", { exact: false }).fill("");
+  await panel().getByText("발행일·기준 기간·관련성 기록", { exact: true }).click();
+  await panel().getByLabel("원문을 읽은 날짜 (담당자 기록)", { exact: true }).fill("2026-09-01");
+  await panel()
+    .getByLabel("발행일 (원문 표기, 모르면 비워 두기)", { exact: true })
+    .fill("2020-01-01");
+  await panel().getByLabel("발행처 (모르면 비워 두기)", { exact: true }).fill("PRIVATE_PUBLISHER");
+  await panel().getByLabel("이 항목과 관련된 이유", { exact: false }).fill("PRIVATE_RELEVANCE");
+  await panel()
+    .getByLabel("기존 자료와 다른 점·추가 확인 사항", { exact: false })
+    .fill("PRIVATE_CONFLICT");
+  await panel().getByRole("checkbox").check();
+  const transferAt = queryRequests.length,
+    transferWireAt = (await wires()).length;
+  assert.equal(await fillComment(1).isDisabled(), true);
+  await fillComment(2).evaluate((b) => {
+    b.click();
+    b.click();
+  });
+  await table()
+    .getByText(/선택한 주석을 아래 입력칸에 옮겼습니다/)
+    .waitFor();
+  const getQuote = () => panel().getByLabel("원문 발췌", { exact: false }).inputValue();
+  const parseQuote = (text) => JSON.parse(text.slice(text.indexOf("{"), text.lastIndexOf("}") + 1));
+  let transferred = parseQuote(await getQuote());
+  assert.equal(transferred["선택한 행 번호 (이 응답에서 1부터)"], 3);
+  assert.equal(transferred["원래 주석 행"].CMMT_DC, "마지막 원문");
+  assert.equal(transferred["원래 주석 행"].ITM_ID, " 01 ");
+  assert.equal(await panel().getByRole("checkbox").isChecked(), true);
+  assert.equal(
+    await panel().getByLabel("원문을 읽은 날짜 (담당자 기록)", { exact: true }).inputValue(),
+    "2026-09-01",
+  );
+  assert.equal(
+    await panel().getByLabel("발행일 (원문 표기, 모르면 비워 두기)", { exact: true }).inputValue(),
+    "2020-01-01",
+  );
+  assert.equal(
+    await panel().getByLabel("발행처 (모르면 비워 두기)", { exact: true }).inputValue(),
+    "PRIVATE_PUBLISHER",
+  );
+  assert.equal(
+    await panel().getByLabel("이 항목과 관련된 이유", { exact: false }).inputValue(),
+    "PRIVATE_RELEVANCE",
+  );
+  assert.equal(
+    await panel().getByLabel("기존 자료와 다른 점·추가 확인 사항", { exact: false }).inputValue(),
+    "PRIVATE_CONFLICT",
+  );
+  assert.equal(
+    await panel()
+      .getByLabel("자료의 기준 기간·대상 (모르면 비워 두기)", { exact: true })
+      .inputValue(),
+    "",
+  );
+  assert.equal(queryRequests.length, transferAt);
+  assert.equal((await wires()).length, transferWireAt);
+  assert.deepEqual(writes, []);
+  assert.equal(await fillComment(0).isDisabled(), true);
+  record(
+    "4H10 explicit repeated-ID third row transfer preserves manual dates/notes/checkbox and makes no IO; occupied and empty rows blocked",
+  );
+
+  await panel().getByLabel("공개 자료 제목", { exact: true }).fill("");
+  await panel().getByLabel("원문 URL (HTTPS)", { exact: true }).fill("");
+  await panel().getByLabel("원문 발췌", { exact: false }).fill("");
+  assert.equal(await panel().getByRole("checkbox").isChecked(), false);
+  await fillComment(0).click();
+  transferred = parseQuote(await getQuote());
+  assert.equal(transferred["선택한 행 번호 (이 응답에서 1부터)"], 1);
+  assert.ok(transferred["원래 주석 행"].CMMT_DC.includes("<svg onload=alert(1)>"));
+  assert.equal(transferred["원래 주석 행"].OBJ_ID, "");
+  assert.equal(transferred["원래 주석 행"].OBJ_NM, null);
+  assert.equal(Object.hasOwn(transferred["원래 주석 행"], "ITM_NM"), true);
+  assert.equal(await panel().getByRole("checkbox").isChecked(), false);
+  assert.equal(queryRequests.length, transferAt);
+  assert.equal((await wires()).length, transferWireAt);
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+  await panel().screenshot({ path: path.join(output, "comment-evidence-390.png") });
+  record(
+    "4H10 full multiline literal comment survives transfer with no invented period or automatic consent; mobile form fits",
+  );
+
+  const preservedQuote = await getQuote();
+  await table().getByLabel("읽을 표 정보", { exact: true }).selectOption("SOURCE");
+  assert.equal(
+    await table()
+      .getByRole("button", { name: "이 주석을 아래 빈 입력칸에 넣기", exact: true })
+      .count(),
+    0,
+  );
+  assert.equal(await getQuote(), preservedQuote);
+  await table().getByLabel("읽을 표 정보", { exact: true }).selectOption("CMMT");
+  await read().click();
+  await result().waitFor();
+  const outer = panel().getByText("공개 통계 찾기 (선택)", { exact: true });
+  await outer.click();
+  await until(async () => (await result().count()) === 0);
+  const closedAt = queryRequests.length;
+  await outer.click();
+  assert.equal(await result().count(), 0);
+  assert.equal(queryRequests.length, closedAt);
+  assert.equal(await getQuote(), preservedQuote);
+  await panel().getByLabel("공개 자료 제목", { exact: true }).fill("PRIVATE_DRAFT");
+  await panel().getByLabel("원문 발췌", { exact: false }).fill("PRIVATE_BODY");
+  record(
+    "4H10 selection change and ancestor close discard transfer controls while preserving the editable draft without automatic reads",
+  );
+
   const refreshAt = queryRequests.length;
   await search();
   assert.equal(queryRequests.length, refreshAt + 1);

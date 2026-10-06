@@ -17,6 +17,7 @@ import {
   applyPublicCellEvidence,
   canFillPublicCellEvidence,
 } from "@/lib/studio-public-cell-evidence";
+import { applyPublicCommentEvidence } from "@/lib/studio-public-comment-evidence";
 import { isPublicDiscoveryPage } from "@/lib/studio-public-research";
 export function PublicEvidencePanel({
   company,
@@ -224,6 +225,28 @@ export function PublicEvidencePanel({
             disabled={working || blocked || !!pending || changed}
             canFill={!draft.title && !draft.url}
             canFillCell={canFillPublicCellEvidence(draft)}
+            onCommentEvidence={(result, command, selection) => {
+              if (
+                flight.current ||
+                working ||
+                blocked ||
+                pending ||
+                saved ||
+                changed ||
+                !mounted.current
+              )
+                throw Error("현재 입력에 옮길 수 없습니다.");
+              const next = applyPublicCommentEvidence(
+                draft,
+                result,
+                command,
+                selection,
+                base,
+                currentCompany.current,
+              );
+              setDraft(next);
+              setError("");
+            }}
             onCellEvidence={(result, command) => {
               if (
                 flight.current ||

@@ -5,10 +5,15 @@ import type {
   PublicResearchResult,
 } from "@/lib/studio-public-research-result";
 import {
+  publicTableMetadataCommandSchema,
   readPublicTableMetadataResult,
   type PublicTableMetadataCommand,
   type PublicTableMetadataResult,
 } from "@/lib/studio-public-table-metadata";
+import {
+  publicCommentEvidenceFields,
+  type PublicCommentSelection,
+} from "@/lib/studio-public-comment-evidence";
 import { jsonBody, studioFetch } from "./shared";
 import styles from "./guided-workspace.module.css";
 
@@ -22,30 +27,99 @@ function commentField(value: string | null | undefined) {
 export function PublicTableMetadata({
   candidate,
   searchResult,
+  canFillEvidence = false,
+  onEvidence,
 }: {
   candidate: PublicResearchCandidate;
   searchResult: PublicResearchResult;
+  canFillEvidence?: boolean;
+  onEvidence?: (
+    result: PublicTableMetadataResult,
+    command: PublicTableMetadataCommand,
+    selection: PublicCommentSelection,
+  ) => void;
 }) {
   const [kind, setKind] = useState<PublicTableMetadataCommand["kind"] | "">("");
   const [result, setResult] = useState<PublicTableMetadataResult | null>(null);
   const [error, setError] = useState("");
+  const [transferMessage, setTransferMessage] = useState("");
   const [loading, setLoading] = useState(false);
   const details = useRef<HTMLDetailsElement | null>(null);
   const flight = useRef<AbortController | null>(null);
   const mounted = useRef(true);
-  useEffect(() => {
-    mounted.current = true;
-    return () => {
-      mounted.current = false;
-      flight.current?.abort();
-    };
-  }, []);
   function clear() {
     flight.current?.abort();
     flight.current = null;
     setLoading(false);
     setResult(null);
+    setTransferMessage("");
     setError("");
+  }
+  function visible() {
+    let node: HTMLElement | null = details.current;
+    while (node) {
+      if (node instanceof HTMLDetailsElement && !node.open) return false;
+      node = node.parentElement;
+    }
+    return !!details.current;
+  }
+  useEffect(() => {
+    mounted.current = true;
+    const ancestors: HTMLDetailsElement[] = [];
+    let node: HTMLElement | null = details.current;
+    while (node) {
+      if (node instanceof HTMLDetailsElement) ancestors.push(node);
+      node = node.parentElement;
+    }
+    const onToggle = () => {
+      if (ancestors.some((a) => !a.open)) clear();
+    };
+    ancestors.forEach((a) => a.addEventListener("toggle", onToggle));
+    return () => {
+      mounted.current = false;
+      flight.current?.abort();
+      ancestors.forEach((a) => a.removeEventListener("toggle", onToggle));
+    };
+  }, []);
+  const prepared = publicTableMetadataCommandSchema.safeParse({
+    action: "read-selected-table-metadata",
+    topic: searchResult.topic,
+    candidate,
+    searchRetrievedAt: searchResult.retrievedAt,
+    kind,
+    confirmed: true,
+  });
+  function transferable(selection: PublicCommentSelection) {
+    if (!result || !prepared.success) return false;
+    try {
+      publicCommentEvidenceFields(result, prepared.data, selection);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  function transfer(selection: PublicCommentSelection) {
+    if (
+      !onEvidence ||
+      !canFillEvidence ||
+      !result ||
+      !prepared.success ||
+      flight.current ||
+      !mounted.current ||
+      !visible()
+    )
+      return;
+    try {
+      publicCommentEvidenceFields(result, prepared.data, selection);
+      onEvidence(result, prepared.data, selection);
+      setTransferMessage(
+        "선택한 주석을 아래 입력칸에 옮겼습니다. 내용을 검토하고 읽은 날짜와 별도 보관 동의를 확인해 주세요.",
+      );
+    } catch {
+      setTransferMessage(
+        "주석을 옮기지 않았습니다. 현재 회사 자료·기존 입력·원래 주석과 제목·발췌 길이를 확인해 주세요.",
+      );
+    }
   }
   async function read() {
     if (
@@ -53,7 +127,7 @@ export function PublicTableMetadata({
       !candidate.originalUrl ||
       !searchResult.retrievedAt ||
       flight.current ||
-      !details.current?.open
+      !visible()
     )
       return;
     const command: PublicTableMetadataCommand = {
@@ -68,6 +142,7 @@ export function PublicTableMetadata({
     flight.current = controller;
     setLoading(true);
     setResult(null);
+    setTransferMessage("");
     setError("");
     try {
       const raw = await studioFetch<unknown>("/api/studio/public-research/search", {
@@ -80,7 +155,7 @@ export function PublicTableMetadata({
         mounted.current &&
         !controller.signal.aborted &&
         flight.current === controller &&
-        details.current?.open
+        visible()
       )
         setResult(value);
     } catch {
@@ -88,7 +163,7 @@ export function PublicTableMetadata({
         mounted.current &&
         !controller.signal.aborted &&
         flight.current === controller &&
-        details.current?.open
+        visible()
       )
         setError("표 정보가 미확인입니다. 검색 후보를 다시 확인한 뒤 명시적으로 조회해 주세요.");
     } finally {
@@ -148,6 +223,7 @@ export function PublicTableMetadata({
             {error}
           </p>
         )}
+        {transferMessage && <p role="status">{transferMessage}</p>}
         {result?.status === "not-configured" && (
           <p role="status">앱 안 조회는 KOSIS 연결 설정 후 사용할 수 있습니다.</p>
         )}
@@ -195,6 +271,18 @@ export function PublicTableMetadata({
                         <dd>{commentField(r.ITM_NM)}</dd>
                       </dl>
                     </details>
+                    {onEvidence && (
+                      <button
+                        type="button"
+                        className={styles.link}
+                        disabled={
+                          !canFillEvidence || loading || !transferable({ rowIndex: i, row: r })
+                        }
+                        onClick={() => transfer({ rowIndex: i, row: r })}
+                      >
+                        이 주석을 아래 빈 입력칸에 넣기
+                      </button>
+                    )}
                   </article>
                 ))}
               </>
