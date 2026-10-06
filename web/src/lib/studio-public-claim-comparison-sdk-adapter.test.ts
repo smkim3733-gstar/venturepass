@@ -75,9 +75,10 @@ it("4I24 SDK-shaped adapter stays lazy and passes exact frozen body and fixed pa
   const token = createSyntheticComparisonSdkDriver(factory, network);
   expect(factory).not.toHaveBeenCalled();
   const fetch = vi.fn(async () => new Response("{}"));
+  const request = Object.freeze({ signal: new AbortController().signal });
   const sdk = vi.fn(async (invoke, suppliedNetwork) => {
     expect(suppliedNetwork).toBe(network);
-    expect(await invoke(fetch)).toBe(b.body);
+    expect(await invoke(fetch, request)).toBe(b.body);
   });
   await requireSyntheticComparisonDriver(token)(b, {
     sdk,
@@ -86,7 +87,7 @@ it("4I24 SDK-shaped adapter stays lazy and passes exact frozen body and fixed pa
   });
   expect(sdk).toHaveBeenCalledTimes(1);
   expect(create).toHaveBeenCalledTimes(1);
-  expect(create).toHaveBeenCalledWith(b.body);
+  expect(create).toHaveBeenCalledWith(b.body, request);
   expect(JSON.stringify(b.body)).toBe(b.rawBody);
   expect(options).toEqual({
     ...providerTransportSdkOptions,
@@ -131,7 +132,7 @@ it("4I24 adapter sends Response back to SDK-shaped parsing without substituting 
     start: forbidden,
     markUnknown: forbidden,
     sdk: async (invoke) => {
-      seen = await invoke(fetch);
+      seen = await invoke(fetch, Object.freeze({ signal: new AbortController().signal }));
     },
   };
   await requireSyntheticComparisonDriver(token)(b, hooks);

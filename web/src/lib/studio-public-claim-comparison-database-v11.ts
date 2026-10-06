@@ -1,4 +1,5 @@
 import "server-only";
+import { createComparisonBodyBoundary } from "./studio-public-claim-comparison-body";
 import { z } from "zod";
 import { assertPublicComparisonDataOnly } from "./studio-public-claim-comparison-budget";
 import {
@@ -1244,6 +1245,8 @@ export function createIsolatedPublicComparisonExecution(
   let retained: ReturnType<typeof captureProviderResponse> | undefined;
   let network: Promise<void> | undefined;
   let sdkCompletion: Promise<void> | undefined;
+  let bodyBoundary: ReturnType<typeof createComparisonBodyBoundary> | undefined;
+  let ioDone = false;
   let sdkEntered = false,
     sdkDone = false,
     decodedDelivered = false,
@@ -1273,6 +1276,7 @@ export function createIsolatedPublicComparisonExecution(
       promiseSettled,
       networkSettled: networkDone,
       sdkSettled: sdkEntered ? sdkDone : null,
+      ioSettled: bodyBoundary ? ioDone : null,
       cleanupRequired,
       retainedCaptureCount: retained ? 1 : 0,
       authority: comparisonPlanAuthority,
@@ -1305,7 +1309,12 @@ export function createIsolatedPublicComparisonExecution(
     leaseActive = false;
   }
   function finish() {
-    promiseSettled = driverDone && (!network || networkDone) && (!sdkEntered || sdkDone);
+    promiseSettled = driverDone && (!network || networkDone) && (!sdkEntered || sdkDone) && (!bodyBoundary || ioDone);
+    if (bodyBoundary?.inspect().cleanupFailed) {
+      cleanupRequired = true;
+      phase = "recovery-required";
+      return;
+    }
     if (!leaseActive || !capturePersisted || !promiseSettled || pending || dispatchUncertain)
       return;
     try {
@@ -1551,7 +1560,7 @@ export function createIsolatedPublicComparisonExecution(
               phase = "recovery-required";
             }
           } else if (raw instanceof Response) {
-            networkResponseObserved = true;
+            networkResponseObserved = raw.ok;
           } else {
             unknown();
             cleanupRequired = true;
@@ -1582,7 +1591,10 @@ export function createIsolatedPublicComparisonExecution(
     return completion;
   }
   function sdk(
-    invoke: (fetch: (url: unknown, input: unknown) => Promise<Response>) => PromiseLike<unknown>,
+    invoke: (
+      fetch: (url: unknown, input: unknown) => Promise<Response>,
+      request: Readonly<{ signal: AbortSignal }>,
+    ) => PromiseLike<unknown>,
     startFake: (url: unknown, wire: RequestInit) => Promise<Response>,
   ): Promise<void> {
     if (sdkEntered || hookEntered || !owners.has(owner) || retired || driverDone || cleanupRequired)
@@ -1590,13 +1602,21 @@ export function createIsolatedPublicComparisonExecution(
     if (typeof invoke !== "function" || typeof startFake !== "function")
       fail("PUBLIC_COMPARISON_SDK_REFUSED");
     sdkEntered = true;
+    bodyBoundary = createComparisonBodyBoundary();
+    void bodyBoundary.completion.then(() => {
+      ioDone = true;
+      finish();
+    });
     const failed = () => {
       unknown();
       if (!retained && !capturePersisted) phase = "recovery-required";
     };
     try {
-      const decoded = invoke((url, input) =>
-        startRequest(url, input, (wire) => startFake(url, wire), false),
+      const io = bodyBoundary;
+      const decoded = invoke(
+        (url, input) => startRequest(url, input,
+          (wire) => io.start(wire, (exactWire) => startFake(url, exactWire)), false),
+        Object.freeze({ signal: io.signal }),
       );
       // Register the FIRST decoded callback directly. No await, projection or DB precedes capture.
       const watched = decoded.then((raw) => {
@@ -1618,11 +1638,13 @@ export function createIsolatedPublicComparisonExecution(
       sdkCompletion = Promise.resolve(watched).then(
         () => {
           sdkDone = true;
+          bodyBoundary!.seal();
           finish();
         },
         () => {
           failed();
           sdkDone = true;
+          bodyBoundary!.seal();
           finish();
         },
       );
@@ -1630,6 +1652,7 @@ export function createIsolatedPublicComparisonExecution(
       // A factory/create/then throw cannot erase an already-started network promise.
       failed();
       sdkDone = true;
+      bodyBoundary.seal();
       sdkCompletion = Promise.resolve();
     }
     return sdkCompletion;
@@ -1771,7 +1794,8 @@ export function createIsolatedPublicComparisonExecution(
         driverDone = true;
         if (network) await network;
         if (sdkCompletion) await sdkCompletion;
-        promiseSettled = driverDone && (!network || networkDone) && (!sdkEntered || sdkDone);
+        if (bodyBoundary) await bodyBoundary.completion;
+        promiseSettled = driverDone && (!network || networkDone) && (!sdkEntered || sdkDone) && (!bodyBoundary || ioDone);
         if (!retained && !capturePersisted) {
           unknown();
           phase = "recovery-required";

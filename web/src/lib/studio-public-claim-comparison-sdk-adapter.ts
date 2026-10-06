@@ -14,7 +14,10 @@ export type SyntheticComparisonSdkOptions = typeof providerTransportSdkOptions &
   }>;
 export type SyntheticComparisonSdkFactory = (options: SyntheticComparisonSdkOptions) => Readonly<{
   responses: Readonly<{
-    create(body: PublicComparisonTransportBoundary["body"]): PromiseLike<unknown>;
+    create(
+      body: PublicComparisonTransportBoundary["body"],
+      request: Readonly<{ signal: AbortSignal }>,
+    ): PromiseLike<unknown>;
   }>;
 }>;
 export type SyntheticComparisonNetwork = (url: unknown, wire: RequestInit) => Promise<Response>;
@@ -29,7 +32,7 @@ export function createSyntheticComparisonSdkDriver(
   if (arguments.length !== 2 || typeof factory !== "function" || typeof network !== "function")
     throw Error("PUBLIC_COMPARISON_SYNTHETIC_SDK");
   return createSyntheticComparisonDriver((boundary, hooks) =>
-    hooks.sdk((fetch) => {
+    hooks.sdk((fetch, request) => {
       const client = factory(
         Object.freeze({
           ...providerTransportSdkOptions,
@@ -37,7 +40,7 @@ export function createSyntheticComparisonSdkDriver(
           fetch,
         }),
       );
-      return client.responses.create(boundary.body);
+      return client.responses.create(boundary.body, request);
     }, network),
   );
 }

@@ -37,7 +37,10 @@ export type SyntheticComparisonHooks = Readonly<{
     startFake: (wire: RequestInit) => Promise<unknown>,
   ): Promise<void>;
   sdk(
-    invoke: (fetch: (url: unknown, input: unknown) => Promise<Response>) => PromiseLike<unknown>,
+    invoke: (
+      fetch: (url: unknown, input: unknown) => Promise<Response>,
+      request: Readonly<{ signal: AbortSignal }>,
+    ) => PromiseLike<unknown>,
     network: (url: unknown, wire: RequestInit) => Promise<Response>,
   ): Promise<void>;
   markUnknown(): void;
