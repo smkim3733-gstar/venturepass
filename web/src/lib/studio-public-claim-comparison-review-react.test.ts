@@ -346,7 +346,8 @@ it("4I48 repeated parent close and later StrictMode remount cannot create a fres
 });
 
 /** 4I52 variants are synthetic presentation tests, never SQL export provenance. */
-async function mount52(change?: (value: ComparisonReviewWireResult) => void, count = 1) {
+async function mount52(change?: (value: ComparisonReviewWireResult) => void, count = 1,
+  mode: Parameters<Window["startReviewMount"]>[1] = "success") {
   const f = comparisonReviewTestFixture(count), value = f.value();
   change?.(value);
   const wire = comparisonReviewSuccessWire(f.query, value);
@@ -354,7 +355,7 @@ async function mount52(change?: (value: ComparisonReviewWireResult) => void, cou
     expected: { ...f.query, selection: value.resultIdentity.selection, binding: value.resultIdentity.binding,
       sectionKey: value.historical.prepared.input.section.key }, query: f.query,
     success: wire, error: comparisonReviewErrorWire("READ_BLOCKED") };
-  await page.evaluate((fixture) => { window.reviewMount = window.startReviewMount(fixture, "success"); }, fixture);
+  await page.evaluate(({ fixture, mode }) => { window.reviewMount = window.startReviewMount(fixture, mode); }, { fixture, mode });
   await page.waitForFunction(() => document.querySelector("#state")?.textContent?.includes('"status":"ATTACHED"'));
   return value;
 }
@@ -466,4 +467,116 @@ it("4I52 parent close removes all opinion text without changing parent props", a
   expect((await state()).frameOpen).toBe(true);
   expect((await state()).metrics).toMatchObject({ request: 1, rendersRequested: before.metrics.rendersRequested,
     terminalNotifications: 1, renderSideEffects: 0 });
+});
+
+const noOpinionCases53 = [
+  [
+    "comparison-rejected",
+    "저장된 응답이 비교 검증을 통과하지 못해 표시할 의견이 없습니다."
+  ],
+  [
+    "response-incomplete",
+    "저장된 응답이 완료되지 않아 표시할 비교 의견이 없습니다."
+  ],
+  [
+    "response-unsupported",
+    "저장된 응답 형식이 지원 범위와 맞지 않아 표시할 비교 의견이 없습니다."
+  ],
+  [
+    "model-mismatch",
+    "저장된 응답의 모델이 원래 요청과 일치하지 않아 표시할 비교 의견이 없습니다."
+  ]
+] as const;
+type NoOpinionState53 = (typeof noOpinionCases53)[number][0];
+async function mount53(storedState: NoOpinionState53 = "comparison-rejected",
+  mode: Parameters<Window["startReviewMount"]>[1] = "success") {
+  return mount52((value) => {
+    value.historical.result.state = storedState;
+    value.historical.result.comparison = null;
+  }, 1, mode);
+}
+it.each(noOpinionCases53)("4I53 accepted %s shows stored status without invented opinion or automatic request", async (storedState, message) => {
+  const original = await mount53(storedState);
+  expect(await page.getByTestId("example-result-state").count()).toBe(0);
+  expect((await state()).metrics).toMatchObject({ request: 0, layoutSetup: 2, layoutCleanup: 1 });
+  await read(); await result();
+  expect(await page.getByTestId("stored-state-message").textContent()).toBe(message);
+  expect(await page.getByTestId("example-result").count()).toBe(0);
+  expect(await page.getByTestId("example-result-state").locator("blockquote,button,a").count()).toBe(0);
+  expect((await display()).result).toEqual(original);
+  expect((await state()).metrics).toMatchObject({ request: 1, queryMatches: 1, renderSideEffects: 0 });
+  const before = await state();
+  await page.evaluate(() => window.reviewMount.parentClose()); await closedDisplay();
+  expect(await page.getByTestId("example-result-state").count()).toBe(0);
+  expect((await state()).frameOpen).toBe(true);
+  expect((await state()).metrics).toMatchObject({ request: 1, terminalNotifications: 1,
+    rendersRequested: before.metrics.rendersRequested });
+});
+it.each(["snapshot", "revision", "selection", "dirty", "blocked", "closed", "aborted"])(
+  "4I53 current %s change removes stored no-opinion notice before commit without rereading", async (kind) => {
+    await mount53("model-mismatch"); await read(); await result();
+    const before = (await state()).renderLog.length;
+    expect(await page.getByTestId("example-result-state").count()).toBe(1);
+    await page.evaluate((kind) => window.reviewMount.update(kind), kind);
+    expect(await page.getByTestId("example-result-state").count()).toBe(0);
+    expect((await state()).renderLog.slice(before).every((r) => r.display === null)).toBe(true);
+    await page.evaluate(() => window.reviewMount.update("restore"));
+    expect(await page.getByTestId("example-result-state").count()).toBe(0);
+    expect((await state()).metrics.request).toBe(1);
+});
+it("4I53 release clears a stored no-opinion notice without another request", async () => {
+  await mount53("response-unsupported"); await read(); await result();
+  expect(await page.getByTestId("example-result-state").count()).toBe(1);
+  await page.locator("#release").click(); await empty();
+  expect(await page.getByTestId("example-result-state").count()).toBe(0);
+  expect((await state()).metrics.request).toBe(1);
+});
+it("4I53 pending no-opinion response is not displayed until original request completion", async () => {
+  await mount53("response-incomplete", "pending"); await read();
+  expect(await page.getByTestId("example-result-state").count()).toBe(0);
+  await page.evaluate(() => window.reviewMount.finishResponse());
+  await page.waitForFunction(() => window.reviewMount.snapshot().retained.responseCompleted);
+  expect(await page.getByTestId("example-result-state").count()).toBe(0);
+  expect((await state()).retained).toMatchObject({ occupied: true, canForget: false });
+  await page.evaluate(() => window.reviewMount.finishRequest()); await result();
+  expect(await page.getByTestId("stored-state-message").textContent()).toBe(noOpinionCases53[1][1]);
+  expect((await state()).metrics.request).toBe(1);
+});
+it("4I53 cancellation retains pending I/O and late no-opinion response cannot resurrect the notice", async () => {
+  await mount53("response-incomplete", "pending"); await read();
+  await page.locator("#cancel").click();
+  expect((await state()).retained).toMatchObject({ occupied: true, canForget: false });
+  await page.evaluate(() => { window.reviewMount.finishResponse(); window.reviewMount.finishRequest(); });
+  await page.waitForFunction(() => window.reviewMount.snapshot().retained.canForget);
+  expect(await page.getByTestId("example-result-state").count()).toBe(0);
+  expect(await display()).toBeNull();
+  expect((await state()).metrics.request).toBe(1);
+});
+it.each(["comparison-rejected", "response-incomplete", "response-unsupported", "model-mismatch",
+  "ready-without-opinion", "unknown-state"] as const)(
+  "4I53 malformed %s wire cannot masquerade as accepted stored status", async (fault) => {
+    const f = comparisonReviewTestFixture(), value = f.value();
+    const wire = JSON.parse(comparisonReviewSuccessWire(f.query, value));
+    if (fault === "ready-without-opinion") wire.result.historical.result.comparison = null;
+    else wire.result.historical.result.state = fault; // Deliberately invalid: non-ready still has an opinion.
+    const fixture = { ...data, snapshot: { id: value.resultIdentity.selection.companyId, revision: 7 },
+      expected: { ...f.query, selection: value.resultIdentity.selection, binding: value.resultIdentity.binding,
+        sectionKey: value.historical.prepared.input.section.key }, query: f.query, success: JSON.stringify(wire) };
+    await page.evaluate((fixture) => { window.reviewMount = window.startReviewMount(fixture, "success"); }, fixture);
+    await page.waitForFunction(() => document.querySelector("#state")?.textContent?.includes('"status":"ATTACHED"'));
+    await read();
+    await page.waitForFunction(() => document.querySelector("#state")?.textContent?.includes('"kind":"error"'));
+    expect(await page.getByTestId("example-result-state").count()).toBe(0);
+    expect(await page.getByTestId("example-result").count()).toBe(0);
+    expect((await state()).metrics.request).toBe(1);
+});
+it("4I53 a transport error is not shown as a stored no-opinion state and retains unknown I/O", async () => {
+  await mount53("response-incomplete", "error"); await read();
+  await page.waitForFunction(() => document.querySelector("#state")?.textContent?.includes('"kind":"error"'));
+  expect(await page.getByTestId("example-result-state").count()).toBe(0);
+  expect((await state()).retained).toMatchObject({ occupied: true, canForget: false });
+  await page.evaluate(() => window.reviewMount.parentClose()); await closedDisplay();
+  expect((await state()).retained.occupied).toBe(true);
+  await page.evaluate(() => window.reviewMount.finishRequest()); await empty();
+  expect((await state()).metrics.request).toBe(1);
 });

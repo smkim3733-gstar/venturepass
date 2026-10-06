@@ -1,36 +1,35 @@
 # 공개 통계 후보 조회와 근거 보관
 
-## 2026-10-07: 4I52 — 합성 검토 의견·원래 근거 표시 연결
+## 2026-10-07: 4I53 — 의견 없는 저장 결과 안내
 
-2026-10-07 — **4I52 합성 검토 의견·원래 근거 표시 연결 완료**
+2026-10-07 — **4I53 비교 의견 없는 저장 결과 안내 연결 완료**
 
-고정20개 기능 기준15/20=75%, 미완료5/20=25%, 직전 대비+0%p. 이번4I52 신규21/21+기존20/20=41/41개와 격리 실제 앱10/10흐름이 통과했다. 신규는 개발 모드 React 표시20개·독립 import1개다. 앱 흐름은 새 표시2개·기존8개이며 개발/프로덕션 반복을 더하지 않는다. 첫 typecheck의 readonly 입력 불일치2개를 보완했고 최종 영향 시험→전체 lint→typecheck→격리빌드0pv7dx 종료코드0을 확인했다. 변경 앱7개 SHA 일치·env0·보호7개/미수정120개 SHA 불변이다. SQL 생성/SQL13 재실행0, 기존 SQL13 사본/manifest/ID/hash 불변이다. 실제 SDK client/API·외부·고객/운영 DB·유료AI0이다. 과거4I51 39/39·앱8/8·XN787L와4I49 80/80·앱8/8·b76kyO는 별도다. 백업27개 제한은 미해결·미실행이다. 실환경 직접1/5=20%·앱 자동실행0단계·KOSIS0/1, 필수 결정0개, 다음4I53 비교 의견 없는 저장 결과 안내1~3시간(잠정), 전체 완료시간 미정·자동후속 ACTIVE.
+고정20개 기능 기준15/20=75%, 미완료5/20=25%, 직전 대비+0%p. 이번4I53 신규21/21+기존22/22=43/43개와 격리 실제 앱14/14흐름이 통과했다. 신규는 개발 모드 React 상태 표시21개이며 기존은4I52 표시20개·import2개다. 앱은 새 상태4개·기존10개이며 개발/프로덕션 반복을 합산하지 않는다. 전체 lint·첫 typecheck·격리빌드MDjwOh 종료코드0, 변경 앱4개 SHA 일치·env0·보호7개/미수정123개 SHA 불변이다. 시험 번들 설정과 초기 hydration 대기·신규 선택자를 보완했다. SQL 생성/SQL13 재실행0, 기존 SQL13 사본/manifest/ID/hash 불변이다. 실제 SDK client/API·외부·고객/운영 DB·유료AI0이다. 과거4I52 41/41·앱10/10·0pv7dx와4I51 39/39·앱8/8·XN787L는 별도다. 백업27개 제한은 미해결·미실행이다. 실환경 직접1/5=20%·앱 자동실행0단계·KOSIS0/1, 필수 결정0개, 다음4H8 공개통계 주석(CMMT) 지원계약 점검1~3시간·후속 합성 구현3~6시간(잠정), 전체 완료시간 미정·자동후속 ACTIVE.
 
-기존 실제 메뉴→공개 근거 검토 예제의 ConnectedReview를 보완했다. 기존 hook의 수락된 review.display.result만 새 ComparisonReviewOpinion에 전달한다. readonly 결과 타입을 그대로 받으며 raw snapshot에서 의견을 읽지 않는다. 기존 root 보관자·명시 POST·고정 서버 data·현재 frame 무효화·최종 종료는 유지했다.
+기존 ComparisonReviewOpinion에 comparison-rejected·response-incomplete·response-unsupported·model-mismatch의 짧은 상태 안내를 연결했다. 기존 strict receiver와 현재 frame 검사를 거친 readonly review.display.result만 읽는다. comparison:null이어야 안내하며 comparison-ready는 기존 전체/근거별 의견 표시를 유지한다. ConnectedReview는 수락 결과가 있으면 저장 결과 읽기 완료를 표시한다. 없는 이유/인용/확인 메모나 새 실행·복구 버튼을 만들지 않는다.
 
-전체 관계/이유와 검토한 주장, 근거별 관계/이유·원래 제목·인용·추가 확인 메모를 표시한다. sourceId로 prepared.input.selectedEvidence에 정확히 연결하며 순서/비슷한 제목/다른 회사 자료로 보충하지 않는다. 상세 발췌는 접힌 details에서 필요할 때 펼친다. 저장된 checks가 있으면 해당 근거 제목과 확인 항목을 표시한다. 렌더/펼치기의 요청·DB/AI 쓰기0이다.
+상태의 뜻은 기존 capture/wire 소스로 대조했다. 비교 검증 거절, 저장 응답 미완료, 지원하지 않는 응답 형식, 원래 요청과 모델 불일치를 구분한다. 과거 저장 응답의 미완료 상태와 지금 읽기 요청의 pending/전송 오류는 별개다. 새 안내는 현재 props 변경·취소·비우기·종료에서 해제하며 원래 I/O 보관과 늦은 completion 계약은 바꾸지 않았다. raw snapshot의 결과를 표시하지 않는다.
 
-관계 코드4종은 한국어 레이블로 표시하지만 저장된 원문·영어/한자 의견을 번역/수정하지 않는다. 현재 사본의 Synthetic only·Review required와 비어 있는 nextCheck를 그대로 구분한다. 비어 있는 확인 메모는 “저장된 추가 확인 메모가 없습니다.”로 표시하고 인용/행동 지시를 만들지 않는다. 긴 의견과 줄바꿈을 보존하고 React 텍스트 렌더로 HTML 실행을 막는다.
+신규 실제 개발 React21개는 네 상태/부모 종료4개, 현재 문맥7개, 비우기1개, 원래 Request 완료 대기1개, 취소/늦은 완료1개, 모순/알 수 없는 wire6개, 전송 오류/불명 I/O1개다. 기존 표시20개와 독립 import2개를 더해43/43·23.92초가 한 번에 통과했다. 기존40개 React와 SQL13/백업 시험은 이름 필터에서 실행하지 않았다. 상태 변형은 수락 경로를 거친 합성 표시 자료이며 SQL 저장 진위의 새 관측이 아니다.
 
-관계4개·뒤집힌 근거 순서1개·빈 메모2개·긴 본문1개·잘못된 sourceId/중복/다른 인용/확인 항목4개·현재 문맥7개·부모 종료1개의 실제 React 개발 장착20개를 추가했다. 독립 import 차단1개를 더해 신규21개다. 기존 예제19개와 기존 data/route import1개를 영향 회귀로 재실행했다. 기존40개 React 전체 시험은 실행하지 않았다. SDK 없는 schema pin·Rolldown/Playwright/Edge·about:blank 메모리 번들·네트워크 전면 차단을 유지했다. 표시용 합성 변형은 SQL 저장 관측/새 SQL 내보내기가 아니다.
+첫 시험 전 제품·앱 화면·browser·SDK mock 적용 Node fixture/React 시험의 전이를 점검했다. SDK 없는 schema pin과 개발 ReactDOM 포함·금지 import/동적 외부 import 차단·about:blank 메모리 장착·네트워크 차단을 유지했다. 실제 앱 runner의 상태 변형도 기존 strict wire decoder로 먼저 대조했다.
 
-첫 실행 전 제품/브라우저/Node 전이를 점검했다. 최종 새 표시 컴포넌트1파일/외부0, 앱 화면56파일, browser53파일, SDK mock 적용 Node fixture56파일/React 시험59파일이다. 브라우저 bundle의 금지 import/동적 외부 import 차단과 개발 ReactDOM 포함을 확인했다. 실제 SDK/SQLite/운영 취득은 표시 경로에 없다.
+앱 runner의 최초 순수 decoder 번들은 Node 플랫폼의 node:module 보조 import를 기존 차단 규칙이 거절해 서버 시작 전 중단됐다. 순수 browser 번들로 바꿨으며 금지 규칙은 유지했다. 다음 개발 실행은 첫 시작 클릭 뒤 읽기 버튼 대기에서 중단됐다. 초기 SSR 화면은 보였지만 해당 클릭이 React에 처리됐다는 근거는 없었다. 시험에 React 이벤트 연결 확인을 넣어 반복 클릭 없이 진행하도록 했고, 아직 실행되지 않은 새 상태 흐름의 잘못된 시작 버튼 이름도 실제 이름으로 맞췄다. 제품 hydration 결함을 수정했다고 주장하지 않는다.
 
-신규 React20/20·11.28초, 기존20+신규 import1=21/21·2.06초가 먼저 통과했다. 첫 lint0 뒤 첫 typecheck는 readonly result를 mutable wire 타입으로 선언한 두 호출부에서 종료코드1이었다. hook의 실제 readonly 반환 타입을 사용하고 표시 계층은 정확한 sourceId 연결만 확인하도록 보완했다. 전체 응답 대조는 기존 strict receiver에 남는다. 영향 신규21/21·12.12초→최종 전체 lint0→최종 typecheck0→격리 build:local0을 확인했다. 반복 신규21개는 합산하지 않는다.
+그 뒤 개발 사본UVSENm과 최종 프로덕션MDjwOh에서 각14/14흐름이 통과했다. 실제 예제 POST3·준비POST0·합성 오류 대체1·네 상태 대체POST8·외부/pageerror0이다. 네 상태 대체POST8은 서버의 실제 SQL 결과 읽기가 아니라 브라우저 시험 주입이며 별도로 센다. 각 상태의 비우기·명시 재읽기·종료, 기존 메뉴 이동/원래 보관자·닫힌 재진입, 데스크톱/390px 표시를 확인했다. status/cases는 합성 응답으로 막고 예제 API만 loopback HTTP로 허용했다.
 
-실제 앱 개발 사본WSk4Sh의10/10흐름 뒤 readonly 보완을 포함한 최종 프로덕션 사본0pv7dx에서10/10흐름을 확인했다. 고유 흐름10개이며 반복20개로 세지 않는다. 각 실행에서 준비POST0·원래 예제POST3·합성 오류 대체1·외부/pageerror0이다. status/cases를 합성 응답으로 차단하고 예제 API만 실제 loopback HTTP로 허용했다. 원래 의견/발췌·비우기·재읽기·메뉴 이동·같은 보관자 재진입·최종 종료·닫힌 재진입·영수증 불명 오류·390px 화면을 확인했다. 펼치기/화면 크기 변경의 추가 요청0이다.
+최종 출력은 venturepass-review-app-QeI3j1이다. 데스크톱·모바일 이미지를 직접 확인했고 가로 넘침이 없다. 검증 서버/브라우저는 종료했으며 기존 고객 앱 서버는 변경/종료하지 않았다. 최종 시험 data의 SQLite 파일0개다. 기존 SQL13 JSON/provenance·ID/hash/nonce/본문/hold와 서버 route/holder는 그대로다.
 
-최종 화면 출력은 venturepass-review-app-G2aBvv이며 데스크톱/모바일 이미지를 확인했다. 현재 사본과 펼친 발췌에 가로 넘침이 없다. 검증 서버/브라우저는 종료했고 기존 고객 앱 서버는 변경/종료하지 않았다. 최종 앱 출력/격리 data의 SQLite 파일0개다.
+영향 시험/앱 흐름→전체 lint0→첫 typecheck0→build:local0 뒤 최종 프로덕션 앱을 확인했다. 격리빌드MDjwOh, BUILD_ID PT-a-lkkMbXm4lJgS-G2N, 컴파일31.2초/타입33.8초/정적10개879ms다. 변경 앱4개 SHA가 빌드와 일치하고 staging env0이다. 보호7개·미수정123개 SHA 불변이다. 보호 편집기 변경이 포함된 작업 폴더 빌드이며 해당 기능 완료는 합산하지 않는다. 빌드 뒤 제품/시험 변경0이다.
 
-격리빌드0pv7dx, BUILD_ID EvH_q_v6RskecYgr7VT8K, 컴파일27.9초/타입30.4초/정적10개730ms다. 변경 앱7개 SHA가 빌드 사본과 일치하고 env파일0개다. 보호7개와 미수정120개 SHA 불변이다. 기존 SQL13 사본/manifest·원래 nonce/ID/hash/본문/hold를 보존했다. 빌드에는 기존 보호 편집기 변경도 포함되지만 그 기능 완료를 합산하지 않는다. 빌드 뒤 제품/시험 변경0이다.
+SQL COMMIT/증인의 신규 관측은0이다. 시점 고정 합성 사본 전달·strict wire/현재 요청 일치·canForget은 실제 사람 동의·공식 가격·전송 권한·사실 확인·원고 채택·AI 의미 품질·사람 인수 완료가 아니다. source synthetic·owner:null·runtimeObserved:false·manual-unverified·currentContextVerified:false·권한 false를 유지한다.
 
-이번 SQL COMMIT/증인 신규 관측0이다. 과거4I51 합성 저장 관측과 이번 시점 고정 사본의 화면 표시는 구분한다. SQL COMMIT/증인·wire/현재 요청 대조·canForget은 실제 사람 동의·공식 가격·전송 권한·사실 확인·원고 채택·AI 의미 품질·사람 인수 완료가 아니다. source synthetic·owner:null·runtimeObserved:false·권한 false·manual-unverified·currentContextVerified:false를 유지한다.
+F12/F13/F18~F20 실제 운영과 백업27개 DESTINATION_REPOSITORY·일반v10~v13 backup/restore는 미완료다. SDK client/API·키/공식 가격·외부 전송·고객/운영 DB/control/lock·계정 polling/입력/첨부/신청/납부/서명/제출0, 새 채팅/하위 에이전트0·모델/effort 확인/변경0이다. 사용자 합성 실제 앱 개발 승인은 유효하다.
 
-F12/F13/F18~F20 실제 운영 범위와 백업27개 DESTINATION_REPOSITORY·일반v10~v13 backup/restore는 미완료다. SDK client/API·키/공식 가격·외부 전송·고객/운영 DB/control/lock·계정 polling/신청/납부/서명/제출0, 새 채팅/하위 에이전트0·모델/effort 확인/변경0이다. 같은 합성 실제 앱 개발 승인은 유효하다.
+다음4H8은 남은 F12 공개 원문 보완 중 KOSIS 주석(CMMT)의 명시 읽기 범위를 점검한다. 기존4H1은 CMMT의 존재·관련 ID만 확인했고, 현재 구현은 TBL/PRD/SOURCE와 수동 코드 한 셀 읽기다. 공식 주석 가이드의 요청 대상·선택 조건·반환 ID·본문/빈 응답·표 전체 주석과 특정 셀 적용의 구분을 기존 metadata/공유 전송 소스와 대조한다. 이는 이미 점검한 ITM 전체목록·S/H·NCD 모호성의 반복 확인이나 지금 예제 화면의 추가 분할이 아니다. 키/예제 키 없는 공식 공개 문서 읽기만 허용하며 실제 데이터 API·고객 원문/식별정보 전송·SDK/유료 AI·고객/운영 DB·계정 동작은 하지 않는다. 계약이 확인되는 최소 명시 읽기만 다음 합성 구현 후보로 정하고, 근거 부족한 ID 귀속·전체 주석 수집·자동 사실 확인을 추정하지 않는다. 소스 변경 없는 점검에는 완료 시험/빌드/SQL 생성/백업27개를 재실행하지 않는다. F13의 합성 실제 앱 표시 범위는 완료했고 기존 전체 연속개발의 F12 독립 점검이 남아 자동후속 ACTIVE다. 필수 결정0개, 다음 점검1~3시간·조건 확인 후 합성 구현3~6시간(잠정), 전체 완료시간 미정이다.
 
-다음4I53은 현재 수락한 저장 결과에 비교 의견이 없는 경우의 안내를 실제 예제 화면에 연결한다. 기존 strict wire는 comparison-rejected·response-incomplete·response-unsupported·model-mismatch를 comparison:null과 함께 허용하지만 현재 의견 컴포넌트는 null을 반환해 읽기 완료 여부가 드러나지 않는다. 기존 review.display에서만 해당 저장 상태를 읽어 짧은 상태별 안내를 표시하고, 이를 전송 오류·새 AI 실행·자동 복구와 구분한다. comparison-ready의 이번 근거별 표시와 문맥 변경/종료 시 해제를 유지한다. 기존 SQL13 JSON/manifest·route/holder를 그대로 재사용하며 상태 변형은 검증된 합성 표시 시험에만 사용한다. SDK/SQL 생성·새 runtime service/registry·고객/운영 DB·키/가격·외부/유료 AI·계정 polling/신청/납부/서명/제출0을 유지한다. 기존 status/cases는 합성 응답으로 차단하고 예제 API만 loopback HTTP로 허용한다. 필요한 영향 시험→lint→typecheck→지정 루트 격리 build:local을 순서대로 확인한다. 완료 시험/SQL 생성/백업27개를 이유 없이 반복하지 않는다. 같은 합성 실제 앱 개발 승인 유효·필수 결정0개·다음1~3시간(잠정)·전체 미정·자동후속 ACTIVE.
+구체적 상태 표시·시험 구분과 다음 완료 조건은 기획/공개주장_의견없는결과_안내연결_20261007.md다.
 
-구체적 표시 연결·검증 기록과 다음 완료 조건은 기획/공개주장_검토의견_원래근거_표시연결_20261007.md다.
 
 ## 2026-10-06: 4I26 — 본문 수신 제한·원래 I/O 종료 격리 연결
 

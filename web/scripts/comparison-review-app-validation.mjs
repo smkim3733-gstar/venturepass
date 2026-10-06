@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
+import { createRequire } from "node:module";
 import { mkdtemp, readFile, readdir, realpath, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import path from "node:path";
@@ -32,6 +33,55 @@ assert.equal(provenance.kind, "synthetic-sql13-export");
 assert.equal(provenance.wireSha256, hash(JSON.stringify(fixture)));
 assert.equal(provenance.runId, fixture.query.runId);
 assert.equal(provenance.dispatchCommandDigest, fixture.query.dispatchCommandDigest);
+
+// Test-only decoder bundle: validate synthetic state variants without loading
+// server data, SDK helpers, SQLite or operational acquisition modules.
+const requireFromVitest = createRequire(createRequire(import.meta.url).resolve("vitest/package.json"));
+const { rolldown } = await import(pathToFileURL(requireFromVitest.resolve("rolldown")).href);
+const decoderBundle = await rolldown({
+  input: path.join(app, "src/lib/studio-public-claim-comparison-review-wire.ts"), cwd: app,
+  platform: "browser", tsconfig: path.join(app, "tsconfig.json"),
+  plugins: [{ name: "deny-activation", resolveId(source) {
+    if (/openai|server-only|node:|storage|quality-store|comparison-database|provider-production|review-handler|review-server/.test(source))
+      throw Error("Forbidden decoder import: " + source);
+    return null;
+  } }],
+});
+let stateDecoder;
+try {
+  const output = await decoderBundle.generate({ format: "esm" });
+  assert.equal(output.output.length, 1);
+  const chunk = output.output[0];
+  assert.equal(chunk.type, "chunk");
+  assert.deepEqual(chunk.imports, []); assert.deepEqual(chunk.dynamicImports, []);
+  stateDecoder = await import("data:text/javascript;base64," + Buffer.from(chunk.code).toString("base64"));
+} finally { await decoderBundle.close(); }
+const stateCases = [
+  [
+    "comparison-rejected",
+    "저장된 응답이 비교 검증을 통과하지 못해 표시할 의견이 없습니다."
+  ],
+  [
+    "response-incomplete",
+    "저장된 응답이 완료되지 않아 표시할 비교 의견이 없습니다."
+  ],
+  [
+    "response-unsupported",
+    "저장된 응답 형식이 지원 범위와 맞지 않아 표시할 비교 의견이 없습니다."
+  ],
+  [
+    "model-mismatch",
+    "저장된 응답의 모델이 원래 요청과 일치하지 않아 표시할 비교 의견이 없습니다."
+  ]
+].map(([state, message]) => {
+  const result = structuredClone(fixture.result);
+  result.historical.result.state = state;
+  result.historical.result.comparison = null;
+  const body = stateDecoder.comparisonReviewSuccessWire(fixture.query, result);
+  assert.deepEqual(stateDecoder.decodeComparisonReviewWire(body, 200, fixture.query), result);
+  return { state, message, body };
+});
+
 const endpoint = "/api/studio/cases/" + fixture.result.resultIdentity.selection.companyId + "/public-claim-comparison/stored-review";
 const output = await mkdtemp(path.join(temporaryRoot, "venturepass-review-app-"));
 const guard = path.join(output, "network-guard.mjs");
@@ -48,6 +98,16 @@ const origin = "http://127.0.0.1:" + port, logs = [], errors = [], external = []
 let child, context, page;
 function record(name) { checks.push(name); console.log("PASS " + name); }
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
+// Test synchronization only: SSR markup can be visible before React attaches
+// the event handler. Inspect readiness without clicking or creating an owner.
+async function waitForExampleHydration(target) {
+  await target.waitForFunction(() => {
+    const button = [...document.querySelectorAll("button")].find((b) => b.textContent === "합성 예제 시작");
+    return button && Object.keys(button).some((key) => key.startsWith("__reactProps$") &&
+      typeof button[key]?.onClick === "function");
+  });
+}
+
 try {
   child = spawn(process.execPath, ["--import", pathToFileURL(guard).href,
     path.join(staging, "node_modules/next/dist/bin/next"), mode,
@@ -87,6 +147,7 @@ try {
   await page.getByRole("heading", { name: "공개 근거 검토 예제", exact: true }).waitFor();
   assert.match(await page.getByTestId("example-provenance").innerText(), /합성 저장 결과의 시점 고정 사본/);
   assert.equal(posts.length, 0);
+  await waitForExampleHydration(page);
   await page.getByRole("button", { name: "합성 예제 시작", exact: true }).click();
   await page.getByRole("button", { name: "검토 결과 읽기", exact: true }).waitFor();
   await page.waitForFunction(() => ![...document.querySelectorAll("button")].find((b) => b.textContent === "검토 결과 읽기")?.disabled);
@@ -161,6 +222,7 @@ try {
   await failure.route("**" + endpoint, (route) => route.fulfill({ status: 500,
     contentType: "application/json", body: JSON.stringify({ wireVersion: 1, kind: "public-comparison-stored-review-error", code: "READ_FAILED" }) }));
   await failure.goto(origin + "/studio/review-example", { waitUntil: "networkidle" });
+  await waitForExampleHydration(failure);
   await failure.getByRole("button", { name: "합성 예제 시작", exact: true }).click();
   await failure.getByRole("button", { name: "검토 결과 읽기", exact: true }).click();
   await failure.getByRole("region", { name: "합성 검토 결과" }).getByRole("alert").waitFor();
@@ -178,14 +240,63 @@ try {
   await mobile.screenshot({ path: path.join(output, "example-mobile.png"), fullPage: true });
   await mobile.close();
   record("mobile layout has no horizontal overflow");
+
+  // These four browser-injected variants are strict-wire-checked synthetic
+  // presentation inputs. They are not the committed SQL13 export or real API reads.
+  const syntheticStatePosts = [];
+  for (const scenario of stateCases) {
+    const statePage = await context.newPage();
+    let statePosts = 0;
+    await statePage.route("**" + endpoint, (route) => {
+      assert.equal(route.request().method(), "POST");
+      assert.equal(route.request().postData(), JSON.stringify(fixture.query));
+      statePosts++;
+      syntheticStatePosts.push({ state: scenario.state, path: endpoint });
+      return route.fulfill({ status: 200, contentType: "application/json",
+        headers: { "x-venturepass-example-request": "complete" }, body: scenario.body });
+    });
+    await statePage.goto(origin + "/studio/review-example", { waitUntil: "networkidle" });
+    await waitForExampleHydration(statePage);
+  await statePage.getByRole("button", { name: "합성 예제 시작", exact: true }).click();
+    assert.equal(statePosts, 0);
+    assert.equal(await statePage.getByTestId("example-result-state").count(), 0);
+    await statePage.getByRole("button", { name: "검토 결과 읽기", exact: true }).click();
+    await statePage.getByTestId("example-result-state").waitFor();
+    await statePage.getByText("저장 결과 읽기를 마쳤습니다.", { exact: true }).waitFor();
+    assert.equal(await statePage.getByTestId("stored-state-message").textContent(), scenario.message);
+    assert.equal(await statePage.getByTestId("example-result").count(), 0);
+    assert.equal(await statePage.getByRole("region", { name: "합성 검토 결과" }).getByRole("alert").count(), 0);
+    assert.equal(statePosts, 1);
+    if (scenario.state === "response-incomplete") {
+      await statePage.screenshot({ path: path.join(output, "stored-state-desktop.png"), fullPage: true });
+      await statePage.setViewportSize({ width: 390, height: 844 });
+      assert.equal(await statePage.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+      await statePage.screenshot({ path: path.join(output, "stored-state-mobile.png"), fullPage: true });
+    }
+    await statePage.getByRole("button", { name: "표시 비우기", exact: true }).click();
+    assert.equal(await statePage.getByTestId("example-result-state").count(), 0);
+    assert.equal(await statePage.getByText("저장 결과 읽기를 마쳤습니다.", { exact: true }).count(), 0);
+    assert.equal(statePosts, 1);
+    await statePage.getByRole("button", { name: "검토 결과 읽기", exact: true }).click();
+    await statePage.getByTestId("example-result-state").waitFor();
+    assert.equal(statePosts, 2);
+    await statePage.getByRole("button", { name: "예제 종료", exact: true }).click();
+    await statePage.getByText("예제가 종료되었습니다. 이 창에서는 새 읽기를 시작하지 않습니다.", { exact: true }).waitFor();
+    assert.equal(await statePage.getByTestId("example-result-state").count(), 0);
+    assert.equal(await statePage.getByRole("button", { name: "검토 결과 읽기", exact: true }).isDisabled(), true);
+    assert.equal(statePosts, 2);
+    await statePage.close();
+    record("4I53 injected " + scenario.state + " reports stored state and clears on release/close");
+  }
+
   assert.deepEqual(errors, []); assert.deepEqual(external, []);
   assert.ok(!logs.join("").includes("EXTERNAL_FETCH_FORBIDDEN"));
   // Only the fixed example API may receive POSTs in this acceptance run.
   assert.ok(posts.every((p) => p.path === endpoint));
-  await writeFile(path.join(output, "report.json"), JSON.stringify({ checks, posts, errors, external, mode, staging }, null, 2));
-  console.log(JSON.stringify({ passed: checks.length, output, readPosts: posts.length, setupPosts: 0, interceptedErrors: 1, external: 0, pageErrors: 0 }));
+  await writeFile(path.join(output, "report.json"), JSON.stringify({ checks, posts, syntheticStatePosts, errors, external, mode, staging }, null, 2));
+  console.log(JSON.stringify({ passed: checks.length, output, readPosts: posts.length, setupPosts: 0, interceptedErrors: 1, interceptedStates: syntheticStatePosts.length, external: 0, pageErrors: 0 }));
 } catch (error) {
-  await writeFile(path.join(output, "failure.txt"), logs.join("") + "\n" + String(error) +
+  await writeFile(path.join(output, "failure.txt"), logs.join("") + "\n" + JSON.stringify({ errors, external }) + "\n" + String(error) +
     "\n" + (await page?.locator("body").innerText().catch(() => "")));
   await page?.screenshot({ path: path.join(output, "failure.png"), fullPage: true }).catch(() => {});
   console.error("Validation diagnostics: " + output);

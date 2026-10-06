@@ -36,6 +36,7 @@ function ConnectedReview({ screen, frame }: { screen: Screen; frame: ComparisonR
     <p role="status" className="text-sm text-muted-foreground">
       {closed ? "예제가 종료되었습니다. 이 창에서는 새 읽기를 시작하지 않습니다."
         : review.occupied && !review.canForget ? "읽기 또는 정리 상태를 확인 중입니다. 자동으로 다시 요청하지 않습니다."
+        : review.display?.kind === "result" ? "저장 결과 읽기를 마쳤습니다."
         : message || "버튼을 눌러 고정된 합성 검토 결과를 확인하세요."}
     </p>
     {review.display?.kind === "error" && <p role="alert" className="rounded-lg border p-4">{review.display.message}</p>}

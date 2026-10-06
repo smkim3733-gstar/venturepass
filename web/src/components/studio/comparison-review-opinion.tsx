@@ -14,9 +14,26 @@ const checkLabels = {
   "company-applicability": "회사 적용", provenance: "출처", other: "기타",
 } as const;
 
+const noOpinionMessages = {
+  "comparison-rejected": "저장된 응답이 비교 검증을 통과하지 못해 표시할 의견이 없습니다.",
+  "response-incomplete": "저장된 응답이 완료되지 않아 표시할 비교 의견이 없습니다.",
+  "response-unsupported": "저장된 응답 형식이 지원 범위와 맞지 않아 표시할 비교 의견이 없습니다.",
+  "model-mismatch": "저장된 응답의 모델이 원래 요청과 일치하지 않아 표시할 비교 의견이 없습니다."
+} satisfies Record<Exclude<DisplayResult["historical"]["result"]["state"], "comparison-ready">, string>;
+
 /** Receives only the current display accepted by the existing review hook. */
 export function ComparisonReviewOpinion({ result }: { result: DisplayResult | null }) {
   if (!result) return null;
+  const stored = result.historical.result;
+  if (stored.state !== "comparison-ready") {
+    if (stored.comparison !== null) return null;
+    return <div data-testid="example-result-state" role="status"
+      className="space-y-3 rounded-xl border bg-white p-5 text-sm">
+      <h2 className="font-semibold">비교 의견이 없는 저장 결과</h2>
+      <p data-testid="stored-state-message">{noOpinionMessages[stored.state]}</p>
+      <p className="text-muted-foreground">합성 자료의 저장 상태입니다. 자동으로 다시 요청하지 않습니다.</p>
+    </div>;
+  }
   const { prepared } = result.historical;
   const opinion = result.historical.result.comparison?.comparison;
   if (!opinion) return null;
