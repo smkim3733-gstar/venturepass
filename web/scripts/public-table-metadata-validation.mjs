@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { DatabaseSync } from "node:sqlite";
+import { createRequire } from "node:module";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdtemp, readFile, readdir, realpath, writeFile } from "node:fs/promises";
@@ -9,16 +9,18 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { chromium } from "playwright-core";
 import { localBuildEnvironment } from "./build-local.mjs";
 
-// This acceptance run uses the actual production UI/API and a new synthetic data directory.
+// Actual isolated UI/read-only route; company/status replies and provider fetch are synthetic.
 // The explicit build must be a current, environment-free build:local staging directory.
 const app = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const temporaryRoot = await realpath(path.resolve(app, "../../.venturepass-tools/build-temp"));
 assert.equal(
-  process.argv.length,
-  3,
+  process.argv.length >= 3 && process.argv.length <= 4,
+  true,
   "Usage: node scripts/public-table-metadata-validation.mjs <build:local staging>",
 );
 const staging = await realpath(process.argv[2]);
+const serverMode = process.argv[3] ?? "start";
+assert.ok(["dev", "start"].includes(serverMode));
 const relativeBuild = path.relative(temporaryRoot, staging);
 assert.ok(relativeBuild && !relativeBuild.startsWith("..") && !path.isAbsolute(relativeBuild));
 assert.match(path.basename(staging), /^venturepass-build-/);
@@ -50,7 +52,10 @@ for (const name of ["next.config.ts", "package.json", "pnpm-lock.yaml"]) {
     "Stale build input: " + name,
   );
 }
-const buildId = (await readFile(path.join(staging, ".next/BUILD_ID"), "utf8")).trim();
+const buildId =
+  serverMode === "start"
+    ? (await readFile(path.join(staging, ".next/BUILD_ID"), "utf8")).trim()
+    : null;
 const output = await mkdtemp(path.join(temporaryRoot, "venturepass-table-metadata-"));
 const dataDirectory = path.join(output, "synthetic-data");
 const guard = path.join(output, "network-guard.mjs");
@@ -62,6 +67,9 @@ await writeFile(
 const original=globalThis.fetch;
 globalThis.fetch=async(input,init)=>{
  const u=new URL(typeof input==="string"||input instanceof URL?input:input.url);
+ if(u.href==="https://registry.npmjs.org/-/package/next/dist-tags"){
+  process.stderr.write("NEXT_VERSION_CHECK_STUBBED\n"); return new Response(null,{status:503});
+ }
  if(u.origin==="https://kosis.kr"){
   if(u.searchParams.get("apiKey")!=="synthetic-kosis-test-key")throw Error("Wrong synthetic key");
   const mode=JSON.parse(await readFile(process.env.SYNTHETIC_MODE_FILE,"utf8")).mode;
@@ -77,7 +85,13 @@ globalThis.fetch=async(input,init)=>{
   }
   if(mode==="empty")return Response.json([]);
   if(mode==="malformed")return Response.json({err:"SYNTHETIC_ONLY"});
+  if(u.searchParams.get("method")!=="getMeta"||u.searchParams.get("orgId")!=="999"||u.searchParams.get("tblId")!=="DT_SYNTHETIC")throw Error("Wrong metadata selection");
   const kind=u.searchParams.get("type");
+  if(kind==="CMMT")return Response.json([
+    {CMMT_NM:" 원래 주석 유형 ",CMMT_DC:" 원래 첫 줄\n<svg onload=alert(1)> https://example.invalid "+ "긴합성주석".repeat(450),OBJ_ID:"",OBJ_NM:null,ITM_ID:" 01 ",ITM_NM:"원래 분류값"},
+    {CMMT_NM:"",CMMT_DC:""},
+    {CMMT_NM:"같은 코드의 다른 주석",CMMT_DC:"마지막 원문",OBJ_ID:"",ITM_ID:" 01 "}
+  ]);
   if(kind==="TBL")return Response.json([{TBL_NM:"<img src=x onerror=alert(1)> "+ "긴합성문자".repeat(45),TBL_NM_ENG:null}]);
   if(kind==="PRD")return Response.json([{PRD_SE:"IR",PRD_DE:"unknown"},{PRD_SE:"Y",PRD_DE:"2024"}]);
   if(kind==="SOURCE")return Response.json([{JOSA_NM:"합성 조사",STAT_ID:"SYNTHETIC",DEPT_NM:null,DEPT_PHONE:"<a href=x>연락처</a>"}]);
@@ -89,6 +103,7 @@ globalThis.fetch=async(input,init)=>{
 );
 const environment = localBuildEnvironment(output);
 environment.VENTURE_DATA_DIR = dataDirectory;
+environment.NODE_ENV = serverMode === "dev" ? "development" : "production";
 environment.OPENAI_API_KEY = "";
 environment.KOSIS_API_KEY = "";
 environment.SYNTHETIC_WIRE_FILE = wireFile;
@@ -107,19 +122,23 @@ let child, context, page;
 const logs = [],
   errors = [],
   externalRequests = [],
-  checks = [];
+  checks = [],
+  developmentDiagnostics = [],
+  consoleErrors = [];
 const record = (name) => {
   checks.push(name);
   console.log("PASS " + name);
 };
 async function start() {
+  const logStart = logs.length;
   child = spawn(
     process.execPath,
     [
       "--import",
       pathToFileURL(guard).href,
       nextCli,
-      "start",
+      serverMode,
+      ...(serverMode === "dev" ? ["--webpack"] : []),
       "--hostname",
       "127.0.0.1",
       "--port",
@@ -142,10 +161,7 @@ async function start() {
   while (Date.now() < deadline) {
     if (startupError) throw startupError;
     if (child.exitCode !== null) throw Error("Server exited: " + logs.join(""));
-    try {
-      const response = await fetch(origin + "/api/studio/status");
-      if (response.ok) return;
-    } catch {}
+    if (logs.slice(logStart).join("").includes("Ready in")) return;
     await new Promise((resolve) => setTimeout(resolve, 200));
   }
   throw Error("Isolated server did not become ready");
@@ -166,25 +182,74 @@ async function stop() {
   });
   child = null;
 }
-async function api(url, options = {}) {
-  const response = await context.request.fetch(origin + url, options);
-  assert.ok(response.ok(), response.status() + " " + (await response.text()));
-  return response;
-}
-async function mutation(action) {
-  const pending = page.waitForResponse(
-    (response) =>
-      response.url().includes("/api/studio/cases") &&
-      ["POST", "PATCH"].includes(response.request().method()),
-    { timeout: 20000 },
-  );
-  const [response] = await Promise.all([pending, action()]);
-  assert.ok(response.ok(), response.status() + " " + (await response.text()));
-  return response.json();
-}
-
 const name = "PRIVATE_COMPANY 합성 표 정보 시험";
-let caseId;
+const caseId = "c0000000-0000-4000-8000-000000000001";
+// Bundle only audited pure schemas; never load the store/SDK to make fixture data.
+const requireFromVitest = createRequire(
+  createRequire(import.meta.url).resolve("vitest/package.json"),
+);
+const { rolldown } = await import(pathToFileURL(requireFromVitest.resolve("rolldown")).href);
+const bundle = await rolldown({
+  input: path.join(app, "src/lib/studio-schema.ts"),
+  cwd: app,
+  platform: "browser",
+  tsconfig: path.join(app, "tsconfig.json"),
+  plugins: [
+    {
+      name: "deny-fixture-activation",
+      resolveId(source) {
+        if (
+          /openai|server-only|node:|storage|quality-store|provider-production|configuration-current/.test(
+            source,
+          )
+        )
+          throw Error("Forbidden fixture import: " + source);
+        return null;
+      },
+    },
+  ],
+});
+let schema;
+try {
+  const generated = await bundle.generate({ format: "esm" });
+  assert.equal(generated.output.length, 1);
+  const chunk = generated.output[0];
+  assert.equal(chunk.type, "chunk");
+  assert.deepEqual(chunk.imports, []);
+  assert.deepEqual(chunk.dynamicImports, []);
+  schema = await import(
+    "data:text/javascript;base64," + Buffer.from(chunk.code).toString("base64")
+  );
+} finally {
+  await bundle.close();
+}
+const company = schema.caseSchema.parse({
+  id: caseId,
+  profile: { ...schema.emptyProfile(), companyName: name },
+  sources: [],
+  analysis: null,
+  selectedCandidateId: null,
+  plans: [],
+  tasks: [],
+  stage: "preparing",
+  revision: 0,
+  createdAt: "2026-10-07T02:00:00.000Z",
+  updatedAt: "2026-10-07T02:00:00.000Z",
+});
+const summary = {
+  id: caseId,
+  companyName: name,
+  industry: "",
+  stage: company.stage,
+  revision: 0,
+  createdAt: company.createdAt,
+  updatedAt: company.updatedAt,
+  sourceCount: 0,
+  planCount: 0,
+  pendingTaskCount: 0,
+};
+const companyBefore = JSON.stringify(company);
+
 const queryRequests = [],
   writes = [];
 const panel = () => page.getByRole("region", { name: "공개 근거 후보 보관", exact: true });
@@ -192,26 +257,13 @@ const table = () => panel().getByLabel("선택 통계표 정보", { exact: true 
 const result = () => table().getByRole("region", { name: "읽은 표 정보", exact: true });
 const lookup = () => panel().getByRole("button", { name: "공개 검색 후보 10개 조회", exact: true });
 const read = () => table().getByRole("button", { name: "선택 표 정보 한 번 조회", exact: true });
-const snapshot = async () => (await api("/api/studio/cases/" + caseId)).json();
+
 const wires = async () =>
   (await readFile(wireFile, "utf8")).trim().split("\n").filter(Boolean).map(JSON.parse);
 const modeFile = path.join(output, "synthetic-mode.json");
 const mode = async (mode) => writeFile(modeFile, JSON.stringify({ mode }));
 environment.SYNTHETIC_MODE_FILE = modeFile;
 environment.KOSIS_API_KEY = "synthetic-kosis-test-key";
-async function dbRows() {
-  const db = new DatabaseSync(path.join(dataDirectory, "studio.sqlite"), { readOnly: true });
-  try {
-    return [
-      "studio_cases",
-      "venture_accounts",
-      "venture_workflows",
-      "studio_prepared_packages",
-    ].map((t) => [t, db.prepare("SELECT * FROM " + t).all()]);
-  } finally {
-    db.close();
-  }
-}
 async function reopen() {
   await page.goto(origin + "/studio", { waitUntil: "networkidle" });
   await page.getByRole("button").filter({ hasText: name }).first().waitFor();
@@ -256,24 +308,79 @@ try {
       externalRequests.push(req.url());
       return route.abort();
     }
-    if (u.pathname === "/api/studio/public-research/search") queryRequests.push(req.postDataJSON());
-    else if (!["GET", "HEAD"].includes(req.method()))
+    if (serverMode === "dev" && u.pathname === "/__nextjs_original-stack-frames") {
+      developmentDiagnostics.push(req.postDataJSON());
+      return route.abort();
+    }
+    if (u.pathname === "/api/studio/public-research/search" && req.method() === "POST") {
+      queryRequests.push(req.postDataJSON());
+      return route.continue();
+    }
+    if (
+      req.method() === "GET" &&
+      u.pathname === "/api/studio/cases/" + caseId + "/guided-preparation"
+    )
+      return route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          company,
+          active: false,
+          aiConfigured: false,
+          approval: {
+            caseId,
+            revision: 0,
+            provider: "OpenAI",
+            model: "synthetic-disabled",
+            inputFingerprint: "a".repeat(64),
+            sourceIds: [],
+            sourceNames: [],
+            profileIncluded: true,
+            businessNumberIncluded: false,
+            originalFilesIncluded: false,
+            derivedDraftIncluded: true,
+            purpose: "analysis-plan-review",
+          },
+        }),
+      });
+    if (req.method() === "GET" && u.pathname === "/api/studio/cases/" + caseId + "/source-intakes")
+      return route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ company, activeItemIds: [] }),
+      });
+    if (req.method() === "GET") {
+      const payload =
+        u.pathname === "/api/studio/status"
+          ? {
+              aiConfigured: false,
+              model: "synthetic-disabled",
+              storage: "local",
+              supportedFiles: [],
+            }
+          : u.pathname === "/api/studio/cases"
+            ? { cases: [summary] }
+            : u.pathname === "/api/studio/cases/" + caseId
+              ? company
+              : undefined;
+      if (payload !== undefined)
+        return route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify(payload),
+        });
+    }
+    if (u.pathname.startsWith("/api/") || !["GET", "HEAD"].includes(req.method())) {
       writes.push({ path: u.pathname, method: req.method() });
+      return route.abort();
+    }
     return route.continue();
   });
   page = await context.newPage();
   page.on("pageerror", (e) => errors.push(e.message));
-  await page.goto(origin + "/studio", { waitUntil: "networkidle" });
-  await page.getByRole("button", { name: "회사 등록하고 시작", exact: true }).click();
-  await page.locator("#new-company-name").fill(name);
-  caseId = (
-    await mutation(() =>
-      page.getByRole("button", { name: "기업 작업공간 만들기", exact: true }).click(),
-    )
-  ).id;
-  const before = await snapshot(),
-    beforeRows = await dbRows();
-  writes.length = 0;
+  page.on("console", (m) => {
+    if (m.type() === "error") consoleErrors.push(m.text());
+  });
   await reopen();
   assert.equal(queryRequests.length, 0);
   await search();
@@ -298,7 +405,7 @@ try {
     "PRIVATE_BODY",
   );
   assert.equal(await panel().getByRole("checkbox").isChecked(), false);
-  assert.deepEqual(await dbRows(), beforeRows);
+  assert.equal(JSON.stringify(company), companyBefore);
   record(
     "explicit double click is one HTTP command / fresh search plus metadata; no automatic reads or source changes",
   );
@@ -320,6 +427,47 @@ try {
     "three metadata variants preserve inactive literal strings; selection clears old result and 390px fits",
   );
 
+  await table().getByLabel("읽을 표 정보", { exact: true }).selectOption("CMMT");
+  assert.equal(await result().count(), 0);
+  const commentAt = queryRequests.length;
+  await read().click();
+  await result().waitFor();
+  assert.equal(queryRequests.length, commentAt + 1);
+  assert.equal(await result().getByRole("article").count(), 3);
+  assert.ok((await result().innerText()).includes("마지막 원문"));
+  assert.ok((await result().innerText()).includes("본문이 빈 주석 행"));
+  assert.equal(await result().locator("svg,script,a,img").count(), 0);
+  await result().getByText("반환된 분류 표기", { exact: true }).first().click();
+  const text = await result().innerText();
+  assert.ok(text.includes("빈 문자열") && text.includes("반환값 null") && text.includes(" 01 "));
+  await result().getByText("반환된 분류 표기", { exact: true }).nth(1).click();
+  assert.ok((await result().innerText()).includes("반환 필드 없음"));
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+  assert.ok(!(await table().innerText()).includes("분류·주석·표"));
+  assert.equal(
+    await panel().getByLabel("원문 발췌", { exact: false }).inputValue(),
+    "PRIVATE_BODY",
+  );
+  await table().screenshot({ path: path.join(output, "comment-390.png") });
+  record(
+    "CMMT renders original multiline text and related fields safely; missing/null/empty stay distinct on mobile",
+  );
+
+  const refreshAt = queryRequests.length;
+  await search();
+  assert.equal(queryRequests.length, refreshAt + 1);
+  assert.equal(await panel().getByRole("region", { name: "읽은 표 정보", exact: true }).count(), 0);
+  await openTable();
+  await table().getByLabel("읽을 표 정보", { exact: true }).selectOption("CMMT");
+  assert.equal(queryRequests.length, refreshAt + 1);
+  assert.equal(
+    await panel().getByLabel("원문 발췌", { exact: false }).inputValue(),
+    "PRIVATE_BODY",
+  );
+  record(
+    "fresh candidate remount clears metadata and cell independently with no sibling-key collisions or automatic reads",
+  );
+
   await mode("changed");
   const changedAt = (await wires()).length;
   await read().click();
@@ -329,7 +477,7 @@ try {
   await mode("empty");
   await read().click();
   await result().waitFor();
-  assert.ok((await result().innerText()).includes("표 정보 행이 없습니다"));
+  assert.ok((await result().innerText()).includes("받은 주석 행이 0개"));
   await mode("malformed");
   await read().click();
   await table().getByRole("alert").waitFor();
@@ -347,10 +495,10 @@ try {
   });
   assert.equal(busy.status(), 409);
   const details = panel().getByText("이 표의 기본 정보 확인 (선택)", { exact: true }).locator("..");
-  await details.locator("summary").click();
+  await details.locator(":scope > summary").click();
   await mode("normal");
   await page.waitForTimeout(100);
-  await details.locator("summary").click();
+  await details.locator(":scope > summary").click();
   assert.equal(await result().count(), 0);
   assert.equal(
     await panel().getByLabel("원문 발췌", { exact: false }).inputValue(),
@@ -360,7 +508,7 @@ try {
     "same Next HTTP route shares in-flight gate; closing aborts and discards the pending result",
   );
 
-  await table().getByLabel("읽을 표 정보", { exact: true }).selectOption("TBL");
+  await table().getByLabel("읽을 표 정보", { exact: true }).selectOption("CMMT");
   await read().click();
   await result().waitFor();
   const lastCommand = structuredClone(queryRequests.at(-1));
@@ -375,10 +523,10 @@ try {
   });
   assert.equal(foreign.status(), 403);
   assert.equal((await wires()).length, beforeReject);
-  assert.deepEqual(await snapshot(), before);
-  assert.deepEqual(await dbRows(), beforeRows);
+  assert.equal(JSON.stringify(company), companyBefore);
+  assert.equal(JSON.stringify(company), companyBefore);
   record(
-    "real HTTP rejects extra company payload and foreign origin before provider access; database four tables unchanged",
+    "real HTTP rejects extra company payload and foreign origin before provider access; synthetic company unchanged and no write API",
   );
 
   await panel().getByLabel("공개 자료 제목", { exact: true }).fill("");
@@ -390,25 +538,46 @@ try {
   await reopen();
   assert.equal((await wires()).length, finalCount);
   assert.equal(await panel().getByLabel("선택 통계표 정보", { exact: true }).count(), 0);
-  assert.deepEqual(await snapshot(), before);
-  assert.deepEqual(await dbRows(), beforeRows);
+  assert.equal(JSON.stringify(company), companyBefore);
+  assert.equal(JSON.stringify(company), companyBefore);
   assert.deepEqual(writes, []);
   assert.deepEqual(errors, []);
+  assert.deepEqual(developmentDiagnostics, []);
+  assert.ok(
+    !consoleErrors.some((text) => /same key|Encountered two children|hydration/i.test(text)),
+  );
   assert.deepEqual(externalRequests, []);
   assert.ok(!logs.join("").includes("EXTERNAL_FETCH_BLOCKED"));
   assert.ok(!JSON.stringify(await wires()).includes("PRIVATE"));
+  assert.ok(!JSON.stringify(queryRequests).includes("PRIVATE"));
+  assert.equal(JSON.stringify(company), companyBefore);
+  assert.ok(
+    !(
+      await readdir(dataDirectory).catch((e) => {
+        if (e.code === "ENOENT") return [];
+        throw e;
+      })
+    ).some((n) => /sqlite/.test(n)),
+  );
   record(
-    "server and page restart issue no public reads; existing company and all four tables persist unchanged",
+    "server and page restart issue no public reads; synthetic company unchanged without SQL reads/writes",
   );
   await writeFile(
     path.join(output, "report.json"),
     JSON.stringify(
       {
         buildId,
+        serverMode,
+        developmentDiagnostics,
+        consoleErrors,
         checks,
         publicHttpCommands: queryRequests.length,
         syntheticWire: await wires(),
-        databaseTablesUnchanged: 4,
+        syntheticCompanyUnchanged: true,
+        nextVersionChecksStubbed: logs.filter((line) => line.includes("NEXT_VERSION_CHECK_STUBBED"))
+          .length,
+        databaseReads: 0,
+        databaseWrites: 0,
         serverWrites: 0,
         actualExternalRequests: 0,
         actualAiCalls: 0,

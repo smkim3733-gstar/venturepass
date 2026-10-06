@@ -10,6 +10,25 @@ import {
 import { PublicTableMetadata } from "@/components/studio/public-table-metadata";
 import { POST } from "@/app/api/studio/public-research/search/route";
 vi.mock("server-only", () => ({}));
+const forbidden = vi.hoisted(() =>
+  vi.fn(() => {
+    throw Error("SDK/SQL activation forbidden");
+  }),
+);
+vi.mock("openai", forbidden);
+vi.mock("openai/helpers/zod", forbidden);
+vi.mock("openai/error", forbidden);
+vi.mock("node:sqlite", forbidden);
+vi.mock("./studio-storage", forbidden);
+vi.mock("./studio-plan-quality-store", forbidden);
+vi.mock("./studio-plan-quality-provider-production-runtime", forbidden);
+vi.mock("./studio-plan-quality-provider-configuration-current", forbidden);
+it("4H9 metadata route and presentation import without SDK/SQL activation", () => {
+  expect(typeof POST).toBe("function");
+  expect(typeof PublicTableMetadata).toBe("function");
+  expect(forbidden).not.toHaveBeenCalled();
+});
+
 const at = "2026-10-05T08:42:00.000Z";
 const candidate = {
   organizationId: "999",
@@ -350,4 +369,189 @@ it("rejects local request threats and old/new body limits before provider access
   ] as const)
     expect((await POST(req)).status).toBe(status);
   expect(fetch).not.toHaveBeenCalled();
+});
+
+const commentCommand = { ...command, kind: "CMMT" as const };
+const comment = {
+  CMMT_NM: " 표 주석 ",
+  CMMT_DC: " 원래 주석\n<svg onload=alert(1)> & https://example.invalid ",
+  OBJ_ID: "",
+  OBJ_NM: null,
+  ITM_ID: " 01 ",
+  ITM_NM: "원래 명칭",
+};
+it("4H9 reads the exact CMMT target through the existing route without scope promotion", async () => {
+  vi.stubEnv("KOSIS_API_KEY", "synthetic-only-key");
+  const s = setup([comment, comment, { CMMT_NM: "", CMMT_DC: "" }]);
+  vi.stubGlobal("fetch", s.fetch);
+  const response = await POST(request(commentCommand));
+  expect(response.status).toBe(200);
+  const result = readPublicTableMetadataResult(await response.json(), commentCommand);
+  expect(result.metadata).toEqual({
+    kind: "CMMT",
+    rows: [comment, comment, { CMMT_NM: "", CMMT_DC: "" }],
+  });
+  expect(s.fetch).toHaveBeenCalledTimes(2);
+  expect(Object.fromEntries(new URL(String(s.fetch.mock.calls[1][0])).searchParams)).toEqual({
+    method: "getMeta",
+    type: "CMMT",
+    orgId: "999",
+    tblId: "DT_SYNTHETIC",
+    format: "json",
+    content: "json",
+    apiKey: "synthetic-only-key",
+  });
+  expect(result).toMatchObject({
+    originalRead: false,
+    numericalDataRead: false,
+    identityBasis: "request-target-not-echoed",
+    factChecked: false,
+    databaseChanged: false,
+    companyApplicabilityChecked: false,
+    aiInputApproved: false,
+  });
+  expect(response.headers.get("cache-control")).toContain("no-store");
+});
+it("4H9 preserves absent/null/empty/whitespace, order and duplicates in detached copies", () => {
+  const raw = [{ CMMT_NM: "", CMMT_DC: "" }, comment, comment];
+  const meta = decodePublicTableMetadata(raw, "CMMT");
+  expect(meta.rows).toEqual(raw);
+  expect(Object.hasOwn(meta.rows[0], "OBJ_ID")).toBe(false);
+  if (meta.kind !== "CMMT") throw Error("Unexpected kind");
+  expect(meta.rows[1].OBJ_ID).toBe("");
+  expect(meta.rows[1].OBJ_NM).toBeNull();
+  meta.rows[1].CMMT_DC = "changed";
+  expect(raw[1].CMMT_DC).toBe(comment.CMMT_DC);
+  expect(meta.rows[2].CMMT_DC).toBe(comment.CMMT_DC);
+});
+it("4H9 accepts all application row and field boundaries without shortening", () => {
+  const row = {
+    CMMT_NM: "한".repeat(40),
+    CMMT_DC: "한".repeat(3000),
+    OBJ_ID: "o".repeat(40),
+    OBJ_NM: "한".repeat(3000),
+    ITM_ID: "i".repeat(40),
+    ITM_NM: "한".repeat(3000),
+  };
+  expect(decodePublicTableMetadata([row], "CMMT").rows).toEqual([row]);
+  expect(decodePublicTableMetadata(Array(100).fill(comment), "CMMT").rows).toHaveLength(100);
+});
+it.each([
+  null,
+  {},
+  { err: "30", errMsg: "synthetic-only-key" },
+  "<html>private</html>",
+  Array(101).fill(comment),
+  ...["CMMT_NM", "CMMT_DC"].flatMap((key) =>
+    [undefined, null, 1, []].map((v) => [{ ...comment, [key]: v }]),
+  ),
+  ...[
+    ["CMMT_NM", 41],
+    ["CMMT_DC", 3001],
+    ["OBJ_ID", 41],
+    ["OBJ_NM", 3001],
+    ["ITM_ID", 41],
+    ["ITM_NM", 3001],
+  ].map(([key, size]) => [{ ...comment, [key]: "x".repeat(Number(size)) }]),
+  [{ ...comment, OBJ_ID: 1 }],
+  [{ ...comment, ITM_NM: [] }],
+  [{ ...comment, ORG_ID: "999" }],
+  [{ ...comment, PRD_DE: "2024" }],
+])("4H9 rejects unsupported comment payload %# with a safe failure", async (raw) => {
+  const s = setup(raw);
+  await expect(s.read(commentCommand)).rejects.toMatchObject({
+    code: "PUBLIC_TABLE_METADATA_UNAVAILABLE",
+    message: "선택한 표 정보를 확인하지 못했습니다. 검색 후보를 다시 확인해 주세요.",
+  });
+  expect(s.fetch).toHaveBeenCalledTimes(2);
+});
+it.each(["objId", "itmId", "objL1", "prdSe", "startPrdDe", "page", "url", "company", "apiKey"])(
+  "4H9 rejects uncontracted selector %s before transport",
+  async (key) => {
+    const s = setup([comment]);
+    await expect(s.read({ ...commentCommand, [key]: "private" })).rejects.toThrow();
+    expect(s.fetch).not.toHaveBeenCalled();
+  },
+);
+it("4H9 keeps zero received rows distinct from malformed or absent comments", async () => {
+  const result = await setup([]).read(commentCommand);
+  expect(readPublicTableMetadataResult(result, commentCommand)).toMatchObject({
+    status: "empty",
+    metadata: { kind: "CMMT", rows: [] },
+    originalRead: false,
+  });
+  expect(() =>
+    readPublicTableMetadataResult({ ...result, status: "results" }, commentCommand),
+  ).toThrow();
+});
+it("4H9 candidate change and configuration loss never turn into empty success", async () => {
+  const s = setup([comment], [{ ...searchRow, TBL_NM: "changed" }]);
+  await expect(s.read(commentCommand)).rejects.toMatchObject({
+    code: "PUBLIC_TABLE_SELECTION_CHANGED",
+  });
+  expect(s.fetch).toHaveBeenCalledOnce();
+  const fetch = vi.fn(async () => Response.json([searchRow]));
+  let calls = 0;
+  const read = createPublicTableMetadataService({
+    apiKey: () => (++calls === 1 ? "synthetic" : ""),
+    fetch,
+    now: () => at,
+    gate: createKosisReadGate(),
+  });
+  await expect(read(commentCommand)).rejects.toMatchObject({
+    code: "PUBLIC_TABLE_METADATA_UNAVAILABLE",
+  });
+  expect(fetch).toHaveBeenCalledOnce();
+  const unavailable = createPublicTableMetadataService({ apiKey: () => "", fetch, now: () => at });
+  expect(await unavailable(commentCommand)).toMatchObject({
+    status: "not-configured",
+    metadata: null,
+  });
+  expect(fetch).toHaveBeenCalledOnce();
+});
+it.each(["kind", "target", "authority", "extra"])(
+  "4H9 rejects altered accepted envelope %s",
+  async (change) => {
+    const result = await setup([comment]).read(commentCommand);
+    const raw = structuredClone(result);
+    if (change === "kind") raw.command.kind = "TBL";
+    if (change === "target") raw.command.candidate.title = "other";
+    if (change === "authority") Object.assign(raw, { originalRead: true });
+    if (change === "extra") Object.assign(raw, { cellApplicable: true });
+    expect(() => readPublicTableMetadataResult(raw, commentCommand)).toThrow();
+  },
+);
+it("4H9 aborted original I/O holds the shared slot until its own completion", async () => {
+  let finish!: (r: Response) => void;
+  let entered!: () => void;
+  const reached = new Promise<void>((r) => {
+    entered = r;
+  });
+  const gate = createKosisReadGate();
+  const fetch = vi.fn(async (input: Parameters<typeof globalThis.fetch>[0]) => {
+    if (new URL(String(input)).pathname.endsWith("statisticsSearch.do"))
+      return Response.json([searchRow]);
+    entered();
+    return new Promise<Response>((r) => {
+      finish = r;
+    });
+  });
+  const read = createPublicTableMetadataService({
+    apiKey: () => "synthetic",
+    fetch,
+    now: () => at,
+    gate,
+  });
+  const controller = new AbortController();
+  const pending = expect(read(commentCommand, controller.signal)).rejects.toThrow();
+  await reached;
+  controller.abort();
+  await pending;
+  await expect(read(commentCommand)).rejects.toMatchObject({ code: "PUBLIC_RESEARCH_BUSY" });
+  expect(fetch).toHaveBeenCalledTimes(2);
+  finish(Response.json([comment]));
+  await vi.waitFor(() => {
+    const release = gate.acquire();
+    release();
+  });
 });

@@ -187,7 +187,7 @@ export function PublicResearchLinks({
                   )}
                   {c.originalUrl && (
                     <PublicTableMetadata
-                      key={JSON.stringify([result.retrievedAt, c])}
+                      key={JSON.stringify(["metadata", result.retrievedAt, c])}
                       candidate={c}
                       searchResult={result}
                     />
@@ -196,7 +196,7 @@ export function PublicResearchLinks({
                     <PublicSelectedCell
                       canFillEvidence={canFillCell}
                       onEvidence={onCellEvidence}
-                      key={JSON.stringify([result.retrievedAt, c])}
+                      key={JSON.stringify(["cell", result.retrievedAt, c])}
                       candidate={c}
                       searchResult={result}
                     />

@@ -11,7 +11,7 @@ export const publicTableMetadataCommandSchema = z
     topic: publicResearchCommandSchema.shape.topic,
     candidate: publicResearchCandidateSchema,
     searchRetrievedAt: z.iso.datetime(),
-    kind: z.enum(["TBL", "PRD", "SOURCE"]),
+    kind: z.enum(["TBL", "PRD", "SOURCE", "CMMT"]),
     confirmed: z.literal(true),
   })
   .strict()
@@ -54,6 +54,21 @@ const sourceRows = z
       .strict(),
   )
   .max(10);
+// Application support limits; neither a complete-list promise nor cell applicability.
+const commentRows = z
+  .array(
+    z
+      .object({
+        CMMT_NM: z.string().max(40),
+        CMMT_DC: z.string().max(3000),
+        OBJ_ID: optionalText(40),
+        OBJ_NM: optionalText(3000),
+        ITM_ID: optionalText(40),
+        ITM_NM: optionalText(3000),
+      })
+      .strict(),
+  )
+  .max(100);
 export const publicTableMetadataLimits = {
   identityBasis: "request-target-not-echoed",
   periodsComplete: false,
@@ -65,6 +80,7 @@ export const publicTableMetadataLimits = {
   aiInputApproved: false,
 } as const;
 export function decodePublicTableMetadata(raw: unknown, kind: PublicTableMetadataCommand["kind"]) {
+  if (kind === "CMMT") return { kind, rows: commentRows.parse(raw) };
   if (kind === "TBL") return { kind, rows: titleRows.parse(raw) };
   if (kind === "SOURCE") return { kind, rows: sourceRows.parse(raw) };
   if (kind !== "PRD") throw Error("지원하는 표 정보가 아닙니다.");

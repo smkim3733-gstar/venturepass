@@ -12,6 +12,13 @@ import {
 import { jsonBody, studioFetch } from "./shared";
 import styles from "./guided-workspace.module.css";
 
+function commentField(value: string | null | undefined) {
+  if (value === undefined) return "반환 필드 없음";
+  if (value === null) return "반환값 null";
+  if (value === "") return "빈 문자열";
+  return value;
+}
+
 export function PublicTableMetadata({
   candidate,
   searchResult,
@@ -125,6 +132,7 @@ export function PublicTableMetadata({
             <option value="TBL">표 이름</option>
             <option value="PRD">수록 시점</option>
             <option value="SOURCE">조사·담당 출처</option>
+            <option value="CMMT">주석 원문</option>
           </select>
         </label>
         <button
@@ -150,7 +158,46 @@ export function PublicTableMetadata({
               <br />표 정보 조회 시각: {result?.retrievedAt}
             </p>
             {result?.status === "empty" && (
-              <p role="status">표 정보 행이 없습니다. 해당 통계나 자료가 없다는 판정은 아닙니다.</p>
+              <p role="status">
+                {metadata.kind === "CMMT"
+                  ? "받은 주석 행이 0개입니다. 주석 자체가 없거나 특정 수치에 적용되지 않는다는 판정은 아닙니다."
+                  : "표 정보 행이 없습니다. 해당 통계나 자료가 없다는 판정은 아닙니다."}
+              </p>
+            )}
+            {metadata.kind === "CMMT" && (
+              <>
+                <p className={styles.helper}>
+                  이 표에 요청한 주석 응답입니다. 전체 주석이나 선택한 수치·기간의 적용 여부는
+                  확인하지 않았습니다.
+                </p>
+                {metadata.rows.map((r, i) => (
+                  <article
+                    key={i}
+                    aria-label={`주석 ${i + 1}`}
+                    className="grid min-w-0 gap-2 rounded border p-3 [overflow-wrap:anywhere]"
+                  >
+                    <p className="whitespace-pre-wrap">
+                      주석 유형: {r.CMMT_NM === "" ? "빈 문자열" : r.CMMT_NM}
+                    </p>
+                    <p className="whitespace-pre-wrap">
+                      {r.CMMT_DC === "" ? "본문이 빈 주석 행" : r.CMMT_DC}
+                    </p>
+                    <details>
+                      <summary>반환된 분류 표기</summary>
+                      <dl className="mt-2 grid gap-1 whitespace-pre-wrap">
+                        <dt>분류 ID</dt>
+                        <dd>{commentField(r.OBJ_ID)}</dd>
+                        <dt>분류명</dt>
+                        <dd>{commentField(r.OBJ_NM)}</dd>
+                        <dt>분류값 ID</dt>
+                        <dd>{commentField(r.ITM_ID)}</dd>
+                        <dt>분류값명</dt>
+                        <dd>{commentField(r.ITM_NM)}</dd>
+                      </dl>
+                    </details>
+                  </article>
+                ))}
+              </>
             )}
             {metadata.kind === "TBL" &&
               metadata.rows.map((r, i) => (
@@ -182,8 +229,10 @@ export function PublicTableMetadata({
         )}
         <p className={styles.helper}>
           응답에 기관·표 ID가 없어 요청 대상으로만 연결합니다. 표 이름 일치로 신원을 확정하지
-          않습니다. 수록 시점은 전체 목록이나 연속 기간을 뜻하지 않습니다. 수치·항목·분류·주석·표
-          갱신일은 아직 읽지 않았습니다.
+          않습니다. 수록 시점은 전체 목록이나 연속 기간을 뜻하지 않습니다.{" "}
+          {metadata?.kind === "CMMT"
+            ? "수치·항목·분류 목록·표 갱신일은 아직 읽지 않았습니다."
+            : "수치·항목·분류·주석·표 갱신일은 아직 읽지 않았습니다."}
         </p>
         <p className={styles.helper}>
           조회 시각은 발행일·읽은 날짜가 아닙니다. 자료 저장·사실 확인·AI 전송은 하지 않으며
