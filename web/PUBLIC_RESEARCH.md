@@ -1,36 +1,32 @@
 # 공개 통계 후보 조회와 근거 보관
 
-## 2026-10-06: 4I34 — 원래 run 전달·화면 수락 격리 연결
+## 2026-10-06: 4I35 — 읽기 전달 수신 한도·세션 소유 계약
 
-2026-10-06 — **4I34 원래 run의 저장 결과 전달·화면 수락 조건 격리 연결 완료**
+2026-10-06 — **4I35 앱 읽기 전달의 수신 한도·세션 소유 경계 계약 점검 완료**
 
-고정20개 기능 기준15/20=75%, 미완료5/20=25%, 직전 대비+0%p. 이번4I34 관련3시험 파일 신규31/31+기존16/16=47/47개 통과다. 두 선택 실행23/23·24/24는 서로 겹치지 않으며 초기 실패0이다. 전체 lint·첫 typecheck·격리빌드A63bZD 통과, 변경 앱4개 SHA 일치·빌드 env 부재·보호7개와 수정하지 않은 보존 대상57개 SHA 불변이다. 새 앱 HTTP/브라우저·실제 외부/고객자료/SDK 실행/AI0이다. 과거4I32 신규28+기존15=43/43·yYlKRf와4I30 34/34·5QUzT7는 별도이며 이번47개에 합산하지 않는다. 백업27개 DESTINATION_REPOSITORY 제한은 미해결·이번 미실행이다. 실환경1/5=20%는 과거 사용자 직접 인증/접근이며 앱 자동실행 성공0단계·KOSIS 실제0/1이다. 필수 결정0개, 다음4I35 앱 읽기 전달의 수신 한도·세션 소유 경계 계약 점검1~3시간(잠정), 전체 완료시간 미정, 자동후속 ACTIVE.
+고정20개 기능 기준15/20=75%, 미완료5/20=25%, 직전 대비+0%p. 이번4I35는 앱 읽기 전달의 수신 한도·세션 소유 경계 계약 점검1건이며 제품 소스 변경0개다. 신규 제품 시험0/0(미실행), 기존 회귀 재실행0·새 앱 HTTP/브라우저/lint/typecheck/빌드0회다. 과거4I34 신규31+기존16=47/47·A63bZD와4I32 43/43·yYlKRf는 별도이며 재실행/합산하지 않는다. 백업27개 DESTINATION_REPOSITORY 제한은 미해결·이번 미실행이다. 실환경1/5=20%는 과거 사용자 직접 인증/접근이며 앱 자동실행 성공0단계·KOSIS 실제0/1이다. 필수 결정0개, 다음4I36 저장 결과 wire·제한 수신의 비활성 격리 연결3~6시간(잠정), 전체 완료시간 미정, 자동후속 ACTIVE.
 
-제품 소스2개·시험2개가 바뀌었다. 기존 사본 한도 시험1파일은 수정 없이 관련4개만 재실행했다.
+2c21a29의 비활성 전달/화면 ticket과 기존 studioFetch·미리보기 route·본문 수집기·SQL13 같은 session/정리 코드를 실행 없이 대조했다. 이번은 로컬 소스 읽기와 문서 변경이며 wire/수신 구현이나 실제 HTTP 검증이 아니다.
 
-기존 createIsolatedPublicComparisonService에 readStoredReviewByRun을 추가했다. 입력은 원래 runId/dispatchCommandDigest와 historical 또는 inspect-current mode의 strict/data-only 객체다. 8KiB UTF-8 JSON 사본 검사 뒤 같은 closure의 previewPostcapture 구현을 재사용하고 실제 comparisonRecorded/event를 확인한 뒤 기존 storedRead의 strict 선택5개로 재감사한다. 외부 preview·쓰기 receipt·최신 run 추정·새 factory/session/owner는 사용하지 않는다.
+studioFetch는 response.json()을 먼저 호출하고 generic T로 반환한다. 뒤의 객체 사본 크기 검사와 화면 ticket은 수신 중 byte 한도나 임의 JSON 인증기가 아니다. 기존 route의 요청8KiB/fatal UTF-8·로컬 출처/비캐시 검사는 재사용 대상이지만 readBoundedBody에는 전체 기한/abort와 원래 cancel 종료의 별도 보관이 없다. 일반 route/공통 fetch의 동작은 이번에 바꾸지 않았다.
 
-기존 previewPostcapture 본문을 같은 factory의 private 함수로 옮겼으며 공개 preview의 동작을 유지했다. 두 읽기는 별도 감사 구간이다. 사이에 같은 결과의 명시 정산/종료가 완료되면 원래 result identity와 의견을 보존하고 두 번째 감사의 DB 상태를 반환한다. pending ack·행 손상·정리 실패는 정상 결과로 바꾸지 않는다. 읽기 중 INSERT/ack/자동 복구·정산/hold 해제0이다.
+다음 격리 계약은 원래 run/dispatch와 historical/inspect-current mode, 감사된 result DTO를 strict wire1로 묶는다. 결과 신원5개·requestIdentity/원래 준비본/의견·현재 상태·금액/hold와 모든 false 권한을 대조한다. 기존 archive 준비 schema와 인용 대조의 순수 부분을 공유하고 SQL13/증인3/원래 응답 decoder를 복제하지 않는다. wire 형식/연관성 확인은 DB 진위·공급 응답 인증이나 현재 원고 채택 권한이 아니다.
 
-원래 실행의 private canRelease·같은 session/SQL13/증인3·archive/request/decoder 및 자기 SQL/회사 guard/lease 정리를 재사용한다. 진행 I/O·unknown·원래 저장 명령 복구 책임은 인계를 막는다. retire 뒤에도 자기 읽기 정리와 명시 재조회 책임은 남으며 storage-only 재개방은 driver/owner/전송을 만들지 않는다.
+요청8KiB, 원래 DTO4MiB를 유지하고 성공 전체 wire에는4MiB+8KiB, 오류에는8KiB의 누적 노출 byte 한도를 정했다. 추가8KiB는 작은 envelope 공간이며 원래 본문 한도 증액이 아니다. 수신 시작 전부터30초 단조 기한 하나를 쓰고 헤더/청크마다 갱신하지 않는다. 이는 다음 합성 구현의 로컬 읽기 정책이며 실제 지연 측정/서버 강제 중단 보장이 아니다. 공급자 수신의4MiB/64KiB·120초 계약은 그대로다.
 
-새 순수 createComparisonReviewDisplayTicket은 첫 await 전에 snapshot 참조와 회사/revision scalar, 원래 run/dispatch·mode·claim/plan/발췌 선택/section을 사본으로 고정한다. 최신 ticket 참조/번호, 같은 snapshot/scalar·선택과 mounted/open/blocked/dirty/aborted 상태를 함께 대조한다. 이전 성공과 오류 모두 새 화면을 덮어쓰지 못한다. 같은 객체의 revision·선택 변경과 같은 번호의 다른 ticket도 거절한다. 화면 취소가 service.retire나 원래 server 복구 종료를 호출하지 않는다.
+한 reader로 EOF까지 한도 내 수집한 뒤 fatal UTF-8와 JSON을 각각 한 번 해독한다. 성공/오류의 strict 형태·고정 code/status, 빈 본문/잘못된 content-type/redirect/길이/UTF-8/JSON·한도 초과를 구분한다. 잘린 접두사나 임의 서버 오류 본문은 표시하지 않는다. 정규 wire 직렬화와 일치하지 않는 변형/추가 key·중복 key·권한 true는 거절한다.
 
-historical은 not-checked만 수락한다. 현재 검사 exact는 원래 revision=관측 revision=화면 revision일 때만 표시 대상이고 changed는 화면 revision과 맞는 관측, unavailable은 관측 없음 또는 화면 일치를 요구한다. 현재 상태를 과거 의견에 자동 덧붙이지 않는다. 수락한 DTO도 독립 사본이며 원래 comparison:null·본문·금액/hold와 false 권한을 그대로 보존한다. 이 helper는 이미 감사한 같은 프로세스 DTO의 표시 조건이다. 임의 HTTP JSON의 인증기/수신 한도 구현이 아니다.
+전달 Promise의 빠른 취소/시간 초과와 원래 Response/read/cancel 완료는 별도다. 늦은 응답에도 자기 본문 취소와 reader 정리 책임을 남기고 원래 I/O가 끝나지 않으면 종료를 보고하지 않는다. 화면 ticket 교체/unmount와 서버 service.retire·session close·SQL 정산/ack/hold 해제를 연결하지 않는다. 현재 service 읽기는 동기이므로 HTTP timeout으로 실행 중 SQLite를 선점 종료한다고 주장하지 않는다.
 
-source synthetic·owner:null·runtimeObserved:false·authority:false 및 supplied-response/manual-unverified·currentContextVerified:false를 유지한다. 저장 결과/요청 일치·SQL COMMIT/증인은 실제 공식 가격·사람 동의·전송 권한·사실 확인·AI 의미 품질·원고 채택 완료가 아니다. requestedTier:null과 기존 요청/nonce/bytes를 바꾸지 않는다.
+서버는 원래 run을 보관한 같은 service/session을 신뢰 경로에서 받아야 한다. 현재 요청 미리보기 UI에는 이 취득 경로가 없으며 최신 run 검색·claim ID 추정·요청당 factory/DB/registry 생성으로 보충하지 않는다. 기존 quality→studio 획득과 studio→quality→lease 정리, 원래 명령의 명시 복구를 유지한다. generation/review production-server의 모듈 import에는 전역 registry/retire 효과가 있어 재사용 import를 금지한다.
 
-신규31개는 순수 화면 수락22개와 원래 run 전달 통합9개다. 기존16개는 정책7개(missing/binding3/0/초과/거절/불완전/인용 거절), 원래 unknown·진행 I/O·후속 명시3/8행 저장·pending ack·교차 회사/세션/손상5개, UTF-8 사본 한도4개다. 기존10개에는 새 포트의 동일 경계 단언을 보강했다. 신규 화면22개+원래 run 전달1개의 첫 선택23/23개·102.21초와 나머지 신규8개+기존16개의24/24개·1583.21초가 모두 종료코드0이다. 두 선택은 겹치지 않으며 실패/수정/재실행0이다. 과거4I32 43/43·yYlKRf와4I30 34/34·5QUzT7는 별도다.
+이번 제품 소스/시험 변경0·신규0/0(미실행)·기존 회귀/HTTP/브라우저/lint/typecheck/빌드0이다. 과거4I34 47/47·A63bZD와4I32 43/43·yYlKRf는 별도다. 보호7개와 보존 대상 앱/설치SDK64개 SHA의 전후 불변을 확인했다. 실제 SDK import/생성/실행·global fetch/외부·키/환경/공식 가격·고객/운영 DB/control/lock·route/UI/production 설치0, 새 채팅/하위 에이전트0·모델/effort 확인/변경0이다.
 
-관련 회귀→전체 lint→첫 typecheck→격리 build:local의 종료코드를 순서대로0으로 확인했다. 타입 검사는 전용 pnpm exec tsc --noEmit --incremental false이며 최종 진단0이다. 새 staging에서 Next 타입 생성/검사도 통과했다. 격리 빌드 A63bZD, BUILD_ID uaGr90LtrP8fcf1_RxTcP, 컴파일29.4초/타입30.8초/정적9개780ms다.
+백업27개 DESTINATION_REPOSITORY·일반v10~v13 backup/restore 및 F12/F13/F18~F20의 실제 운영·사람 인수 범위는 미완료다. SQL COMMIT/증인·합성 비교·wire 확인은 실제 사람 동의/공식 가격/전송 권한·사실 확인·AI 의미 품질과 별개다.
 
-변경 앱4개 SHA가 빌드 사본과 일치하고 빌드 루트 .env 파일0개다. 보호7개와 미수정 보존 대상 앱/설치SDK57개 SHA가 전후 일치한다. 보호 편집기3개가 포함된 작업 폴더 빌드이며 그 변경의 완료는 합산하지 않는다. 빌드 뒤 제품/시험 변경0·새 앱 HTTP/브라우저/시각 검증0이다.
+다음4I36은 기획/공개주장_읽기전달_수신한도_세션수명_연결명세_20261006.md의 전체 완료 조건에 따라 기존 저장 결과 DTO의 strict wire와 제한 수신을 격리 합성 구현한다. 같은 service.readStoredReviewByRun의 감사된 결과를 전용 서버 encoder로 감싸고 기존 데이터 schema/인용 대조의 순수 부분을 재사용해 wire decoder와 화면 ticket을 연결한다. 요청8KiB·결과 DTO4MiB·성공 전체4MiB+8KiB·오류8KiB와 30초 단조 수신 기한을 적용하며 단일 reader/UTF-8/JSON·고정 오류·자동 재시도0을 유지한다. 빠른 전달 실패와 원래 response/read/cancel 종료를 분리하고 화면 취소로 서버 session/owner·원래 명령/정리 책임을 해제하지 않는다. 주입된 합성 start만 사용하며 global fetch 기본값·새 registry/session/owner·실제 route/UI/HTTP·production import/설치·SDK import/생성/실행·키/환경/가격·고객/운영 DB/control/lock·외부0이다. 원래 run/dispatch·result/event/hash·nonce/bytes·requestedTier:null·hold 및 synthetic/false 권한을 유지하고 wire 검사/SQL COMMIT을 사람 동의·사실 확인·채택 권한으로 승격하지 않는다. 관련 회귀→lint→typecheck→지정 루트 격리 build:local의 종료코드를 순차 확인하며 백업27개 제한을 반복/우회하지 않는다. 필수 결정0개·다음3~6시간 잠정·전체 완료시간 미정·자동후속 ACTIVE.
 
-백업27개 DESTINATION_REPOSITORY·일반v10~v13 backup/restore 및 F12 자동목록/전체 원문·실제 KOSIS, F13 실제 SDK/production 연결·공식 가격/사람 동의/전송·AI 의미 품질, F18~F20 실제 상세/최종 제출·접수증/영속 결과는 미완료다. 실제 SDK import/생성/실행·global fetch/외부·키/환경/공식 가격·고객/운영 DB/control/lock·route/UI/production 설치0, 새 채팅/하위 에이전트0·모델/effort 확인/변경0이다. 합성 시험과 저장/요청 일치는 실제 AI 의미 품질이나 사람 인수가 아니다.
-
-다음4I35는 이번 비활성 전달 포트와 순수 화면 수락 helper를 실제 앱 읽기 전달에 연결하기 전에 응답 수신 한도·오류/취소 및 서버 session 보관 경계를 로컬 소스로 점검한다. 기존 요청 미리보기 route/studioFetch의 실제 해독 순서, 원래 run 선택 취득, 같은 서비스의 복구/정리 책임을 대조하고 strict wire 형태와 제한 수신의 입출력·실패표를 정한다. 현재 helper를 임의 HTTP JSON의 인증기로 쓰지 않고 화면 취소를 서버 종료로 바꾸지 않는다. 제품 소스 변경 없는 계약 점검으로 실제 route/UI/HTTP·production 설치·SDK 실행·키/가격·운영 DB·외부 접근을 열지 않는다. 완료 시험/빌드와 백업27개 제한을 반복하지 않는다. 필수 결정0개·다음1~3시간 잠정·전체 완료시간 미정·자동후속 ACTIVE.
-
-구체적 구현·입출력/실패표·검증 기록과 다음 완료 조건은 기획/공개주장_원래run전달_화면수락_격리연결_20261006.md다.
+구체적 소스 위치·strict wire/수신 입출력·실패표·세션 소유 경계와 다음 완료 조건은 기획/공개주장_읽기전달_수신한도_세션수명_연결명세_20261006.md다.
 
 ## 2026-10-06: 4I26 — 본문 수신 제한·원래 I/O 종료 격리 연결
 
