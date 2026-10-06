@@ -4351,3 +4351,119 @@ it("4I38 SQL13 request and response aborts retain server cleanup until explicit 
   expect(snapshot(g.db)).toEqual(before); expect(witnessFiles(g)).toEqual(files);
   expect(start).not.toHaveBeenCalled(); service.retire();
 }, postLimit30);
+
+
+// 4I40: a retained invocation owns both I/O receipts; the fixture alone owns server cleanup.
+import { createComparisonReviewInvocation } from "./studio-public-claim-comparison-review-invocation";
+function invocation40(service: Pick<ReturnType<typeof service30>["service"], "readStoredReviewByRun">, query: {
+  runId: string; dispatchCommandDigest: string; mode: "historical" | "inspect-current";
+}, revision = fixture.company.revision) {
+  const localOrigin = "http://127.0.0.1:3000", companyId = fixture.company.id;
+  const handler = createComparisonReviewRequestHandler({ service, ...query, companyId, localOrigin });
+  const prepared = preparePublicClaimComparison(fixture.company, fixture.request.command.selection);
+  const expected = { ...query, selection: prepared.selection, binding: prepared.binding, sectionKey: prepared.input.section.key };
+  const screen = { id: companyId, revision }, controller = new AbortController();
+  const port = vi.fn((fixedQuery: typeof query, signal: AbortSignal) => handler.handle(new Request(
+    localOrigin + "/api/studio/cases/" + companyId + "/public-claim-comparison/stored-review", {
+      method: "POST", headers: { origin: localOrigin, host: "127.0.0.1:3000", "content-type": "application/json; charset=utf-8" },
+      body: JSON.stringify(fixedQuery), signal,
+    })));
+  const call = createComparisonReviewInvocation({ sequence: 1, snapshot: screen, expected, signal: controller.signal, startRequest: port });
+  const frame = { latest: call.ticket, snapshot: screen, expected, mounted: true, open: true, dirty: false, blocked: false, aborted: false };
+  return { call, frame, screen, controller, port };
+}
+async function finish40(x: ReturnType<typeof invocation40>) {
+  const outcome = await x.call.start(x.frame);
+  await x.call.completion;
+  expect(x.call.inspect()).toMatchObject({ settled: true, requestStatus: "settled", canForget: true,
+    requestCleanupFailed: false, observerCleanupFailed: false,
+    request: { settled: true, cleanupFailed: false }, response: { settled: true, cleanupFailed: false } });
+  return outcome;
+}
+it("4I40 SQL13 original historical/current selection reaches current ticket after both completions without writes", async () => {
+  const g = throughResult(readyResponse32()), { service, start, selected } = service30(g);
+  const before = snapshot(g.db), files = witnessFiles(g), company = allCompany(g.companyDb);
+  const read = vi.fn(service.readStoredReviewByRun.bind(service)), port = { readStoredReviewByRun: read };
+  const historical = invocation40(port, { ...selected, mode: "historical" });
+  expect(historical.port).not.toHaveBeenCalled(); expect(read).not.toHaveBeenCalled();
+  const past = await finish40(historical);
+  const current = invocation40(port, { ...selected, mode: "inspect-current" }), now = await finish40(current);
+  expect(past.kind).toBe("result"); expect(now.kind).toBe("result");
+  if (past.kind !== "result" || now.kind !== "result") throw Error("expected stored synthetic result");
+  expect(now.result.historical).toEqual(past.result.historical);
+  expect(past.result.current.status).toBe("not-checked");
+  expect(now.result.current.status).toBe("exact-original-request");
+  expect(current.call.display(current.frame)).toEqual(now);
+  await current.call.start(current.frame); expect(current.port).toHaveBeenCalledTimes(1);
+  expect(read.mock.calls).toEqual([[{ ...selected, mode: "historical" }], [{ ...selected, mode: "inspect-current" }]]);
+  current.screen.revision++; expect(current.call.display(current.frame)).toBeNull();
+  expect(snapshot(g.db)).toEqual(before); expect(witnessFiles(g)).toEqual(files); expect(allCompany(g.companyDb)).toEqual(company);
+  expect(start).not.toHaveBeenCalled(); expect(service.retire().status).toBe("closed");
+}, postLimit30);
+it("4I40 SQL13 null opinion and held cost remain unverified through changed/unavailable invocation display", async () => {
+  const g = throughResult(), { service, start, selected } = service30(g);
+  const query = { ...selected, mode: "inspect-current" as const }, before = snapshot(g.db), files = witnessFiles(g);
+  const changed = structuredClone(fixture.company); changed.revision++;
+  g.companyDb.prepare("UPDATE studio_cases SET revision=?,body=? WHERE id=?").run(changed.revision, JSON.stringify(changed), changed.id);
+  const x = invocation40(service, query, changed.revision), body = await finish40(x);
+  expect(body.kind).toBe("result"); if (body.kind !== "result") throw Error("expected changed result");
+  expect(body.result.current).toMatchObject({ status: "changed", observedRevision: changed.revision });
+  expect(body.result.historical.result.comparison).toBeNull();
+  expect(body.result.database.runHeldBytes).toBeGreaterThan(0); expect(body.result.database.costSettled).toBe(false);
+  expect(x.call.display(x.frame)).toEqual(body);
+  g.companyDb.prepare("DELETE FROM studio_cases WHERE id=?").run(changed.id);
+  const y = invocation40(service, query, changed.revision), unavailable = await finish40(y);
+  expect(unavailable.kind).toBe("result"); if (unavailable.kind !== "result") throw Error("expected unavailable result");
+  expect(unavailable.result.current).toMatchObject({ status: "unavailable", observedRevision: null });
+  expect(unavailable.result.historical).toEqual(body.result.historical);
+  expect(unavailable.result.database).toEqual(body.result.database);
+  expect(Object.values(unavailable.result.authority).every((v) => v === false)).toBe(true);
+  expect(y.call.display(y.frame)).toEqual(unavailable);
+  expect(snapshot(g.db)).toEqual(before); expect(witnessFiles(g)).toEqual(files);
+  expect(start).not.toHaveBeenCalled(); service.retire();
+}, postLimit30);
+it("4I40 SQL13 fast failure and closed screen preserve the original pending acknowledgement", async () => {
+  const g = throughCapture(readyResponse32()), { service, start, selected } = service30(g);
+  const query = { ...selected, mode: "historical" as const };
+  const missing = invocation40(service, query);
+  expect(await finish40(missing)).toMatchObject({ kind: "error", code: "RESULT_UNAVAILABLE" });
+  const command = commands30(service.previewPostcapture(selected)).result;
+  const ack = vi.spyOn(storageWitness22, "acknowledgeComparisonWitness").mockImplementation(() => { throw Error("synthetic ack loss"); });
+  expect(() => service.writePostcapture("record-result", command, { at: later, eventId: randomUUID() })).toThrow();
+  ack.mockRestore();
+  const pending = snapshot(g.db), files = witnessFiles(g), state = service.inspect();
+  const blocked = invocation40(service, query), result = await finish40(blocked);
+  expect(result.kind).toBe("error"); expect(blocked.call.display(blocked.frame)).toEqual(result);
+  blocked.frame.open = false; blocked.call.cancel();
+  expect(blocked.call.display(blocked.frame)).toBeNull();
+  expect(blocked.call.inspect().canForget).toBe(true); // I/O completion says nothing about server recovery.
+  expect(service.inspect()).toEqual(state); expect(state.postcapture.commandDigest).not.toBeNull();
+  expect(snapshot(g.db)).toEqual(pending); expect(witnessFiles(g)).toEqual(files);
+  expect(start).not.toHaveBeenCalled();
+  service.recoverPostcapture("record-result", command); service.retire(); // Explicit original fixture cleanup only.
+}, postLimit30);
+it("4I40 SQL13 cancelled retained invocation cannot clear server cleanup; new explicit read retains original identity", async () => {
+  const g = throughResult(readyResponse32()), { service, start, selected } = service30(g);
+  const before = snapshot(g.db), files = witnessFiles(g), original = g.db.exec.bind(g.db);
+  const fault = vi.spyOn(g.db, "exec").mockImplementation((sql: string) => {
+    if (sql === "ROLLBACK") throw Error("synthetic rollback loss");
+    return original(sql);
+  });
+  const query = { ...selected, mode: "historical" as const }, failed = invocation40(service, query);
+  expect((await finish40(failed)).kind).toBe("error");
+  const serverState = service.inspect(); expect(serverState.postcapture.cleanupRequired).toBe(true);
+  const cancelled = invocation40(service, query);
+  cancelled.controller.abort();
+  expect(await cancelled.call.start(cancelled.frame)).toMatchObject({ kind: "error", code: "CANCELLED" });
+  await cancelled.call.completion;
+  expect(cancelled.port).not.toHaveBeenCalled(); expect(cancelled.call.display(cancelled.frame)).toBeNull();
+  expect(service.inspect()).toEqual(serverState);
+  fault.mockRestore();
+  const again = invocation40(service, query), body = await finish40(again);
+  expect(body.kind).toBe("result"); if (body.kind !== "result") throw Error("expected explicit reread");
+  expect(body.result.historical.result.state).toBe("comparison-ready");
+  expect(body.result.resultIdentity).toMatchObject(selected);
+  expect(service.inspect().postcapture.cleanupRequired).toBe(false);
+  expect(snapshot(g.db)).toEqual(before); expect(witnessFiles(g)).toEqual(files);
+  expect(start).not.toHaveBeenCalled(); service.retire();
+}, postLimit30);
