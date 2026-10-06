@@ -26,6 +26,7 @@ import { useState } from "react";
 const navigation = [
   { href: "/", label: "한눈에 보기", icon: LayoutDashboard },
   { href: "/studio", label: "사업계획서 스튜디오", icon: Sparkles },
+  { href: "/studio/review-example", label: "공개 근거 검토 예제", icon: ClipboardCheck },
   { href: "/companies", label: "확인기업 탐색", icon: Building2 },
   { href: "/application", label: "우리 기업 신청 준비", icon: ClipboardCheck },
 ];
