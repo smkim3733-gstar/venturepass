@@ -1,5 +1,31 @@
 # 공개 통계 후보 조회와 근거 보관
 
+## 2026-10-06: 4I27 — 제한 수신·비활성 운영 연결 계약
+
+2026-10-06 — **4I27 제한 수신·I/O 종료와 비활성 운영 연결 계약 점검 완료**
+
+고정20개 기능 기준15/20=75%, 미완료5/20=25%, 직전 대비+0%p. 이번4I27은 제한 수신·원래 I/O 종료와 비활성 운영 연결 계약 점검1건이며 제품 소스 변경0개다. 신규 제품 시험0/0(미실행), 기존 회귀 재실행0·새 앱 HTTP/브라우저/lint/typecheck/빌드0회다. 과거4I26 신규53+기존39=92/92·PtzDZJ와4I24 75/75·5cMj79는 별도이며 재실행/합산하지 않는다. 백업27개 DESTINATION_REPOSITORY 제한은 미해결·이번 미실행이다. 실환경1/5=20%는 과거 사용자 직접 인증/접근이며 앱 자동실행 성공0단계·KOSIS 실제0/1이다. 필수 결정0개, 다음4I28 원래 실행 보관·폐기 경계의 비활성 연결 격리 합성 구현3~6시간(잠정), 전체 완료시간 미정, 자동후속 ACTIVE.
+
+4fc6780의 bounded body·원래 I/O 종료를 설치 SDK7.20.0의 TS/대응 JS와 기존 runtime/service/server 소스에 대조했다. 제품 코드 실행 없이 비교 목적의 비활성 연결 입력·출력·실패표와 다음 격리 서비스 완료 조건을 확정했다.
+
+설치 SDK는 private request signal을 내부 controller.signal로 조합하거나 listener로 전달한다. request.signal과 wire.signal의 객체 동일성을 요구하지 않고 최종 guard가 검사한 wire signal을 실제 시작까지 유지해야 한다. SDK fetch timer는 bounded body 수집을 포함한 custom fetch 반환까지 유지되고 성공 parse에는 별도의 남은 시간/race가 있다. 일반 Bearer 오류 text는 성공 parse 경로와 다르다. SDK의 race 거절·GC/abort callback 정리를 원래 I/O 종료나 lease 해제 증거로 세지 않는다.
+
+비교의 성공4MiB·오류64KiB·한 번의120초·단일 reader/EOF 뒤 bounded Response와 SDK 첫 JSON capture를 유지한다. 이 상한은 앱 노출 body bytes이며 압축 wire/TLS/헤더/전체 heap 보장이 아니다. SDK 내부 parser의 비공개 종료는 앱에서 관측할 수 있다고 주장하지 않는다. 원래 promise가 JSON을 전달하지 않으면 unknown/hold를 남기며 새 parser/asResponse/조회/전송으로 복원하지 않는다.
+
+기존 production runtime은 generation/review·두 단계 설정/PlanQualityStore에 결합되어 있고 기존 service는 active/pending capture 개수를 보관한다. 비교는 캡처0/활성0이어도 원래 lease·unknown/복구 책임이 남을 수 있으므로 그 개수를 폐기 기준으로 차용할 수 없다. production-server는 import만으로 전역 registry epoch/기존 owner retirement에 관여할 수 있어 비활성 점검/연결에서도 runtime import하지 않는다.
+
+다음은 원래 createIsolatedPublicComparisonExecution 객체를 같은 session/회사 guard에 고정 보관하는 합성 서비스다. 별도 전송 owner/lease/원장은 만들지 않고 내부 해제 가능 여부를 engine이 제공하도록 정했다. 반환 유실·투영 실패·retire·응답 없음·미종료 I/O·불명 COMMIT/ack·정리 실패가 있어도 원래 객체를 교체하지 않는다. 기존 nonce 우선/한 번 시작/원래 capture bytes·ack 복구를 재사용하고 source synthetic·owner:null·runtimeObserved:false·authority:false를 유지한다.
+
+코드의 기존 고정 운영 근거 기한은2026-10-03T13:09:40Z이며 비교의 requestedTier:null/생략 옵션/1회 조건과 다르다. 현재 공식 가격이나 비교 동의의 인증으로 사용하지 않는다. 향후 실제 활성화 전 회사/자료·사람 동의·현재 공식 가격/정책·환경/custom headers·DB/증인·SDK 호환/수신 제한·횟수/예산/인수 검토 항목을 구체화했다. 이번 환경 값/키 읽기·공식 가격 갱신0이며 SQL COMMIT/증인은 실제 전송 허가와 별도다.
+
+이번은 연결 명세·인계 문서5개와 루트 인계/자동후속 갱신이다. 제품 소스·시험 변경0, 신규0/0(미실행)·기존 회귀/HTTP/브라우저/lint/typecheck/빌드0이다. 보호7개와 대조·보존 대상 앱/SDK30개 SHA가 전후 일치했다. 과거4I26 신규53+기존39=92/92·PtzDZJ와4I24 75/75·5cMj79는 이번에 재실행/합산하지 않는다.
+
+백업27개 DESTINATION_REPOSITORY·일반v10~v13 backup/restore는 미해결·이번 미실행이다. F12 자동목록/전체 원문·실제 KOSIS, F13 실제 SDK/production 설치·사람 동의/공식 가격/전송·AI 의미 품질, F18~F20 실제 상세/최종제출·접수증/영속 결과는 미완료다. 실제 SDK import/생성/실행·global fetch/외부·고객/운영 DB/control/lock·route/UI0, 새채팅/하위에이전트0·모델/effort 확인/변경0이다.
+
+다음4I28은 기획/공개주장_제한수신_비활성운영_연결명세_20261006.md의 전체 완료 조건에 따라 기존 비교 실행 객체를 원래 session/회사 guard에 고정해 보관하는 비활성 운영 연결의 격리 합성 서비스를 구현한다. 별도 전송 owner나 lease를 만들지 않고 createIsolatedPublicComparisonExecution과 SDK 형태 adapter·본문 제한·private writer/SQL13·증인3·nonce/bytes 복구를 재사용한다. 캡처0/활성 호출0/공개 phase만으로 해제를 추정하지 않으며 같은 실행 엔진의 비공개 해제 가능 여부로 미종료 I/O·unknown·불명 COMMIT·정리 실패를 보존한다. 원래 nonce 감사가 current/설정/시계/driver 준비보다 먼저이고 fresh COMMIT/ack만 owner를 만든다. 같은 실행의 중복 관측·원래 명령의 ack/캡처 복구·retire 중 late capture·모든 promise/lease 종료 전 교체 거절·재시작 시 owner 미복원을 검증한다. SDK가 조합한 별도 wire signal과 원래 private request signal의 전파를 합성 fixture로 확인하며 SDK 내부 Promise.race 뒤 미전달 JSON을 복원하지 않는다. 실제 production-server를 import해 전역 registry를 건드리지 않고 새 전역 registry/설치/route/UI를 만들지 않는다. 실제 SDK import/생성/실행·global fetch·키/환경/공식 가격·고객/운영 DB/control/lock·외부 전송은0이며 공개 source synthetic·owner:null·runtimeObserved:false·authority:false를 유지한다. 관련 회귀→lint→typecheck→지정 루트 격리 build:local의 종료코드를 순서대로 확인하고 백업27개 경로 제한과 완료 검사를 반복/우회하지 않는다. 필수 결정0개·다음3~6시간 잠정·전체 완료시간 미정·자동후속 ACTIVE.
+
+구체적 소스 위치·입출력/실패표·실제 활성화 검토와 다음 완료 조건은 기획/공개주장_제한수신_비활성운영_연결명세_20261006.md다.
+
 ## 2026-10-06: 4I26 — 본문 수신 제한·원래 I/O 종료 격리 연결
 
 2026-10-06 — **4I26 본문 수신 제한·원래 I/O 종료 격리 연결 완료**
