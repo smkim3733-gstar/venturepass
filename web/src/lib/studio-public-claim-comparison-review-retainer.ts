@@ -18,6 +18,10 @@ type Entry = {
   cancelSent: boolean;
   completionObserved: boolean;
   observerFailed: boolean;
+  delivered?: boolean;
+  requestCompleted?: boolean;
+  responseCompleted?: boolean;
+  io?: IO | null;
 };
 const failure = (code: Code): Failure => Object.freeze({ ok: false, code });
 
@@ -28,10 +32,48 @@ export function createComparisonReviewRetainer() {
   let closed = false, critical = false, sequence = 0;
   let view: ComparisonReviewViewToken | null = null, entry: Entry | undefined;
 
+  let notification: (() => void) | undefined, claimed = false, queued = false, notifying = false;
+  let notificationFailed = false;
+  let signature: unknown[] = [];
+  function state() {
+    const io = entry?.io ?? null;
+    const clean = !entry || (entry.completionObserved && !entry.observerFailed && io?.canForget === true);
+    return Object.freeze({ closed, viewToken: view, ticket: entry?.handle?.ticket ?? null, occupied: !!entry, creating: !!entry && !entry.call,
+      detached: entry?.detached ?? false, observerFailed: entry?.observerFailed ?? false,
+      delivered: entry?.delivered ?? false, requestCompleted: entry?.requestCompleted ?? false,
+      responseCompleted: entry?.responseCompleted ?? false, completionObserved: entry?.completionObserved ?? false,
+      notificationFailed, io, canPrepare: !closed && view !== null && clean, canForget: clean });
+  }
+  let snapshot = state();
+  function schedule() {
+    if (queued || !notification) return;
+    queued = true;
+    queueMicrotask(() => {
+      queued = false;
+      const listener = notification;
+      if (!listener) return;
+      notifying = true;
+      try { listener(); }
+      catch { notificationFailed = true; notification = undefined; }
+      finally { notifying = false; notice(); }
+    });
+  }
+  function notice() {
+    if (critical) return; // The outer operation publishes the stable post-cleanup state.
+    // Only private scalars/references: never inspect a Request while publishing.
+    const next = [closed, view, entry, entry?.call, entry?.handle, entry?.detached, entry?.observerFailed, entry?.completionObserved,
+      entry?.delivered, entry?.requestCompleted, entry?.responseCompleted, notificationFailed,
+      JSON.stringify(entry?.io ?? null)];
+    if (next.length === signature.length && next.every((v, i) => v === signature[i])) return;
+    signature = next;
+    snapshot = state();
+    schedule();
+  }
+  notice();
   function read(e: Entry): IO | null {
     if (!e.call) return null;
-    try { return e.call.inspect(); }
-    catch { e.observerFailed = true; return null; }
+    try { return e.io = e.call.inspect(); }
+    catch { e.observerFailed = true; e.io = null; return null; }
   }
   function cancelEntry(e: Entry) {
     if (!e.detached || !e.call || e.cancelSent) return;
@@ -60,7 +102,7 @@ export function createComparisonReviewRetainer() {
     return !closed && view !== null && view === token && entry?.view === token && entry.handle === handle && !entry.detached;
   }
 
-  return Object.freeze({
+  const api = {
     attachView(): ComparisonReviewViewToken | null {
       if (closed) return null;
       const token = Object.freeze({}) as ComparisonReviewViewToken;
@@ -78,7 +120,7 @@ export function createComparisonReviewRetainer() {
       Readonly<{ ok: true; handle: ComparisonReviewCallHandle }> | Failure {
       if (closed) return failure("CLOSED");
       if (!view || view !== token) return failure("STALE_VIEW");
-      if (critical) return failure("BUSY");
+      if (critical || notifying) return failure("BUSY");
       critical = true;
       let creating: Entry | undefined;
       try {
@@ -104,10 +146,20 @@ export function createComparisonReviewRetainer() {
           responseCompletion: call.responseCompletion, completion: call.completion });
         creating.handle = handle;
         const retained = creating;
-        void Promise.prototype.then.call(call.completion, () => {
-          retained.completionObserved = true;
-          if (entry === retained) maintain();
-        }, () => { retained.observerFailed = true; });
+        // Observe originals before exposing the handle, including a failed prepare.
+        for (const [promise, key] of [
+          [call.delivery, "delivered"], [call.requestCompletion, "requestCompleted"],
+          [call.responseCompletion, "responseCompleted"], [call.completion, "completionObserved"],
+        ] as const) {
+          void Promise.prototype.then.call(promise, () => {
+            retained[key] = true;
+            if (entry === retained) maintain();
+            notice();
+          }, () => {
+            retained.observerFailed = true;
+            notice();
+          });
+        }
         if (closed || view !== token || retained.detached) {
           retained.detached = true;
           return failure(closed ? "CLOSED" : "STALE_VIEW");
@@ -128,7 +180,7 @@ export function createComparisonReviewRetainer() {
       if (closed) return failure("CLOSED");
       if (!view || view !== token) return failure("STALE_VIEW");
       if (!current(token, handle)) return failure("STALE_CALL");
-      if (critical) return failure("BUSY");
+      if (critical || notifying) return failure("BUSY");
       const retained = entry!;
       critical = true;
       try {
@@ -178,6 +230,27 @@ export function createComparisonReviewRetainer() {
           canPrepare: !closed && view !== null && clean,
           canForget: clean });
       } finally { critical = false; maintain(); }
+    },
+  };
+  // Every observation is published after the original critical/finally cleanup.
+  function invoke<T>(action: () => T): T {
+    try { return action(); } finally { notice(); }
+  }
+  return Object.freeze({
+    attachView: () => invoke(() => api.attachView()),
+    detachView: (token: ComparisonReviewViewToken) => invoke(() => api.detachView(token)),
+    prepare: (...args: Parameters<typeof api.prepare>) => invoke(() => api.prepare(...args)),
+    start: (...args: Parameters<typeof api.start>) => invoke(() => api.start(...args)),
+    display: (...args: Parameters<typeof api.display>) => invoke(() => api.display(...args)),
+    cancel: (...args: Parameters<typeof api.cancel>) => invoke(() => api.cancel(...args)),
+    release: (...args: Parameters<typeof api.release>) => invoke(() => api.release(...args)),
+    close: () => invoke(() => api.close()),
+    inspect: () => invoke(() => api.inspect()),
+    // A last-observed immutable snapshot, not a fresh admission/release proof.
+    getSnapshot: () => snapshot,
+    claimNotifications(listener: () => void) {
+      if (claimed || typeof listener !== "function") return false;
+      claimed = true; notification = listener; return true;
     },
   });
 }
