@@ -27,6 +27,11 @@ async function compareTree(relative) {
 }
 await compareTree("src");
 const fixture = JSON.parse(await readFile(path.join(app, "src/lib/fixtures/comparison-review-example.json"), "utf8"));
+const provenance = JSON.parse(await readFile(path.join(app, "src/lib/fixtures/comparison-review-example-provenance.json"), "utf8"));
+assert.equal(provenance.kind, "synthetic-sql13-export");
+assert.equal(provenance.wireSha256, hash(JSON.stringify(fixture)));
+assert.equal(provenance.runId, fixture.query.runId);
+assert.equal(provenance.dispatchCommandDigest, fixture.query.dispatchCommandDigest);
 const endpoint = "/api/studio/cases/" + fixture.result.resultIdentity.selection.companyId + "/public-claim-comparison/stored-review";
 const output = await mkdtemp(path.join(temporaryRoot, "venturepass-review-app-"));
 const guard = path.join(output, "network-guard.mjs");
@@ -80,6 +85,7 @@ try {
   page.on("request", (r) => { if (r.method() === "POST") posts.push({ path: new URL(r.url()).pathname, body: r.postData() }); });
   await page.goto(origin + "/studio/review-example", { waitUntil: "networkidle", timeout: 90000 });
   await page.getByRole("heading", { name: "공개 근거 검토 예제", exact: true }).waitFor();
+  assert.match(await page.getByTestId("example-provenance").innerText(), /합성 저장 결과의 시점 고정 사본/);
   assert.equal(posts.length, 0);
   await page.getByRole("button", { name: "합성 예제 시작", exact: true }).click();
   await page.getByRole("button", { name: "검토 결과 읽기", exact: true }).waitFor();

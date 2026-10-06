@@ -67,7 +67,8 @@ export function ComparisonReviewExample({ frame, claim, sources }: Props) {
       <span className="rounded-full bg-amber-50 px-3 py-1 text-xs font-semibold text-amber-900">합성 자료 · 개발 예제</span>
       <Link href="/studio" prefetch={false} className="text-sm underline underline-offset-4">스튜디오로 돌아가기</Link>
     </div>
-    <div><h1 className="text-2xl font-bold">공개 근거 검토 예제</h1>
+    <div><p data-testid="example-provenance" className="text-sm text-muted-foreground">합성 저장 결과의 시점 고정 사본입니다. 현재 회사 상태를 확인하거나 실시간으로 조회하지 않습니다.</p>
+        <h1 className="text-2xl font-bold">공개 근거 검토 예제</h1>
       <p className="mt-2 text-sm leading-6 text-muted-foreground">실제 회사 자료 없이 검토 결과를 읽고 비우는 흐름을 확인합니다.
         고객 자료 저장·전송, 유료 AI 호출, 원고 채택은 수행하지 않습니다.</p></div>
     <div className="space-y-4 rounded-xl border bg-white p-5">

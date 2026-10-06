@@ -1,1 +1,224 @@
-{"wireVersion":1,"kind":"public-comparison-stored-review","query":{"runId":"4108440b-4a37-4340-ab2a-f7cece90d2b7","dispatchCommandDigest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","mode":"historical"},"result":{"source":"synthetic-comparison-stored-review","resultIdentity":{"runId":"4108440b-4a37-4340-ab2a-f7cece90d2b7","dispatchCommandDigest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","comparisonEventDigest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","responseArtifactSha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","validatedArtifactSha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","requestIdentity":{"requestVersion":"public-claim-comparison-request-v1","commandDigest":"81cae0927c23d8824e285aff50deee1353da083ba0c987e9d67479117f16ac16","preparationDigest":"0b5bafa30a65471947c60fc207e2a63a7e215799f3fe39cd205f76a04aeee629","contractDigest":"cbcd450aa25801c2911d152f8d3257a9d021a33dfb30c86abec6e036938b8b5e","requestDigest":"e3bf3bd0c0f37d45baa86a727b86ccb81f027a49f6b91ed186ea9bed4ad8efc7","rawBodySha256":"d31f5bcf041ac87e5d04102716f82d7cfaf0b1cb79f4a1c0b7b2abbe32860684","requestCharacters":5616,"requestUtf8Bytes":7241},"preparationDigest":"0b5bafa30a65471947c60fc207e2a63a7e215799f3fe39cd205f76a04aeee629","selection":{"companyId":"f60355a0-e80f-4e02-ac96-65d7d9331e19","companyRevision":7,"claimRecordId":"d3a953e7-d19a-4c35-b62e-051554e4d660","claimVersion":1,"claimInputDigest":"0c1a240647f84c03ff53906c18688536d6a3947c982bc631f5cef307aef0774e","sourceIds":["77f7bcac-c202-46b4-9b80-8597c5c9d105"]},"binding":{"claimId":"d3a953e7-d19a-4c35-b62e-051554e4d660","claimRecordSha256":"5382fa33cbd1224b1a5450a5a2f3e5a55f9535abfdc85067ac14b5d45f8730bf","planId":"a1287921-65dd-4fee-9dda-385b46495f9c","planVersion":3,"planContentSha256":"a07f98f4b16c004af54453c28fc93139cdf56b6a98ccc4516e07961121da8b30"}},"historical":{"prepared":{"contractVersion":"public-claim-comparison-v1","scope":"selected-public-excerpts","evidenceOrigin":"manual-unverified","factVerified":false,"officialProvenanceVerified":false,"companyApplicabilityVerified":false,"fullOriginalVerified":false,"currentValidityVerified":false,"semanticTruthVerified":false,"humanAccepted":false,"transmissionAllowed":false,"databaseChanged":false,"selection":{"companyId":"f60355a0-e80f-4e02-ac96-65d7d9331e19","companyRevision":7,"claimRecordId":"d3a953e7-d19a-4c35-b62e-051554e4d660","claimVersion":1,"claimInputDigest":"0c1a240647f84c03ff53906c18688536d6a3947c982bc631f5cef307aef0774e","sourceIds":["77f7bcac-c202-46b4-9b80-8597c5c9d105"]},"binding":{"claimId":"d3a953e7-d19a-4c35-b62e-051554e4d660","claimRecordSha256":"5382fa33cbd1224b1a5450a5a2f3e5a55f9535abfdc85067ac14b5d45f8730bf","planId":"a1287921-65dd-4fee-9dda-385b46495f9c","planVersion":3,"planContentSha256":"a07f98f4b16c004af54453c28fc93139cdf56b6a98ccc4516e07961121da8b30"},"input":{"claimQuote":"2023년 산업 표본 수치가 있다.","section":{"key":"market","title":"시장","content":"  2023년 산업 표본 수치가 있다. 우리 회사 적용 여부는 확인하지 않았다.  "},"selectedEvidence":[{"sourceId":"77f7bcac-c202-46b4-9b80-8597c5c9d105","sourceUpdatedAt":"2026-10-05T10:00:00.000Z","textSha256":"eb9a011cd8f420ccf4af4313c2d94c785f0d87b22ea4aacf666c2eb7cc996b79","originalReference":{"quote":"  2023년 산업 표본: 0, 1,200.50 및 -","locator":"공개 발췌"},"metadata":{"title":"합성 보고서 0","url":"https://example.invalid/report/0","publisher":"","publishedOn":"","period":"2023년 산업 표본","readOn":"2026-10-05","sectionKey":"market"},"excerpt":"  2023년 산업 표본: 0, 1,200.50 및 - 수치.\r\n회사 적용은 미확인.  ","manualNotes":{"relevance":"담당자 가정","conflicts":"조회 날짜가 발행일은 아님"}}],"excludedSourceIds":[]},"preparationDigest":"0b5bafa30a65471947c60fc207e2a63a7e215799f3fe39cd205f76a04aeee629","inputCharacters":1721},"result":{"source":"supplied-response","evidenceOrigin":"manual-unverified","transmissionAllowed":false,"approvalVerified":false,"budgetVerified":false,"executionSupported":false,"providerCompatibilityVerified":false,"factVerified":false,"officialProvenanceVerified":false,"companyApplicabilityVerified":false,"fullOriginalVerified":false,"currentValidityVerified":false,"semanticTruthVerified":false,"humanAccepted":false,"databaseChanged":false,"currentContextVerified":false,"requestIdentity":{"requestVersion":"public-claim-comparison-request-v1","commandDigest":"81cae0927c23d8824e285aff50deee1353da083ba0c987e9d67479117f16ac16","preparationDigest":"0b5bafa30a65471947c60fc207e2a63a7e215799f3fe39cd205f76a04aeee629","contractDigest":"cbcd450aa25801c2911d152f8d3257a9d021a33dfb30c86abec6e036938b8b5e","requestDigest":"e3bf3bd0c0f37d45baa86a727b86ccb81f027a49f6b91ed186ea9bed4ad8efc7","rawBodySha256":"d31f5bcf041ac87e5d04102716f82d7cfaf0b1cb79f4a1c0b7b2abbe32860684","requestCharacters":5616,"requestUtf8Bytes":7241},"responseArtifactSha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","state":"comparison-ready","comparison":{"contractVersion":"public-claim-comparison-v1","source":"supplied-response","scope":"selected-public-excerpts","evidenceOrigin":"manual-unverified","factVerified":false,"officialProvenanceVerified":false,"companyApplicabilityVerified":false,"fullOriginalVerified":false,"currentValidityVerified":false,"semanticTruthVerified":false,"humanAccepted":false,"transmissionAllowed":false,"databaseChanged":false,"preparationDigest":"0b5bafa30a65471947c60fc207e2a63a7e215799f3fe39cd205f76a04aeee629","selection":{"companyId":"f60355a0-e80f-4e02-ac96-65d7d9331e19","companyRevision":7,"claimRecordId":"d3a953e7-d19a-4c35-b62e-051554e4d660","claimVersion":1,"claimInputDigest":"0c1a240647f84c03ff53906c18688536d6a3947c982bc631f5cef307aef0774e","sourceIds":["77f7bcac-c202-46b4-9b80-8597c5c9d105"]},"excludedSourceIds":[],"comparison":{"preparationDigest":"0b5bafa30a65471947c60fc207e2a63a7e215799f3fe39cd205f76a04aeee629","claimQuote":"2023년 산업 표본 수치가 있다.","overall":{"relation":"undetermined","reason":"合成 의견"},"evidence":[{"sourceId":"77f7bcac-c202-46b4-9b80-8597c5c9d105","relation":"undetermined","quotes":["  2023년 산업 표본: 0, 1,200.50 및 -"],"reason":"합성 자료 대조","nextCheck":""}],"checks":[]}}},"currentContextVerified":false},"database":{"comparisonRecorded":true,"costSettled":false,"finalized":false,"currentContextVerified":false,"runHeldBytes":1234,"scopeHeldUnits":"123456789012345678901234567890","scopeRecognizedUnits":"0"},"current":{"status":"not-checked","originalRevision":7,"observedRevision":null,"reason":null},"owner":null,"runtimeObserved":false,"authority":{"approvalVerified":false,"humanConsentVerified":false,"priceAuthenticityVerified":false,"contextFitVerified":false,"transactionCommitVerified":false,"providerExecutionObserved":false,"budgetWrite":false,"databaseWrite":false,"dispatchAllowed":false}}}
+{
+  "wireVersion": 1,
+  "kind": "public-comparison-stored-review",
+  "query": {
+    "runId": "d78b9af4-7842-4855-902b-98ee83a4f3ec",
+    "dispatchCommandDigest": "f43fff84d0dfe8d051609a854ed8baf990c0cd7be695c7a726b4a8a480db252f",
+    "mode": "historical"
+  },
+  "result": {
+    "source": "synthetic-comparison-stored-review",
+    "resultIdentity": {
+      "runId": "d78b9af4-7842-4855-902b-98ee83a4f3ec",
+      "dispatchCommandDigest": "f43fff84d0dfe8d051609a854ed8baf990c0cd7be695c7a726b4a8a480db252f",
+      "comparisonEventDigest": "42a7a855c0c59e36dc50d269ef70bc27261b489577ba7ca327caadf4e4afc250",
+      "responseArtifactSha256": "a706cd4540754aa38cc5bff418a12911a28f6a05f393ff391d637dde0eda03f5",
+      "validatedArtifactSha256": "d038669acaf7861c43c60f49b8592ad37c136ac5d13efcd754499495ffb3aae8",
+      "requestIdentity": {
+        "requestVersion": "public-claim-comparison-request-v1",
+        "commandDigest": "7d093f0c806632b2018eb170b9b049c583e017d756426220ac605a5df3081cdb",
+        "preparationDigest": "4172885baa7e62086b8a8cfacc904a46923f3339f8a0665af229fad85acc02f4",
+        "contractDigest": "cbcd450aa25801c2911d152f8d3257a9d021a33dfb30c86abec6e036938b8b5e",
+        "requestDigest": "3662af694fc77970263c6f266b44ce60d04990d37651b752a65e8ee83816624d",
+        "rawBodySha256": "e6a0415f6894599d7a483761eaf613a6f7cc3bf4abbbb8f77f6db5cdeffd1668",
+        "requestCharacters": 5662,
+        "requestUtf8Bytes": 7287
+      },
+      "preparationDigest": "4172885baa7e62086b8a8cfacc904a46923f3339f8a0665af229fad85acc02f4",
+      "selection": {
+        "companyId": "9030c2ea-7825-4300-a3cc-1bcbd121e6d2",
+        "companyRevision": 7,
+        "claimRecordId": "61f3053c-c77c-4400-a6b1-103ee92375e8",
+        "claimVersion": 1,
+        "claimInputDigest": "b882f9692475fb7d4deca1c7112130f77d792dec1037e4358585b9766114ef29",
+        "sourceIds": [
+          "8fe2e187-0ef9-489f-8337-ad6aae5cc584"
+        ]
+      },
+      "binding": {
+        "claimId": "61f3053c-c77c-4400-a6b1-103ee92375e8",
+        "claimRecordSha256": "cd1271c7ef5925b25f7ad5490e4527c88fe831e7f75a75e9086ff53194d25318",
+        "planId": "ab6ea362-28d4-4d28-96ed-8a9ad1693955",
+        "planVersion": 3,
+        "planContentSha256": "a07f98f4b16c004af54453c28fc93139cdf56b6a98ccc4516e07961121da8b30"
+      }
+    },
+    "historical": {
+      "prepared": {
+        "contractVersion": "public-claim-comparison-v1",
+        "scope": "selected-public-excerpts",
+        "evidenceOrigin": "manual-unverified",
+        "factVerified": false,
+        "officialProvenanceVerified": false,
+        "companyApplicabilityVerified": false,
+        "fullOriginalVerified": false,
+        "currentValidityVerified": false,
+        "semanticTruthVerified": false,
+        "humanAccepted": false,
+        "transmissionAllowed": false,
+        "databaseChanged": false,
+        "selection": {
+          "companyId": "9030c2ea-7825-4300-a3cc-1bcbd121e6d2",
+          "companyRevision": 7,
+          "claimRecordId": "61f3053c-c77c-4400-a6b1-103ee92375e8",
+          "claimVersion": 1,
+          "claimInputDigest": "b882f9692475fb7d4deca1c7112130f77d792dec1037e4358585b9766114ef29",
+          "sourceIds": [
+            "8fe2e187-0ef9-489f-8337-ad6aae5cc584"
+          ]
+        },
+        "binding": {
+          "claimId": "61f3053c-c77c-4400-a6b1-103ee92375e8",
+          "claimRecordSha256": "cd1271c7ef5925b25f7ad5490e4527c88fe831e7f75a75e9086ff53194d25318",
+          "planId": "ab6ea362-28d4-4d28-96ed-8a9ad1693955",
+          "planVersion": 3,
+          "planContentSha256": "a07f98f4b16c004af54453c28fc93139cdf56b6a98ccc4516e07961121da8b30"
+        },
+        "input": {
+          "claimQuote": "2023년 산업 표본 수치가 있다.",
+          "section": {
+            "key": "market",
+            "title": "시장",
+            "content": "  2023년 산업 표본 수치가 있다. 우리 회사 적용 여부는 확인하지 않았다.  "
+          },
+          "selectedEvidence": [
+            {
+              "sourceId": "8fe2e187-0ef9-489f-8337-ad6aae5cc584",
+              "sourceUpdatedAt": "2026-10-05T10:00:00.000Z",
+              "textSha256": "eb9a011cd8f420ccf4af4313c2d94c785f0d87b22ea4aacf666c2eb7cc996b79",
+              "originalReference": {
+                "quote": "  2023년 산업 표본: 0, 1,200.50 및 -",
+                "locator": "공개 발췌"
+              },
+              "metadata": {
+                "title": "합성 보고서 0",
+                "url": "https://example.invalid/report/0",
+                "publisher": "",
+                "publishedOn": "",
+                "period": "2023년 산업 표본",
+                "readOn": "2026-10-05",
+                "sectionKey": "market"
+              },
+              "excerpt": "  2023년 산업 표본: 0, 1,200.50 및 - 수치.\r\n회사 적용은 미확인.  ",
+              "manualNotes": {
+                "relevance": "담당자 가정",
+                "conflicts": "조회 날짜가 발행일은 아님"
+              }
+            }
+          ],
+          "excludedSourceIds": [
+            "16b64984-f23e-4f7b-9f9c-4b86a10d8f0a"
+          ]
+        },
+        "preparationDigest": "4172885baa7e62086b8a8cfacc904a46923f3339f8a0665af229fad85acc02f4",
+        "inputCharacters": 1759
+      },
+      "result": {
+        "source": "supplied-response",
+        "evidenceOrigin": "manual-unverified",
+        "transmissionAllowed": false,
+        "approvalVerified": false,
+        "budgetVerified": false,
+        "executionSupported": false,
+        "providerCompatibilityVerified": false,
+        "factVerified": false,
+        "officialProvenanceVerified": false,
+        "companyApplicabilityVerified": false,
+        "fullOriginalVerified": false,
+        "currentValidityVerified": false,
+        "semanticTruthVerified": false,
+        "humanAccepted": false,
+        "databaseChanged": false,
+        "currentContextVerified": false,
+        "requestIdentity": {
+          "requestVersion": "public-claim-comparison-request-v1",
+          "commandDigest": "7d093f0c806632b2018eb170b9b049c583e017d756426220ac605a5df3081cdb",
+          "preparationDigest": "4172885baa7e62086b8a8cfacc904a46923f3339f8a0665af229fad85acc02f4",
+          "contractDigest": "cbcd450aa25801c2911d152f8d3257a9d021a33dfb30c86abec6e036938b8b5e",
+          "requestDigest": "3662af694fc77970263c6f266b44ce60d04990d37651b752a65e8ee83816624d",
+          "rawBodySha256": "e6a0415f6894599d7a483761eaf613a6f7cc3bf4abbbb8f77f6db5cdeffd1668",
+          "requestCharacters": 5662,
+          "requestUtf8Bytes": 7287
+        },
+        "responseArtifactSha256": "a706cd4540754aa38cc5bff418a12911a28f6a05f393ff391d637dde0eda03f5",
+        "state": "comparison-ready",
+        "comparison": {
+          "contractVersion": "public-claim-comparison-v1",
+          "source": "supplied-response",
+          "scope": "selected-public-excerpts",
+          "evidenceOrigin": "manual-unverified",
+          "factVerified": false,
+          "officialProvenanceVerified": false,
+          "companyApplicabilityVerified": false,
+          "fullOriginalVerified": false,
+          "currentValidityVerified": false,
+          "semanticTruthVerified": false,
+          "humanAccepted": false,
+          "transmissionAllowed": false,
+          "databaseChanged": false,
+          "preparationDigest": "4172885baa7e62086b8a8cfacc904a46923f3339f8a0665af229fad85acc02f4",
+          "selection": {
+            "companyId": "9030c2ea-7825-4300-a3cc-1bcbd121e6d2",
+            "companyRevision": 7,
+            "claimRecordId": "61f3053c-c77c-4400-a6b1-103ee92375e8",
+            "claimVersion": 1,
+            "claimInputDigest": "b882f9692475fb7d4deca1c7112130f77d792dec1037e4358585b9766114ef29",
+            "sourceIds": [
+              "8fe2e187-0ef9-489f-8337-ad6aae5cc584"
+            ]
+          },
+          "excludedSourceIds": [
+            "16b64984-f23e-4f7b-9f9c-4b86a10d8f0a"
+          ],
+          "comparison": {
+            "preparationDigest": "4172885baa7e62086b8a8cfacc904a46923f3339f8a0665af229fad85acc02f4",
+            "claimQuote": "2023년 산업 표본 수치가 있다.",
+            "overall": {
+              "relation": "undetermined",
+              "reason": "Synthetic only"
+            },
+            "evidence": [
+              {
+                "sourceId": "8fe2e187-0ef9-489f-8337-ad6aae5cc584",
+                "relation": "undetermined",
+                "quotes": [],
+                "reason": "Review required",
+                "nextCheck": ""
+              }
+            ],
+            "checks": []
+          }
+        }
+      },
+      "currentContextVerified": false
+    },
+    "database": {
+      "comparisonRecorded": true,
+      "costSettled": false,
+      "finalized": false,
+      "currentContextVerified": false,
+      "runHeldBytes": 33534539,
+      "scopeHeldUnits": "2",
+      "scopeRecognizedUnits": "380"
+    },
+    "current": {
+      "status": "not-checked",
+      "originalRevision": 7,
+      "observedRevision": null,
+      "reason": null
+    },
+    "owner": null,
+    "runtimeObserved": false,
+    "authority": {
+      "approvalVerified": false,
+      "humanConsentVerified": false,
+      "priceAuthenticityVerified": false,
+      "contextFitVerified": false,
+      "transactionCommitVerified": false,
+      "providerExecutionObserved": false,
+      "budgetWrite": false,
+      "databaseWrite": false,
+      "dispatchAllowed": false
+    }
+  }
+}

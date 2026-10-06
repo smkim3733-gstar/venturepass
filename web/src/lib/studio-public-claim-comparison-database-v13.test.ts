@@ -108,6 +108,13 @@ const forbidden = vi.hoisted(() =>
     throw Error("external/customer I/O forbidden");
   }),
 );
+// SQL fixtures never acquire an operational runtime or read its credentials.
+vi.mock("./studio-plan-quality-provider-production-runtime", () => ({
+  createProviderProductionDispatchStore: forbidden,
+  requireProviderProductionRuntime: forbidden,
+  providerProductionPolicyContext: forbidden,
+  isProviderProductionExecution: () => false,
+}));
 vi.mock("openai", () => ({
   default: class {
     constructor() {
@@ -261,7 +268,7 @@ function guarded(enroll = true) {
   const supplied = current();
   const { company: _company, ...input } = supplied;
   void _company;
-  return { session, cap, paths, studio, companyDb, db, current: { ...input, companyGuard: cap } };
+  return { session, cap, paths, studio, companyDb, db, cleanup, current: { ...input, companyGuard: cap } };
 }
 const cleanups: (() => void)[] = [];
 afterEach(() => {
@@ -4541,3 +4548,97 @@ it("4I42 SQL13 cancelled/released slot retains server cleanup and next explicit 
   expect(snapshot(g.db)).toEqual(before); expect(witnessFiles(g)).toEqual(files);
   expect(start).not.toHaveBeenCalled(); r.close(); service.retire();
 }, postLimit30);
+
+import { exportComparisonExample } from "./comparison-review-example-export-test-helper";
+
+// 4I51: export from actual isolated SQL13 writes, then the same historical reader.
+// This is a build-time synthetic snapshot, never a runtime SQL acquisition port.
+it("4I51 exports original SQL13 historical result only after audit and own cleanup", () => {
+  const g = throughResult(readyResponse32()), { service, start, selected } = service30(g);
+  const before = snapshot(g.db), witnesses = witnessFiles(g), company = allCompany(g.companyDb);
+  const original = selected32(g);
+  const candidate = exportComparisonExample({
+    query: { ...selected, mode: "historical" },
+    read: (query) => {
+      const result = service.readStoredReviewByRun(query);
+      expect(result.resultIdentity).toMatchObject(original);
+      expect(result).toMatchObject({ database: { comparisonRecorded: true, finalized: false },
+        current: { status: "not-checked", observedRevision: null },
+        historical: { result: { state: "comparison-ready", evidenceOrigin: "manual-unverified" } } });
+      expect(snapshot(g.db)).toEqual(before);
+      expect(witnessFiles(g)).toEqual(witnesses);
+      expect(allCompany(g.companyDb)).toEqual(company);
+      return result;
+    },
+    cleanup: () => {
+      expect(service.retire().status).toBe("closed");
+      expect(snapshot(g.db)).toEqual(before);
+      expect(witnessFiles(g)).toEqual(witnesses);
+      expect(allCompany(g.companyDb)).toEqual(company);
+      g.cleanup();
+      cleanups.splice(cleanups.indexOf(g.cleanup), 1);
+    },
+  });
+  expect(start).not.toHaveBeenCalled();
+  expect(forbidden).not.toHaveBeenCalled();
+  expect(candidate.wire.query).toEqual({ ...selected, mode: "historical" });
+  expect(candidate.provenance).toMatchObject(original);
+  expect(candidate.provenance.dispatchCommandDigest).not.toBe("a".repeat(64));
+  const outputRoot = process.env.VENTUREPASS_EXAMPLE_EXPORT_ROOT;
+  if (outputRoot) {
+    // Explicit candidate output only; never overwrite the committed app fixture.
+    const allowed = resolve(tmpdir()), output = resolve(outputRoot);
+    const within = relative(allowed, output);
+    if (!within || within.startsWith("..") || resolve(allowed, within) !== output)
+      throw Error("EXAMPLE_EXPORT_PATH");
+    const target = mkdtempSync(join(output, "venturepass-sql13-export-"));
+    writeFileSync(join(target, "comparison-review-example.json"), JSON.stringify(candidate.wire, null, 2) + "\n", { flag: "wx" });
+    writeFileSync(join(target, "comparison-review-example-provenance.json"), JSON.stringify(candidate.provenance, null, 2) + "\n", { flag: "wx" });
+    console.log("SQL13_EXPORT_CANDIDATE " + target);
+  }
+}, postLimit30);
+
+for (const failure of ["wrong-selection", "corrupt-row", "cleanup-required"] as const)
+  it("4I51 refuses SQL export after " + failure + " and retains the original service", () => {
+    const g = throughResult(readyResponse32()), { service, selected, start } = service30(g);
+    const before = snapshot(g.db), files = witnessFiles(g), company = allCompany(g.companyDb);
+    const originalEnd = storageWitness22.endComparisonStorageSession;
+    let ends = 0;
+    const lease = vi.spyOn(storageWitness22, "endComparisonStorageSession").mockImplementation((session) => {
+      if (failure === "cleanup-required" && ++ends === 2) throw Error("owned cleanup failed");
+      originalEnd(session);
+    });
+    const prepare = g.db.prepare.bind(g.db);
+    const rows = vi.spyOn(g.db, "prepare").mockImplementation((query) => {
+      const statement = prepare(query);
+      if (failure === "corrupt-row" && query.startsWith("SELECT") && query.includes("quality_actual_artifacts")) {
+        const all = statement.all.bind(statement);
+        vi.spyOn(statement, "all").mockImplementation((...args) => all(...args).map((row) =>
+          row.artifact_key === "comparison-validated" ? { ...row, payload: "{}" } : row));
+      }
+      return statement;
+    });
+    const publish = vi.fn(), query = { ...selected, mode: "historical" as const };
+    try {
+      expect(() => {
+        const candidate = exportComparisonExample({
+          query: failure === "wrong-selection" ? { ...query, dispatchCommandDigest: bad } : query,
+          read: (input) => service.readStoredReviewByRun(input),
+          cleanup: () => {
+            if (service.retire().status !== "closed") throw Error("original cleanup required");
+          },
+        });
+        publish(candidate);
+      }).toThrow();
+      expect(publish).not.toHaveBeenCalled();
+    } finally { lease.mockRestore(); rows.mockRestore(); }
+    if (failure === "cleanup-required") {
+      expect(service.inspect()).toMatchObject({ status: "draining", postcapture: { cleanupRequired: true } });
+      // Fault-test teardown explicitly revisits that same service, never a new holder.
+      expect(service.readStoredReviewByRun(query).resultIdentity.runId).toBe(selected.runId);
+      expect(service.inspect().status).toBe("closed");
+    }
+    expect(snapshot(g.db)).toEqual(before); expect(witnessFiles(g)).toEqual(files);
+    expect(allCompany(g.companyDb)).toEqual(company);
+    expect(start).not.toHaveBeenCalled();
+  }, postLimit30);

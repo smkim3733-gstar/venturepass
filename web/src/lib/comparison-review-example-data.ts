@@ -1,11 +1,11 @@
 import "server-only";
 import example from "./fixtures/comparison-review-example.json";
-import { copyComparisonReviewQuery, decodeComparisonReviewWire } from "./studio-public-claim-comparison-review-wire";
+import provenance from "./fixtures/comparison-review-example-provenance.json";
+import { validateComparisonExampleArtifact } from "./comparison-review-example-artifact";
 
-// Committed synthetic fixture, generated with the SDK-free schema fixture.
-// Database/authority fields describe a simulated record, never an observed database.
-const query = copyComparisonReviewQuery(example.query);
-const result = decodeComparisonReviewWire(JSON.stringify(example), 200, query);
+// Audited synthetic SQL13 export at one point in time; no runtime database access.
+// The manifest checks committed bytes/identity, not operational provenance or authority.
+const { query, result } = validateComparisonExampleArtifact(example, provenance);
 export function comparisonReviewExampleData() {
   const value = structuredClone(result), identity = value.resultIdentity;
   return {

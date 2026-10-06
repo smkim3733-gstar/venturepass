@@ -1,0 +1,12 @@
+{
+  "kind": "synthetic-sql13-export",
+  "version": 1,
+  "sqlVersion": 13,
+  "witnessVersion": 3,
+  "runId": "d78b9af4-7842-4855-902b-98ee83a4f3ec",
+  "dispatchCommandDigest": "f43fff84d0dfe8d051609a854ed8baf990c0cd7be695c7a726b4a8a480db252f",
+  "comparisonEventDigest": "42a7a855c0c59e36dc50d269ef70bc27261b489577ba7ca327caadf4e4afc250",
+  "responseArtifactSha256": "a706cd4540754aa38cc5bff418a12911a28f6a05f393ff391d637dde0eda03f5",
+  "validatedArtifactSha256": "d038669acaf7861c43c60f49b8592ad37c136ac5d13efcd754499495ffb3aae8",
+  "wireSha256": "a0d06c79f191fa8d65c29dffeb45f828a53ea105da8353f60c1717518fb88ad2"
+}
