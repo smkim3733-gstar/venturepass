@@ -1,34 +1,34 @@
 # 공개 통계 후보 조회와 근거 보관
 
-## 2026-10-06: 4I40 — 명시 호출·완료 보관 격리 연결
+## 2026-10-06: 4I41 — 호출 보관 용량·교체·폐기 계약
 
-2026-10-06 — **4I40 명시 읽기 호출·완료 보관의 비활성 격리 연결 완료**
+2026-10-06 — **4I41 호출 보관자의 용량·교체·폐기 조건 계약 점검 완료**
 
-고정20개 기능 기준15/20=75%, 미완료5/20=25%, 직전 대비+0%p. 이번4I40 신규43/43+기존59/59=102/102개 통과다. 초기 제품 시험 실패0이며 첫 lint의 미사용 변수1건·첫 typecheck의 타입 표현2곳을 보완했다. 영향37/39개 반복은 재합산하지 않는다. 전체/영향 lint·최종 typecheck·격리빌드mN8B7F 통과, 변경 앱6개 SHA 일치·빌드 env 부재·보호7개와 미수정 보존 대상76개 SHA 불변이다. 첫 시험 전 runtime 전이 import 점검과 독립 차단 시험·SDK 없는 고정 schema fixture를 유지했다. 실제 SDK client 생성/API 호출·외부/고객자료/AI·앱 HTTP/브라우저0이다. 과거4I38 신규63+기존37=100/100·R8MP40와4I36 95/95·i3GOFu는 별도이며 이번102개에 합산하지 않는다. 백업27개 DESTINATION_REPOSITORY 제한은 미해결·이번 미실행이다. 실환경1/5=20%는 과거 사용자 직접 인증/접근이며 앱 자동실행 성공0단계·KOSIS 실제0/1이다. 필수 결정0개, 다음4I41 호출 보관자의 용량·교체·폐기 조건 계약 점검1~3시간(잠정), 전체 완료시간 미정, 자동후속 ACTIVE.
+고정20개 기능 기준15/20=75%, 미완료5/20=25%, 직전 대비+0%p. 이번4I41은 호출 보관자의 용량·교체·폐기 조건 계약 점검1건이며 제품 소스 변경0개다. 신규 제품 시험0/0(미실행), 기존 회귀 재실행0·새 앱 HTTP/브라우저/lint/typecheck/빌드0회다. 과거4I40 신규43+기존59=102/102·mN8B7F와4I38 100/100·R8MP40는 별도이며 재실행/합산하지 않는다. 백업27개 DESTINATION_REPOSITORY 제한은 미해결·이번 미실행이다. 실환경1/5=20%는 과거 사용자 직접 인증/접근이며 앱 자동실행 성공0단계·KOSIS 실제0/1이다. 필수 결정0개, 다음4I42 단일 호출 보관자의 비활성 격리 연결3~6시간(잠정), 전체 완료시간 미정, 자동후속 ACTIVE.
 
-제품 소스1개·시험4개와 공용 시험 fixture1개를 변경했다. 새 createComparisonReviewInvocation은 기존 handler/receiver/wire/ticket을 주입으로 연결하는 단일 비활성 호출이다. 실제 React 보관자·service 취득 경로·endpoint/route/UI 설치는 없다.
+7249b25의 invocation/receiver/ticket·같은 SQL13 service와 root layout/Providers/AppShell·StudioWorkspace·원고/검토/미리보기 소스를 실행 없이 대조했다. 이번은 문서 변경이며 보관자 제품 구현이나 실제 React 연결 검증은 아니다.
 
-생성 때 원래 company/snapshot/revision·run/dispatch/mode·selection/binding/section과 함수 참조를 고정하고, 호출자가 객체를 보관한 뒤 start를 최대1회 수행한다. 사전 stale/취소·미주입은 Request0이다. receiver의 자기 signal을 합성 Request에 전달하며 원래 operation의 response/completion/inspect를 await 전에 보관한다. 최신 run·preview/쓰기 receipt로 선택을 추정하지 않는다.
+현재 원고 경로는 회사/revision·탭·원고 이동·편집/저장 차단 상태에 따라 하위 컴포넌트를 다시 만든다. PublicClaimPreview의 clear/effect는 AbortController를 중단하고 ref를 지우며 저장 결과 completion을 보관하지 않는다. root Providers가 상위 후보지만 현재 비교 호출 보관자는 없다. QueryClient 기본 retry:1을 새 명시 읽기에 적용하지 않으며 기존 공통 설정도 바꾸지 않았다.
 
-빠른 실패와 요청/응답 completion을 따로 보관한다. 정상 결과는 양쪽 I/O 종료와 정리 성공을 관측한 뒤 현재 ticket에서만 표시한다. 성공·오류 모두 회사/선택/snapshot/revision·닫힘/편집·ticket 변경에 따라 폐기된다. 외부 delivery/display 사본을 바꿔도 내부 결과를 바꾸지 않는다. 원래8KiB/4MiB/4MiB+8KiB/오류8KiB와 각30초·단일 reader/UTF-8/정규 wire를 재사용한다.
+다음 계약은 호출자가 보관하는 단일 슬롯이다. 회사/화면 전체에서 용량1개이며 현재 표시 token과 원래 호출 handle을 분리한다. creating 예약→원래 invocation 보관→명시 start1회의 순서다. pending/cleanupFailed/request unavailable은 추가 생성 전에 거절한다. queue·자동 재시도/재조회·시간 기반 강제 폐기는 없다.
 
-늦은 Response/read/cancel과 실패한 정리, 누락/거절된 영수증은 화면 닫힘으로 정상 종료되지 않는다. request unavailable이면 원래 시작 여부를 추정하지 않고 completion을 pending으로 보관한다. canForget은 호출의 I/O 범위뿐이며 같은 service의 SQL/guard/lease·pending ack·원래 명령 복구를 닫지 않는다. 실제 부모의 보관 한도/교체·폐기와 브라우저/프로세스 종료 후 영속 보관은 미구현이다.
+화면 교체/닫힘은 표시를 무효화하고 자기 호출만 cancel한다. 옛 token의 effect cleanup이나 늦은 완료 callback은 새 화면/슬롯을 취소·삭제하지 않는다. 생성/inspect/start의 재진입에도 두 번째 호출을 만들지 않으며 생성 중 화면이 닫히면 원래 객체를 먼저 보관한 뒤 취소한다.
 
-첫 시험 전 정적 점검에서 server-only/Buffer 기반 의존성을 제거했다. 최종 runtime 전이 그래프는 로컬48개·외부zod뿐이다. 독립 SDK/SQLite/handler/server/store/production import 차단 시험과, SDK 없는 고정 schema hash fixture를 유지했다. 이번 시험의 실제 SDK client 생성/API 호출·global fetch/외부·고객자료/AI0이다. 과거4I38의 초기 SDK 형식 helper 실행/최종 격리 보완은 별도 기록이며 이번에 반복하지 않았다.
+현재 화면의 깨끗한 완료 결과는 명시 교체/해제까지 보관한다. 분리된 화면/closed 보관자는 같은 entry의 completion과 fresh canForget:true를 확인한 경우에만 참조를 해제한다. completion 종료와 cleanupFailed:false는 별도이며 영수증 불명은 무기한 남을 수 있다. 보관자 재생성·reset으로 포화를 우회하지 않는다. 용량1은 호출 개수이지 JS heap4MiB 보장이 아니며 브라우저/프로세스 종료 후 지속성은 없다.
 
-첫 관련98/98개(신규39+기존59)·3.61초와 SQL13 신규4/4·338.17초가 통과했다. SQL13 기존218개와 백업 제한 시험은 이름 필터로 미실행했다. 신규43개는 호출38·독립 import1·SQL13 통합4개, 기존59개는 wire37·ticket22개다. 초기 제품 시험 실패0이며 고유 합계102/102개다.
+canForget은 요청/응답 I/O 범위다. 같은 service의 SQL/guard/lease·pending ack/불명 명령/cleanupRequired는 원래 서비스 책임으로 남는다. 보관자 close/release를 retire/session close/recover/ack·정산/hold 해제로 연결하지 않는다. I/O 해제 후 다음 명시 읽기가 가능해도 서버가 READ_BLOCKED를 반환할 수 있다.
 
-첫 전체 lint는 fixture 미사용 변수1건으로 종료코드1이었다. 그 변수만 정리한 뒤 영향 wire37/37·1.81초와 전체 lint 종료코드0을 확인했다. 첫 typecheck의 descriptor/기존 ticket 반환 타입 표현2곳을 보완하고 영향 호출/import39/39·2.21초→영향 lint→최종 typecheck 종료코드0을 순서대로 확인했다. 본문/권한/금액/복구 단언은 그대로이며 반복37/39개는 고유 합계에 더하지 않는다.
+source synthetic·owner:null·runtimeObserved:false·authority:false와 supplied-response/manual-unverified·currentContextVerified:false, 원래 result/event/hash/requestIdentity·nonce/bytes·requestedTier:null·null 의견/hold를 유지한다. SQL COMMIT/증인·wire·현재 요청 일치는 실제 사람 동의·공식 가격·전송 권한·사실 확인·원고 채택·AI 의미 품질과 별개다.
 
-source synthetic·owner:null·runtimeObserved:false·authority:false 및 supplied-response/manual-unverified·currentContextVerified:false를 유지한다. 원래 result/event/hash/requestIdentity·nonce/bytes·requestedTier:null·null 의견/hold를 바꾸지 않는다. SQL COMMIT/증인·wire·현재 요청 일치는 실제 사람 동의·공식 가격·전송/사실 확인·원고 채택·AI 의미 품질·사람 인수와 별개다.
+이번 신규 제품 시험0/0(미실행), 기존 회귀/HTTP/브라우저/lint/typecheck/빌드0이다. 과거4I40 신규43+기존59=102/102·mN8B7F와4I38 100/100·R8MP40는 재실행/합산하지 않는다. 과거4I38의 초기 SDK 형식 helper 실행과 최종 격리 보완도 별도다. 이번은 소스 텍스트/해시만 읽었으며 앱/SDK 모듈 실행/import0이다. 다음 구현에서 첫 시험 전 전이 import 점검·독립 차단·SDK 없는 고정 schema fixture를 유지한다.
 
-백업27개 DESTINATION_REPOSITORY·일반v10~v13 backup/restore 및 F12 자동목록/전체 원문·실제 KOSIS, F13 실제 SDK/운영 연결·가격/동의/전송·AI 의미 품질, F18~F20 실제 상세/최종 제출·접수증/영속 결과는 미완료다. 이번 실제 route/UI/HTTP·production 설치·키/공식 가격·고객/운영 DB/control/lock·외부 접근0이다. 새 채팅/하위 에이전트0·모델/effort 확인/변경0이다.
+보호7개와 보존 대상 앱/설치SDK86개 SHA의 전후 불변을 확인했다. 실제 route/UI/HTTP·production 설치·SDK import/생성/호출·global fetch/외부·키/환경/공식 가격·고객/운영 DB/control/lock 접근0이다. 새 채팅/하위 에이전트0·모델/effort 확인/변경0이다. 실제 service/원래 선택의 운영 취득 경로는 여전히 없다.
 
-관련 회귀→전체 lint→타입 표현 보완/영향 회귀39개·영향 lint→최종 typecheck→격리 build:local의 마지막 종료코드를 순서대로0으로 확인했다. 격리 빌드mN8B7F, BUILD_ID kxJya6KEYbgLBLiNL0Ang, 컴파일27.9초/타입30.6초/정적9개1439ms다. 변경 앱6개 SHA가 빌드 사본과 일치하고 staging 루트 env파일0개다. 보호7개와 미수정 보존 대상 앱/설치SDK76개 SHA가 전후 일치한다. 보호 편집기3개가 포함된 작업 폴더 빌드이며 해당 변경의 완료는 합산하지 않는다. 빌드 뒤 제품/시험 변경0·새 앱 HTTP/브라우저/시각 검증0이다.
+백업27개 DESTINATION_REPOSITORY·일반v10~v13 backup/restore 및 F12/F13/F18~F20의 실제 운영/사람 인수 범위는 미완료다. 이번 백업 재실행/우회0이다.
 
-다음4I41은 이번 호출 객체를 실제 화면에 연결하기 전에 호출 보관자의 용량·교체·폐기 조건을 기존 React 상위 화면 수명과 대조하는 제품 소스 변경 없는 로컬 계약 점검이다. 회사/revision remount와 늦은 요청·응답 completion 사이에서 누가 원래 객체를 보관할지, 미종료/cleanupFailed/영수증 불명 때 추가 명시 호출을 허용할지, 현재 표시와 보관 해제를 어떤 증거로 나눌지 입력·실패표로 정한다. 호출 canForget은 요청/응답 I/O 범위이며 서버 SQL/명령 복구 완료가 아님을 유지한다. 실제 service/원래 선택의 운영 취득 경로는 여전히 없고 endpoint/전역 registry·새 session/owner/store·자동 재조회로 보충하지 않는다. 실제 route/UI/HTTP·SDK/production import·키/환경/가격·고객/운영 DB/control/lock·외부 접근을 열지 않는다. 완료 시험/빌드와 백업27개 제한은 반복하지 않는다. 필수 결정0개·다음1~3시간 잠정·전체 완료시간 미정·자동후속 ACTIVE.
+다음4I42는 기획/공개주장_호출보관_용량교체_폐기_연결명세_20261006.md의 전체 완료 조건에 따라 기존 invocation을 보관하는 호출자 소유 단일 슬롯을 격리 합성 구현한다. 회사/화면 공통 용량1개와 별도의 화면 token·호출 handle을 사용하고, 생성 예약→원래 객체 보관→명시 start1회의 순서를 유지한다. pending/cleanupFailed/영수증 불명은 추가 생성 전에 거절하고, 화면 교체/닫힘은 표시를 폐기하되 원래 객체를 보관한다. 같은 entry의 fresh canForget 확인만 I/O 보관 해제를 허용하며 서버 SQL/명령 복구 완료로 승격하지 않는다. 완료 callback의 재진입·옛 화면 cleanup·늦은 completion이 새 슬롯을 지우지 않게 대조한다. 실제 React 보관자/endpoint/운영 service 취득은 설치하지 않고 QueryClient 재시도·새 registry/session/owner/store·global fetch·실제 route/UI/HTTP·SDK/production import·키/환경/가격·고객/운영 DB/control/lock·외부0을 유지한다. 첫 시험 전 전이 import 정적 점검과 독립 차단 시험·SDK 없는 고정 schema fixture를 유지한다. 관련 회귀→lint→typecheck→지정 루트 격리 build:local 종료코드를 순차 확인하며 백업27개 제한은 반복/우회하지 않는다. 필수 결정0개·다음3~6시간 잠정·전체 완료시간 미정·자동후속 ACTIVE.
 
-구체적 입출력·실패표·보관 수명·검증 기록과 다음 완료 조건은 기획/공개주장_명시호출_완료보관_격리연결_20261006.md다.
+구체적 소스 위치·단일 슬롯 입력/실패표·교체/폐기 수명과 다음 완료 조건은 기획/공개주장_호출보관_용량교체_폐기_연결명세_20261006.md다.
 
 ## 2026-10-06: 4I26 — 본문 수신 제한·원래 I/O 종료 격리 연결
 
