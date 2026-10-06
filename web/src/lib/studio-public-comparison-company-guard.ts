@@ -33,15 +33,22 @@ export function comparisonCompanyBinding(token: ComparisonCompanyGuard) {
   });
 }
 export function beginComparisonCompanyRead(token: ComparisonCompanyGuard, id: string) {
+  return beginRead(token, id, {});
+}
+function beginRead(token: ComparisonCompanyGuard, id: string, call: object,
+  acquired?: () => void, released?: () => void) {
   const s = owned(token);
   if (s.active || s.db.isTransaction) fail("COMPANY_TRANSACTION_ACTIVE");
   comparisonCompanyBinding(token);
   z.string().uuid().parse(id);
   assertVentureCompanyWritable(id);
-  s.db.exec("BEGIN IMMEDIATE");
-  if (!s.db.isTransaction) fail("COMPANY_LOCK_LOST");
-  s.active = true;
   try {
+    try { s.db.exec("BEGIN IMMEDIATE"); }
+    finally {
+      // BEGIN can open the transaction even when its return is lost.
+      if (s.db.isTransaction) { s.active = true; s.readCall = call; acquired?.(); }
+    }
+    if (!s.active) fail("COMPANY_LOCK_LOST");
     const size = s.db
       .prepare("SELECT length(CAST(body AS BLOB)) AS n FROM studio_cases WHERE id=?")
       .get(id);
@@ -68,7 +75,7 @@ export function beginComparisonCompanyRead(token: ComparisonCompanyGuard, id: st
     assertVentureCompanyWritable(id);
     return record;
   } catch (e) {
-    endComparisonCompanyRead(token);
+    if (s.readCall === call) { endComparisonCompanyRead(token); released?.(); }
     throw e;
   }
 }
@@ -86,7 +93,32 @@ export function endComparisonCompanyRead(token: ComparisonCompanyGuard) {
     s.db.exec("ROLLBACK"); // SELECT-only transaction. Never commits changes to the company.
     if (s.db.isTransaction) fail("COMPANY_CLEANUP_REQUIRED");
     s.active = false;
+    s.readCall = null;
   } catch {
     fail("COMPANY_CLEANUP_REQUIRED");
   }
+}
+
+/** Internal call-scoped cleanup. A failed acquisition can never release another reader. */
+export function createComparisonCompanyReadScope(token: ComparisonCompanyGuard) {
+  const call = {};
+  let attempted = false, pending = false;
+  function requireOwned() {
+    if (!pending || owned(token).readCall !== call) fail("COMPANY_CLEANUP_REQUIRED");
+  }
+  return Object.freeze({
+    read(id: string) {
+      if (attempted) fail("COMPANY_READ_REUSED");
+      attempted = true;
+      return beginRead(token, id, call, () => { pending = true; }, () => { pending = false; });
+    },
+    check(id: string) { requireOwned(); checkComparisonCompanyRead(token, id); },
+    finish() {
+      if (!pending) return;
+      requireOwned();
+      endComparisonCompanyRead(token);
+      pending = false;
+    },
+    pending: () => pending,
+  });
 }

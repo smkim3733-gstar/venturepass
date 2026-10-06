@@ -19,6 +19,7 @@ type Owned = {
   rootIdentity: ReturnType<typeof comparisonRootIdentity>;
   identity: ReturnType<typeof comparisonFileIdentity>;
   active: boolean;
+  readCall: object | null;
   closed: boolean;
 };
 const origins = new WeakMap<
@@ -64,6 +65,7 @@ export function issueComparisonCompanyGuard(
     rootIdentity: comparisonRootIdentity(root),
     identity: comparisonFileIdentity(file),
     active: false,
+    readCall: null,
     closed: false,
   });
   const set = byDatabase.get(db) ?? new Set();

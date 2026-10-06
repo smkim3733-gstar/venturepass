@@ -1,30 +1,40 @@
 # 공개 통계 후보 조회와 근거 보관
 
-## 2026-10-06: 4I31 — 저장 결과·현재 문맥 읽기 연결 계약
+## 2026-10-06: 4I32 — 저장 결과·현재 요청 일치 격리 읽기
 
-2026-10-06 — **4I31 저장 비교 결과·현재 문맥의 읽기 연결 계약 점검 완료**
+2026-10-06 — **4I32 저장 결과·현재 요청 일치의 비활성 읽기 격리 연결 완료**
 
-고정20개 기능 기준15/20=75%, 미완료5/20=25%, 직전 대비+0%p. 이번4I31은 저장 비교 결과의 읽기 검토·현재 문맥 적용성 연결 계약 점검1건이며 제품 소스 변경0개다. 신규 제품 시험0/0(미실행), 기존 회귀 재실행0·새 앱 HTTP/브라우저/lint/typecheck/빌드0회다. 과거4I30 신규26+기존8=34/34·5QUzT7와4I28 30/30·YnPUPZ는 별도이며 재실행/합산하지 않는다. 백업27개 DESTINATION_REPOSITORY 제한은 미해결·이번 미실행이다. 실환경1/5=20%는 과거 사용자 직접 인증/접근이며 앱 자동실행 성공0단계·KOSIS 실제0/1이다. 필수 결정0개, 다음4I32 저장 비교 결과·현재 요청 일치의 비활성 읽기 연결3~6시간(잠정), 전체 완료시간 미정, 자동후속 ACTIVE.
+고정20개 기능 기준15/20=75%, 미완료5/20=25%, 직전 대비+0%p. 이번4I32 관련3시험 파일 신규28/28+기존15/15=43/43개 통과다. 초기 시험 fixture/오류 주입3건을 보완했으며 예비·선택 반복은 재합산하지 않는다. 전체 lint·첫 typecheck·격리빌드yYlKRf 통과, 변경 앱6개 SHA 일치·빌드 env 부재·보호7개와 수정하지 않은 보존 대상50개 SHA 불변이다. 새 앱 HTTP/브라우저·실제 외부/고객자료/SDK 실행/AI0이다. 과거4I30 신규26+기존8=34/34·5QUzT7와4I28 30/30·YnPUPZ는 별도이며 이번43개에 합산하지 않는다. 백업27개 DESTINATION_REPOSITORY 제한은 미해결·이번 미실행이다. 실환경1/5=20%는 과거 사용자 직접 인증/접근이며 앱 자동실행 성공0단계·KOSIS 실제0/1이다. 필수 결정0개, 다음4I33 저장 결과 읽기와 앱 검토 동선의 비활성 전달 계약 점검1~3시간(잠정), 전체 완료시간 미정, 자동후속 ACTIVE.
 
-d5988a7의 비활성 서비스와 SQL13 native/validated/final body·원래 요청/capture decoder, 현재 회사 guard와 수동 검토/원고 채택 코드를 실행 없이 대조했다. 이번은 로컬 소스 읽기와 문서 변경이며 다음 읽기 포트의 제품 구현/시험은 아니다.
+제품 소스4개·시험2개가 바뀌었다. 기존 guarded storage 시험1파일은 수정 없이 관련4개만 재실행했다.
 
-comparison-ready는 원래 요청·선택 발췌의 구조/인용 대조 결과다. result3행 저장 전 미리보기에도 이 상태가 계산될 수 있으므로 저장된 comparison event와 validated artifact를 별도로 대조해야 한다. final-result는 비용/종료 요약이며 원고 채택 영수증이 아니다. supplied-response/manual-unverified·currentContextVerified:false를 유지한다.
+기존 createIsolatedPublicComparisonService에 readStoredComparison과 inspectStoredComparisonContext를 연결했다. 기존 SQL13/증인3 전체 감사, 원래 archive/request/decoder, 같은 session/회사 guard 및 실행의 private canRelease를 재사용한다. 새 전송 owner/lease 프로토콜·전역 registry·SQL14·원장·production 설치를 추가하지 않았다.
 
-다음은 같은 서비스의 정확한 저장 결과 읽기와 현재 요청 일치의 별도 검사다. 원래 run/dispatch 명령·comparison event·응답/validated hash로 한 건을 고정하고 기존 SQL13/증인3 전체 감사·archive/request/decoder를 재사용한다. 원래 항목 전체와 선택 발췌/인용·의견을 한도 내 사본으로 읽고 원본 canonical response/DB 행/경로/capability는 공개하지 않는다. 나중 close 뒤에도 같은 result 신원을 유지한다.
+readStoredComparison은 원래 run/dispatch 명령·comparison event·response/validated hash의 strict 선택으로 한 건만 읽는다. 미리보기에서 comparison-ready가 계산됐더라도 result event가 없으면 거절한다. 원래 항목 전체 문맥과 명시 선택 발췌·인용·의견을 반환하고 canonical response/전체 원장·DB handle/경로/capability는 노출하지 않는다. 결과를 현재 자료로 다시 생성하지 않는다. 입력 JSON UTF-8 8KiB·출력 4MiB를 초과하면 거절하며 잘라서 성공시키지 않는다.
 
-현재 검사는 같은 guard가 읽은 회사 snapshot에 원래 command/identity를 그대로 대조한다. 회사 revision만 바뀌어도 보수적으로 changed이며 원래 revision을 새 값으로 바꾸지 않는다. not-checked/exact-original-request/changed/unavailable를 구분하고 exact도 원래 선택 버전의 요청 일치일 뿐 최신 원고·사실 확인·회사 해당성·채택 권한이 아니다. 현재 확인 불가와 안전하게 감사한 과거 결과의 별도 읽기를 구분한다.
+현재 검사는 같은 guard가 읽은 snapshot에 원래 command/identity를 그대로 대조한다. 원래 revision을 새 값으로 바꾸지 않는다. not-checked/exact-original-request/changed/unavailable를 구분하며 exact는 원래 선택 버전의 요청 일치다. 최신 원고 선정·회사 해당성·사실 확인·원본 파일 검증·수동 judgement·채택 권한이 아니다. 현재 확인 불가여도 별도로 감사한 과거 결과 읽기는 유지한다.
 
-기존 claimReviewContext는 saved-only의 등록 문맥 표시이며 전체 hash/원본 재검사를 대신하지 않는다. 수동 judgement는 새 버전·담당자/이유/확인일·기존 nonce/CAS writer를 유지한다. 공개 비교 의견은 보완 draft가 아니므로 기존 수정안 채택 writer에 cast하거나 자동 복사하지 않는다. 원고 채택·confirmedAt·업무/신청 상태는 바뀌지 않는다.
+quality SELECT와 기존 일시 lease를 먼저 확보하고 studio guard를 연다. 같은 guard 내부의 호출별 표시는 BEGIN 반환 유실이나 SELECT 이후 ROLLBACK 실패를 추적한다. 획득 전 busy 거절과 자기 획득을 구분하며 남의 회사/quality 거래나 lease를 정리하지 않는다. studio→quality SQL→lease 순으로 자기 책임이 끝나야 응답을 반환한다. 실패한 정리는 원래 서비스가 보관하고 명시 재조회가 자기 읽기 정리만 재시도한다.
 
-같은 private canRelease·session/quality→studio 순서와 자기 SQL/회사 read/lease 정리 책임을 유지한다. 회사 BEGIN 뒤 실패하고 ROLLBACK도 실패하면 반환 값이 없어도 책임을 남긴다. 획득 전 busy 거절로 남의 guard/lease를 정리하지 않는다. 읽기 중 INSERT/증인 ack·재전송·자동 정산/hold 해제는0이며 불명 COMMIT은 원래 명시 명령 복구만 사용한다.
+진행 I/O/driver/lease·unknown·원래 명령 복구가 남으면 읽기 인계를 닫는다. 읽기는 pending ack를 수선하지 않으며 원래 recoverPostcapture 명령만 사용한다. 반환 투영이 실패해도 저장/전송을 재실행하지 않는다. 나중 정산/종료 뒤 같은 result identity를 유지하고 저장소만 재개방해도 새 driver/owner/전송을 만들지 않는다.
 
-이번 제품 소스/시험 변경0·신규0/0(미실행)·기존 회귀/HTTP/브라우저/lint/typecheck/빌드0이다. 과거4I30 34/34·5QUzT7와4I28 30/30·YnPUPZ는 별도다. 보호7개 및 보존 대상 앱/설치SDK53개 SHA를 보존했다. 실제 SDK import/생성/실행·global fetch/외부·키/환경/공식 가격·고객/운영 DB/control/lock·route/UI/production 설치0, 새 채팅/하위 에이전트0·모델/effort 확인/변경0이다.
+공개 source synthetic-comparison-stored-review·owner:null·runtimeObserved:false·authority:false와 내부 supplied-response/manual-unverified·currentContextVerified:false를 유지한다. DB comparisonRecorded/costSettled/finalized와 저장/금액 hold는 별도 읽기 상태다. missing usage/binding3·명시0·전체 초과 비용·거절/불완전·인용 거절을 바꾸지 않는다. SQL COMMIT/증인은 실제 사람 동의·공식 가격·전송 권한·AI 의미 품질과 별개다.
 
-백업27개 DESTINATION_REPOSITORY·일반v10~v13 backup/restore 및 F12/F13/F18~F20의 실제 운영·사람 인수 범위는 미완료다. SQL COMMIT/증인·합성 비교는 실제 사람 동의/공식 가격/전송 권한·AI 의미 품질과 별개다.
+신규28개는 읽기 사본/UTF-8 한도4개와 SQL13 통합24개다. 기존15개는 SQL13의 원래 보관/후속 저장·정책/복구11개와 회사 guard/저장4개다. 최초 신규6/6개·189.26초, 확장 신규21개 중18통과/3실패·1172.15초, 마지막 선택20/20개·1341.28초를 확인했다. 마지막 선택은 수정3개·추가1개·단언 보강1개와 기존15개이며 보강1개는 반복으로 센다. 각 시험 마지막 결과만 고유 합계 신규28+기존15=43/43개로 집계한다. 예비/선택 반복과 과거 검증은 더하지 않는다.
 
-다음4I32는 기획/공개주장_저장결과_현재문맥_읽기연결명세_20261006.md의 전체 완료 조건에 따라 같은 비활성 서비스에 저장된 결과의 명시 읽기와 현재 요청 일치의 별도 검사를 격리 합성 연결한다. 원래 run/dispatch 명령·comparison event·응답/validated hash를 엄격히 선택하고 SQL13/증인3 전체 감사와 기존 archive/request/decoder로 원래 발췌·의견만 투영한다. 저장되지 않은 preview를 저장 결과로 바꾸지 않는다. 현재 검사는 같은 회사 guard가 읽은 snapshot에 원래 command/identity를 그대로 대조하며 revision을 새 값으로 바꾸지 않는다. exact-original-request/changed/unavailable는 읽은 시점의 요청 일치이고 currentContextVerified:false·수동 판단/사실 확인/채택 권한 false는 유지한다. 현재 확인이 불가해도 안전하게 감사한 과거 결과의 별도 읽기는 보존한다. 진행 I/O/lease·원래 명령 복구·자기 SQL/회사 읽기 정리 책임이 남으면 인계를 닫고, 실패한 획득으로 다른 호출의 guard/lease를 정리하지 않는다. 기존 quality→studio 순서와 같은 helper를 재사용하고 읽기에서 INSERT/ack/정산·hold 해제·judgement/원고 저장·새 owner/driver를 만들지 않는다. 실제 SDK import/생성/실행·global fetch·키/환경/공식 가격·고객/운영 DB/control/lock·production 설치·route/UI·외부 전송0을 유지한다. 관련 회귀→lint→typecheck→지정 루트 격리 build:local의 종료코드를 순차 확인하고 백업27개 제한과 완료 검사를 반복/우회하지 않는다. 필수 결정0개·다음3~6시간 잠정·전체 완료시간 미정·자동후속 ACTIVE.
+초기 실패3개는 시험 fixture/오류 주입 조건을 보완했다. inputDigest 변경은 정상 changed이므로 그 단언을 보존하고, 별도로 digest를 유지한 contextNote 손상을 넣어 unavailable을 검증했다. 회사 SELECT/ROLLBACK 시험2개는 PRAGMA 단계에서 먼저 실패하던 주입을 studio_cases SELECT에 한정해 BEGIN 이후 자기 정리 책임을 검증했다. 제품 로직이나 권한/금액/원문/복구 단언을 완화하지 않았고 최초6개 통과 뒤 제품 로직 재수정0이다. 중복 artifact 행 거절과 공개 투영/quality SELECT 실패 뒤 자기 정리도 확인했다.
 
-구체적 소스 위치·입출력/실패표·수동 판단/채택 경계와 다음 완료 조건은 기획/공개주장_저장결과_현재문맥_읽기연결명세_20261006.md다.
+관련 회귀→전체 lint→첫 typecheck→격리 build:local의 종료코드를 순서대로0으로 확인했다. typecheck는 전용 pnpm exec tsc --noEmit --incremental false로 실행했고 route/UI 변경 없이 기존 선언을 확인했다. 격리 빌드는 새 staging에서 Next 타입을 생성/확인했다. Webpack **yYlKRf**, BUILD_ID **_LucmgqGd_64MvRCbUV2v**, 컴파일29.4초/타입30.9초/정적9개751ms다. 최종 타입 진단0이다.
+
+변경 앱6개 SHA가 빌드 사본과 일치하고 빌드 루트 .env 파일0개다. 보호7개와 수정하지 않은 보존 대상 앱/설치SDK50개 SHA가 전후 일치한다. 보호 편집기3개가 포함된 작업 폴더 빌드이며 그 변경의 완료는 합산하지 않는다. 빌드 뒤 제품/시험 변경0이다.
+
+백업27개 DESTINATION_REPOSITORY·일반v10~v13 backup/restore는 미해결·이번 미실행이다. F12 자동목록/전체 원문·실제 KOSIS, F13 실제 SDK/production 연결·공식 가격/사람 동의/전송·AI 의미 품질, F18~F20 실제 상세/최종 제출·접수증/영속 결과는 미완료다. 합성 비교와 SQL COMMIT/증인은 실제 사람 동의·공식 가격·전송 권한·사실 확인·AI 의미 품질 또는 사람 인수가 아니다.
+
+실제 SDK import/생성/실행·global fetch/외부·키/환경/공식 가격·고객/운영 DB/control/lock·route/UI/production 설치0, 새 앱 HTTP/브라우저/시각 검증0이다. 새 채팅/하위 에이전트0·모델/effort 확인/변경0이다.
+
+다음4I33은 이번 저장 결과 읽기·현재 요청 일치 포트와 기존 명시 요청 미리보기/원고 검토 화면의 실제 소스를 대조해 비활성 읽기 결과를 앱 검토 동선에 전달하는 계약을 점검한다. 원래 result 선택의 취득 경로, 같은 session 보관·원래 명령 복구/읽기 정리, 화면 snapshot/revision과 늦은 응답의 대조 및 historical/current/수동 판단의 구분을 구체화한다. production 데이터 전환이나 SDK 활성화를 자동으로 열지 않으며 고객 DB·route/UI·키/가격/외부 접근 없이 제품 소스 변경 없는 로컬 읽기 점검으로 진행한다. 기존 SQL13/증인3·같은 서비스/decoder/guard를 재사용하고 저장 결과·exact-original-request를 사실 확인·최신 원고·채택/전송 권한으로 승격하지 않는다. 완료 시험/빌드와 백업27개 제한을 반복하지 않는다. 필수 결정0개·다음1~3시간 잠정·전체 완료시간 미정·자동후속 ACTIVE.
+
+구체적 구현·실패표·검증 기록과 다음 완료 조건은 기획/공개주장_저장결과_현재요청일치_격리읽기_20261006.md다.
 
 ## 2026-10-06: 4I26 — 본문 수신 제한·원래 I/O 종료 격리 연결
 

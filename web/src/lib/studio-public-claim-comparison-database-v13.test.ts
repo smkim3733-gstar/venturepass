@@ -1,3 +1,5 @@
+import * as storedRead32 from "./studio-public-claim-comparison-stored-read";
+import { ownedComparisonCompanyGuard } from "./studio-comparison-company-capability";
 import { preparePublicClaimComparison } from "./studio-public-claim-comparison";
 import {
   comparisonDispatchV2CommandSchema,
@@ -3123,7 +3125,9 @@ it("4I28 service cannot release unknown with no capture and all visible promises
   for (const privateValue of [comparisonSyntheticWireKey, directory, JSON.stringify(response)])
     expect(safe).not.toContain(privateValue);
   expect(() => service.previewPostcapture({ runId: command.runId, dispatchCommandDigest: digest(command) })).toThrow(/EXECUTION_PENDING/);
-  expect(Object.keys(service)).toEqual(["execute", "recover", "previewPostcapture", "writePostcapture", "recoverPostcapture", "inspect", "retire"]);
+  expect(() => service.readStoredComparison({})).toThrow(/EXECUTION_PENDING/);
+  expect(() => service.inspectStoredComparisonContext({})).toThrow(/EXECUTION_PENDING/);
+  expect(Object.keys(service)).toEqual(["execute", "recover", "previewPostcapture", "readStoredComparison", "inspectStoredComparisonContext", "writePostcapture", "recoverPostcapture", "inspect", "retire"]);
 }, limit);
 
 for (const mode of ["unused", "invalid-command"] as const)
@@ -3415,6 +3419,8 @@ it("4I30 original pending execution denies handoff; retire retains late capture 
   await Promise.race([ready.promise, running.then(() => { throw Error("start missing"); })]);
   expect(() => service.previewPostcapture(selected)).toThrow(/EXECUTION_PENDING/);
   expect(() => service.writePostcapture("record-result", {}, explode())).toThrow(/EXECUTION_PENDING/);
+  expect(() => service.readStoredComparison({})).toThrow(/EXECUTION_PENDING/);
+  expect(() => service.inspectStoredComparisonContext({})).toThrow(/EXECUTION_PENDING/);
   expect(service.retire().status).toBe("draining");
   net.resolve(new Response(JSON.stringify(response)));
   expect((await running).capturePersisted).toBe(true);
@@ -3422,6 +3428,7 @@ it("4I30 original pending execution denies handoff; retire retains late capture 
   expect(() => service.previewPostcapture({ ...selected, dispatchCommandDigest: bad })).toThrow(/RUN_CHANGED/);
   const p = service.previewPostcapture(selected);
   expect(service.writePostcapture("record-result", commands30(p).result, { at: later, eventId: randomUUID() }).insertedRows).toBe(3);
+  expect(service.readStoredComparison(selected32(g)).database.comparisonRecorded).toBe(true);
   expect(network).toHaveBeenCalledTimes(1);
   expect(state13(g).reservation.archive.financial.events).toHaveLength(1);
 }, postLimit30);
@@ -3688,4 +3695,314 @@ it("4I30 postcapture selection cannot cross the original session or company file
   expect([witnessFiles(g), witnessFiles(other)]).toEqual(files);
   for (const service of [wrongCompany, wrongSession, otherService])
     expect(service.retire().status).toBe("closed");
+}, postLimit30);
+
+// 4I32: exact saved results and separately observed original-request applicability.
+function selected32(g: ReturnType<typeof guarded>) {
+  const s = state13(g), b = s.transmissionBindings[0];
+  const e = s.reservation.archive.records.events.find((e) => e.payload.kind === "comparison-recorded")!;
+  if (e.payload.kind !== "comparison-recorded") throw Error("fixture result");
+  return { runId: b.runId, dispatchCommandDigest: digest(b.command), comparisonEventDigest: e.eventDigest,
+    responseArtifactSha256: e.payload.responseArtifactSha256, validatedArtifactSha256: e.payload.validatedArtifactSha256 };
+}
+function readyResponse32(rejected = false) {
+  const p = preparePublicClaimComparison(fixture.company, fixture.request.command.selection);
+  const output = { preparationDigest: p.preparationDigest, claimQuote: rejected ? "wrong quote" : p.input.claimQuote,
+    overall: { relation: "undetermined", reason: "Synthetic only" },
+    evidence: p.input.selectedEvidence.map((e) => ({ sourceId: e.sourceId, relation: "undetermined",
+      quotes: [], reason: "Review required", nextCheck: "" })), checks: [] };
+  return { ...response, output: [{ type: "message", role: "assistant", status: "completed",
+    content: [{ type: "output_text", text: JSON.stringify(output) }] }] };
+}
+it("4I32 saved ready result keeps historical bytes, current exact, no writes, and stable identity after close/restart", () => {
+  const g = throughResult(readyResponse32()), pick = selected32(g), { service, start } = service30(g);
+  const before = snapshot(g.db), witness = witnessFiles(g), company = allCompany(g.companyDb);
+  const rowRead = vi.spyOn(companyGuard22, "createComparisonCompanyReadScope");
+  const historical = service.readStoredComparison(pick);
+  expect(rowRead).not.toHaveBeenCalled();
+  expect(historical).toMatchObject({ source: "synthetic-comparison-stored-review", owner: null, runtimeObserved: false,
+    current: { status: "not-checked", observedRevision: null }, database: { comparisonRecorded: true, finalized: false },
+    historical: { currentContextVerified: false, result: { source: "supplied-response", evidenceOrigin: "manual-unverified",
+      state: "comparison-ready", currentContextVerified: false } } });
+  expect(Object.values(historical.authority).every((v) => v === false)).toBe(true);
+  const stable = structuredClone(historical);
+  historical.historical.prepared.input.section.content = "mutated";
+  historical.resultIdentity.responseArtifactSha256 = bad;
+  const checked = service.inspectStoredComparisonContext(pick);
+  expect(checked.current).toEqual({ status: "exact-original-request", originalRevision: fixture.company.revision,
+    observedRevision: fixture.company.revision, reason: null });
+  expect(checked.historical).toEqual(stable.historical);
+  expect(snapshot(g.db)).toEqual(before); expect(witnessFiles(g)).toEqual(witness);
+  expect(allCompany(g.companyDb)).toEqual(company);
+  const safe = JSON.stringify(checked);
+  for (const secret of [directory, g.paths.qualityFile, JSON.stringify(response), comparisonSyntheticWireKey])
+    expect(safe).not.toContain(secret);
+  const c = closeInput(g);
+  writeGuardedPublicComparisonV13(g.session, "settle-finalize", c.command, c.current);
+  const closed = service.readStoredComparison(pick);
+  expect(closed.resultIdentity).toEqual(stable.resultIdentity);
+  expect(closed.historical).toEqual(stable.historical);
+  expect(closed.database).toMatchObject({ finalized: true, costSettled: true, runHeldBytes: 0, scopeHeldUnits: "0" });
+  service.retire();
+  const reopened = openComparisonStorageSession(g.paths, selection);
+  try {
+    const next = createIsolatedPublicComparisonService(reopened, g.cap, createSyntheticComparisonDriver(forbidden));
+    expect(next.readStoredComparison(pick)).toEqual(closed);
+    expect(next.retire().status).toBe("closed");
+  } finally { closeComparisonStorageSession(reopened); }
+  expect(start).not.toHaveBeenCalled();
+}, postLimit30);
+it("4I32 preview without stored event and every cross-selected identity are refused before current read", () => {
+  const g = throughCapture(readyResponse32()), { service, selected } = service30(g);
+  const preview = service.previewPostcapture(selected);
+  expect(preview.comparisonState).toBe("comparison-ready");
+  const raw = { ...selected, comparisonEventDigest: bad, responseArtifactSha256: preview.responseArtifactSha256,
+    validatedArtifactSha256: preview.expectedValidatedArtifactSha256 };
+  const before = snapshot(g.db);
+  expect(() => service.readStoredComparison(raw)).toThrow(/STORED_RESULT_MISSING/);
+  expect(snapshot(g.db)).toEqual(before);
+  result13(g);
+  const pick = selected32(g), saved = snapshot(g.db), files = witnessFiles(g);
+  const scope = vi.spyOn(companyGuard22, "createComparisonCompanyReadScope");
+  for (const key of Object.keys(pick) as (keyof typeof pick)[])
+    expect(() => service.inspectStoredComparisonContext({ ...pick, [key]: key === "runId" ? randomUUID() : bad })).toThrow();
+  for (const raw of [{ ...pick, authority: true }, { ...pick, body: "x".repeat(8192) },
+    { ...pick, comparisonEventDigest: null }])
+    expect(() => service.readStoredComparison(raw)).toThrow();
+  expect(scope).not.toHaveBeenCalled();
+  expect(snapshot(g.db)).toEqual(saved); expect(witnessFiles(g)).toEqual(files);
+}, postLimit30);
+
+it("4I32 current changes and unavailable histories never rewrite the original selection or stored opinion", () => {
+  const g = throughResult(readyResponse32()), pick = selected32(g), { service } = service30(g);
+  const before = snapshot(g.db), files = witnessFiles(g), original = service.readStoredComparison(pick);
+  const put = (company: typeof fixture.company) => g.companyDb.prepare("UPDATE studio_cases SET revision=?,body=? WHERE id=?")
+    .run(company.revision, JSON.stringify(company), company.id);
+  const newer = structuredClone(fixture.company);
+  newer.plans.push({ ...structuredClone(newer.plans[0]), id: randomUUID(), version: newer.plans[0].version + 1 });
+  put(newer);
+  expect(service.inspectStoredComparisonContext(pick).current.status).toBe("exact-original-request");
+  const changes: [string, (c: typeof fixture.company) => void, string][] = [
+    ["revision", (c) => { c.revision++; }, "changed"],
+    ["new judgement revision", (c) => { c.revision++; c.claimReviews[0].judgement.reason = "Later human note"; }, "changed"],
+    ["other section text", (c) => { c.plans[0].content.sections[0].content += "changed tail"; }, "changed"],
+    ["source body", (c) => { c.sources[0].text += "changed tail"; }, "changed"],
+    ["missing claim", (c) => { c.claimReviews = []; }, "changed"],
+    ["missing source", (c) => { c.sources = []; }, "changed"],
+    ["changed selected digest", (c) => { c.claimReviews[0].inputDigest = bad; }, "changed"],
+    ["damaged ancestor", (c) => { c.claimReviews[0].contextNote += "altered original input"; }, "unavailable"],
+    ["unsupported attachment", (c) => { c.sources[0].originalName = "unread.pdf"; c.sources[0].mimeType = "application/pdf"; }, "unavailable"],
+  ];
+  for (const [name, change, status] of changes) {
+    const c = structuredClone(fixture.company); change(c); put(c);
+    const actual = service.inspectStoredComparisonContext(pick);
+    expect(actual.current.status, name).toBe(status);
+    expect(actual.current.originalRevision).toBe(fixture.company.revision);
+    expect(actual.historical, name).toEqual(original.historical);
+    expect(actual.resultIdentity).toEqual(original.resultIdentity);
+  }
+  g.companyDb.prepare("DELETE FROM studio_cases WHERE id=?").run(fixture.company.id);
+  expect(service.inspectStoredComparisonContext(pick).current).toMatchObject({ status: "unavailable", reason: "COMPANY_ROW_INVALID" });
+  expect(service.readStoredComparison(pick)).toEqual(original);
+  expect(snapshot(g.db)).toEqual(before); expect(witnessFiles(g)).toEqual(files);
+}, postLimit30);
+for (const mode of ["missing", "binding3", "zero", "excess", "refusal", "incomplete", "rejected"] as const)
+  it("4I32 stored " + mode + " remains readable without changing original state or holds", () => {
+    const value = mode === "missing" ? { ...response, usage: undefined } :
+      mode === "zero" || mode === "excess" ? { ...response, usage: {
+        input_tokens: mode === "zero" ? 0 : 999999, output_tokens: mode === "zero" ? 0 : 999999,
+        total_tokens: mode === "zero" ? 0 : 1999998, input_tokens_details: { cached_tokens: 0 },
+        output_tokens_details: { reasoning_tokens: 0 } } } :
+      mode === "rejected" ? readyResponse32(true) : { ...response, status: mode === "incomplete" ? "incomplete" : "completed",
+        output: mode === "refusal" ? [{ type: "message", content: [{ type: "refusal", refusal: "No" }] }] : [] };
+    const g = mode === "binding3" ? setup12() : throughCapture(value);
+    if (mode === "binding3") { dispatch(g); mark(g); save(g); migrateGuardedPublicComparisonDatabaseV13(g.session); }
+    result13(g);
+    const pick = selected32(g), { service, start, selected } = service30(g);
+    const preview = service.previewPostcapture(selected), before = snapshot(g.db), files = witnessFiles(g);
+    const out = service.readStoredComparison(pick);
+    expect(out.historical.result.state).toBe(preview.comparisonState);
+    expect(out.historical.result.comparison).toBeNull();
+    expect(out.database).toEqual(preview.database);
+    expect(out.database.finalized).toBe(false);
+    expect(out.database.runHeldBytes).toBeGreaterThan(0);
+    expect(snapshot(g.db)).toEqual(before); expect(witnessFiles(g)).toEqual(files);
+    expect(start).not.toHaveBeenCalled();
+  }, postLimit30);
+for (const fault of ["busy", "begin-return", "select", "rollback", "ownership"] as const)
+  it("4I32 company read scope owns only its acquired transaction: " + fault, () => {
+    const g = guarded(false), db = ownedComparisonCompanyGuard(g.cap).db;
+    const scope = companyGuard22.createComparisonCompanyReadScope(g.cap);
+    cleanups.push(() => { if (db.isTransaction) endComparisonCompanyRead(g.cap); });
+    const exec = db.exec.bind(db), prepare = db.prepare.bind(db);
+    let other: ReturnType<typeof companyGuard22.createComparisonCompanyReadScope> | undefined;
+    if (fault === "busy") {
+      other = companyGuard22.createComparisonCompanyReadScope(g.cap); other.read(fixture.company.id);
+      expect(() => scope.read(fixture.company.id)).toThrow(/TRANSACTION_ACTIVE/);
+      scope.finish(); expect(db.isTransaction).toBe(true); other.finish(); return;
+    }
+    const sql = vi.spyOn(db, "exec").mockImplementation((q) => {
+      if (q === "ROLLBACK" && fault !== "ownership") throw Error("cleanup unavailable");
+      exec(q); if (q === "BEGIN IMMEDIATE" && fault === "begin-return") throw Error("BEGIN return lost");
+    });
+    const query = vi.spyOn(db, "prepare").mockImplementation((q) => {
+      if (fault === "select" && q.includes("FROM studio_cases")) throw Error("SELECT failed");
+      return prepare(q);
+    });
+    if (fault === "begin-return" || fault === "select") expect(() => scope.read(fixture.company.id)).toThrow(/CLEANUP_REQUIRED/);
+    else scope.read(fixture.company.id);
+    expect(scope.pending()).toBe(true);
+    if (fault === "ownership") {
+      companyGuard22.endComparisonCompanyRead(g.cap);
+      other = companyGuard22.createComparisonCompanyReadScope(g.cap); other.read(fixture.company.id);
+      expect(() => scope.finish()).toThrow(/CLEANUP_REQUIRED/);
+      expect(db.isTransaction).toBe(true); other.finish();
+    } else {
+      expect(() => scope.finish()).toThrow(/CLEANUP_REQUIRED/);
+      expect(db.isTransaction).toBe(true);
+      sql.mockRestore(); query.mockRestore();
+      scope.finish(); expect(scope.pending()).toBe(false);
+      expect(db.isTransaction).toBe(false);
+    }
+    sql.mockRestore(); query.mockRestore();
+  }, limit);
+
+it("4I32 a busy company or quality reader is never cleaned by the unsuccessful reader", () => {
+  const g = throughResult(), pick = selected32(g), { service } = service30(g);
+  const scope = companyGuard22.createComparisonCompanyReadScope(g.cap);
+  scope.read(fixture.company.id);
+  try {
+    const result = service.inspectStoredComparisonContext(pick);
+    expect(result.current).toMatchObject({ status: "unavailable", reason: "COMPANY_BUSY" });
+    expect(ownedComparisonCompanyGuard(g.cap).db.isTransaction).toBe(true);
+    expect(service.readStoredComparison(pick).current.status).toBe("not-checked");
+  } finally { scope.finish(); }
+  beginComparisonStorageSession(g.session);
+  expect(() => service.readStoredComparison(pick)).toThrow(/BUSY/);
+  expect(service.inspect().postcapture.cleanupRequired).toBe(false);
+  expect(() => beginComparisonStorageSession(g.session)).toThrow(/BUSY/);
+  endComparisonStorageSession(g.session);
+  expect(service.inspectStoredComparisonContext(pick).current.status).toBe("exact-original-request");
+}, postLimit30);
+for (const fault of ["company-begin", "company-select", "company-end", "quality-end", "lease-end"] as const)
+  it("4I32 read retains own cleanup after " + fault + " and retries no writes", () => {
+    const g = throughResult(), pick = selected32(g), { service, start } = service30(g);
+    const companyDb = ownedComparisonCompanyGuard(g.cap).db, before = snapshot(g.db), files = witnessFiles(g);
+    const oldCommand = resultInput(g).command;
+    cleanups.push(() => {
+      if (companyDb.isTransaction) endComparisonCompanyRead(g.cap);
+      if (g.db.isTransaction) g.db.exec("ROLLBACK");
+      try { endComparisonStorageSession(g.session); } catch {}
+    });
+    const ce = companyDb.exec.bind(companyDb), cp = companyDb.prepare.bind(companyDb), qe = g.db.exec.bind(g.db);
+    const end = storageWitness22.endComparisonStorageSession;
+    const companySql = vi.spyOn(companyDb, "exec").mockImplementation((q) => {
+      if (q === "ROLLBACK" && fault.startsWith("company-")) throw Error("company cleanup");
+      ce(q);
+      if (q === "BEGIN IMMEDIATE" && fault === "company-begin") throw Error("begin return lost");
+    });
+    const companySelect = vi.spyOn(companyDb, "prepare").mockImplementation((q) => {
+      if (fault === "company-select" && q.includes("FROM studio_cases")) throw Error("company select");
+      return cp(q);
+    });
+    const qualitySql = vi.spyOn(g.db, "exec").mockImplementation((q) => {
+      if (q === "ROLLBACK" && fault === "quality-end") throw Error("quality cleanup");
+      qe(q);
+    });
+    const lease = vi.spyOn(storageWitness22, "endComparisonStorageSession").mockImplementation((s) => {
+      if (fault === "lease-end") throw Error("lease cleanup");
+      end(s);
+    });
+    expect(() => service.inspectStoredComparisonContext(pick)).toThrow();
+    expect(service.retire()).toMatchObject({ status: "draining", postcapture: { cleanupRequired: true } });
+    expect(() => service.writePostcapture("record-result", oldCommand, explode())).toThrow();
+    companySql.mockRestore(); companySelect.mockRestore(); qualitySql.mockRestore(); lease.mockRestore();
+    expect(service.readStoredComparison(pick).current.status).toBe("not-checked");
+    expect(service.inspect()).toMatchObject({ status: "closed", postcapture: { cleanupRequired: false } });
+    expect(snapshot(g.db)).toEqual(before); expect(witnessFiles(g)).toEqual(files);
+    expect(start).not.toHaveBeenCalled();
+  }, postLimit30);
+it("4I32 pending result ack cannot be repaired by either read port or a restarted reader", () => {
+  const g = throughCapture(), i = resultInput(g), { service } = service30(g);
+  const io = vi.spyOn(journalIO, "writeJournalJson").mockImplementation((file, value, ...args) => {
+    if ((value as { payload: { type: string } }).payload.type === "ack") throw Error("ack lost");
+    return originalWrite(file, value, ...args);
+  });
+  expect(() => service.writePostcapture("record-result", i.command, i.current)).toThrow();
+  io.mockRestore();
+  const pick = selected32(g), before = snapshot(g.db), files = witnessFiles(g);
+  const write = vi.spyOn(journalIO, "writeJournalJson");
+  expect(() => service.readStoredComparison(pick)).toThrow(/RECOVERY_REQUIRED/);
+  expect(() => service.inspectStoredComparisonContext(pick)).toThrow(/RECOVERY_REQUIRED/);
+  const reopened = openComparisonStorageSession(g.paths, selection);
+  try {
+    const next = createIsolatedPublicComparisonService(reopened, g.cap, createSyntheticComparisonDriver(forbidden));
+    expect(() => next.readStoredComparison(pick)).toThrow();
+    expect(() => next.inspectStoredComparisonContext(pick)).toThrow();
+    expect(next.retire().status).toBe("closed");
+  } finally { closeComparisonStorageSession(reopened); }
+  expect(write).not.toHaveBeenCalled();
+  expect(snapshot(g.db)).toEqual(before); expect(witnessFiles(g)).toEqual(files);
+  expect(service.recoverPostcapture("record-result", i.command).witnessMatched).toBe(true);
+  expect(service.readStoredComparison(pick).database.comparisonRecorded).toBe(true);
+}, postLimit30);
+it("4I32 stored read refuses a crossed company or session and SQL corruption without touching current", () => {
+  const g = throughResult(), other = setup13(false), pick = selected32(g), { service } = service30(g);
+  const driver = createSyntheticComparisonDriver(forbidden);
+  const wrongCompany = createIsolatedPublicComparisonService(g.session, other.cap, driver);
+  const wrongSession = createIsolatedPublicComparisonService(other.session, g.cap, driver);
+  expect(() => wrongCompany.readStoredComparison(pick)).toThrow(/COMPANY_FILE_CHANGED/);
+  expect(() => wrongSession.readStoredComparison(pick)).toThrow(/COMPANY_FILE_CHANGED/);
+  const scope = vi.spyOn(companyGuard22, "createComparisonCompanyReadScope");
+  // Intercept only this disposable fixture reader; no corruption is persisted.
+  for (const sql of [
+    "UPDATE quality_actual_artifacts SET payload='{}' WHERE artifact_key='comparison-validated'",
+    "DELETE FROM quality_actual_artifacts WHERE artifact_key='comparison-validated'",
+    "DUPLICATE comparison-validated",
+  ]) {
+    // Existing immutable table triggers may reject direct corruption, so intercept only the reader's supplied row.
+    const read = g.db.prepare.bind(g.db);
+    const spy = vi.spyOn(g.db, "prepare").mockImplementation((q) => {
+      const statement = read(q);
+      if (q.includes("quality_actual_artifacts") && q.startsWith("SELECT")) {
+        const all = statement.all.bind(statement);
+        vi.spyOn(statement, "all").mockImplementation((...args) => all(...args).flatMap((r) =>
+          r.artifact_key !== "comparison-validated" ? [r] :
+            sql.startsWith("DELETE") ? [] : sql.startsWith("DUPLICATE") ? [r, { ...r }] : [{ ...r, payload: "{}" }]));
+      }
+      return statement;
+    });
+    expect(() => service.inspectStoredComparisonContext(pick)).toThrow();
+    spy.mockRestore();
+  }
+  expect(scope).not.toHaveBeenCalled();
+}, postLimit30);
+
+it("4I32 projection loss and SELECT failure release only completed reads; malformed current stays unavailable", () => {
+  const g = throughResult(), pick = selected32(g), { service, start } = service30(g);
+  const before = snapshot(g.db), files = witnessFiles(g);
+  const copy = storedRead32.copyComparisonStoredRead;
+  const projection = vi.spyOn(storedRead32, "copyComparisonStoredRead").mockImplementation((value, kind) => {
+    if (kind === "result") throw Error("public projection lost");
+    return copy(value, kind);
+  });
+  expect(() => service.inspectStoredComparisonContext(pick)).toThrow(/projection lost/);
+  expect(service.inspect().postcapture.cleanupRequired).toBe(false);
+  projection.mockRestore();
+  const prepare = g.db.prepare.bind(g.db);
+  const sql = vi.spyOn(g.db, "prepare").mockImplementation((q) => {
+    if (q.includes("quality_actual_artifacts")) throw Error("quality SELECT failed");
+    return prepare(q);
+  });
+  expect(() => service.readStoredComparison(pick)).toThrow(/SELECT failed/);
+  sql.mockRestore();
+  expect(g.db.isTransaction).toBe(false);
+  expect(service.inspect().postcapture.cleanupRequired).toBe(false);
+  const historical = service.readStoredComparison(pick);
+  g.companyDb.prepare("UPDATE studio_cases SET body=? WHERE id=?").run("{", fixture.company.id);
+  expect(service.inspectStoredComparisonContext(pick).current.status).toBe("unavailable");
+  expect(service.readStoredComparison(pick)).toEqual(historical);
+  expect(snapshot(g.db)).toEqual(before); expect(witnessFiles(g)).toEqual(files);
+  expect(start).not.toHaveBeenCalled();
+  expect(service.retire().status).toBe("closed");
 }, postLimit30);

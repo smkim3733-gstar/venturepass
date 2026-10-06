@@ -4,6 +4,7 @@ import { z } from "zod";
 import { assertPublicComparisonDataOnly } from "./studio-public-claim-comparison-budget";
 import {
   beginComparisonCompanyRead,
+  createComparisonCompanyReadScope,
   checkComparisonCompanyRead,
   endComparisonCompanyRead,
   type ComparisonCompanyGuard,
@@ -73,7 +74,7 @@ import {
 } from "./studio-public-claim-comparison-transmission-v4";
 import { randomUUID } from "node:crypto";
 import { captureProviderResponse } from "../../scripts/local-data-quality-provider-usage.mjs";
-import { inspectPublicClaimComparisonRequest } from "./studio-public-claim-comparison-request";
+import { inspectArchivedPublicClaimRequest, inspectPublicClaimComparisonRequest } from "./studio-public-claim-comparison-request";
 import { validateComparisonUsagePolicy } from "./studio-public-claim-comparison-usage";
 import { snapshotProviderSdkWire } from "./studio-plan-quality-provider-sdk-wire";
 import {
@@ -82,6 +83,8 @@ import {
   comparisonSyntheticWireKey,
   type SyntheticComparisonDriver,
 } from "./studio-public-claim-comparison-transport";
+import { derivePublicComparisonCapturedResult, publicComparisonValidatedBody } from "./studio-public-claim-comparison-native";
+import { copyComparisonStoredRead } from "./studio-public-claim-comparison-stored-read";
 type Version = 11 | 12 | 13;
 function witnessVersion(version: Version) {
   return version === 11 ? 1 : version === 12 ? 2 : 3;
@@ -1920,6 +1923,32 @@ const postcaptureSelection = z.object({
   runId: z.string().uuid(),
   dispatchCommandDigest: comparisonHashSchema,
 }).strict();
+const storedComparisonSelection = postcaptureSelection.extend({
+  comparisonEventDigest: comparisonHashSchema,
+  responseArtifactSha256: comparisonHashSchema,
+  validatedArtifactSha256: comparisonHashSchema,
+}).strict();
+type StoredComparisonSelection = z.infer<typeof storedComparisonSelection>;
+type StoredComparisonRead = {
+  source: "synthetic-comparison-stored-review";
+  resultIdentity: StoredComparisonSelection & {
+    requestIdentity: ReturnType<typeof publicComparisonValidatedBody>["requestIdentity"];
+    preparationDigest: string;
+    selection: ReturnType<typeof inspectArchivedPublicClaimRequest>["prepared"]["selection"];
+    binding: ReturnType<typeof inspectArchivedPublicClaimRequest>["prepared"]["binding"];
+  };
+  historical: {
+    prepared: ReturnType<typeof inspectArchivedPublicClaimRequest>["prepared"];
+    result: ReturnType<typeof publicComparisonValidatedBody>;
+    currentContextVerified: false;
+  };
+  database: PostcapturePreview["database"];
+  current: { status: "not-checked" | "exact-original-request" | "changed" | "unavailable";
+    originalRevision: number; observedRevision: number | null; reason: string | null };
+  owner: null;
+  runtimeObserved: false;
+  authority: typeof comparisonPlanAuthority;
+};
 type PostcaptureSelection = z.infer<typeof postcaptureSelection>;
 type PostcapturePreview = Omit<ReturnType<typeof createComparisonPostcapturePreview>, "source"> & {
   source: "synthetic-comparison-postcapture";
@@ -1952,6 +1981,8 @@ export type IsolatedPublicComparisonService = Readonly<{
   execute(command: unknown, current: unknown): Promise<IsolatedComparisonView>;
   recover(selection: unknown): IsolatedComparisonView;
   previewPostcapture(selection: unknown): PostcapturePreview;
+  readStoredComparison(selection: unknown): StoredComparisonRead;
+  inspectStoredComparisonContext(selection: unknown): StoredComparisonRead;
   writePostcapture(operation: PostcaptureOperation, command: unknown, current?: unknown): PostcaptureReceipt;
   recoverPostcapture(operation: PostcaptureOperation, command: unknown): PostcaptureReceipt;
   inspect(): Readonly<{
@@ -1984,6 +2015,9 @@ export function createIsolatedPublicComparisonService(
   let selected: PostcaptureSelection | null = null;
   let retired = false, postBusy = false;
   let storage: ComparisonStorageCall | undefined;
+  let companyRead: ReturnType<typeof createComparisonCompanyReadScope> | undefined;
+  let readStorage: ComparisonStorageCall | undefined;
+  let qualityReadOpen = false;
   let postStatus: ReturnType<IsolatedPublicComparisonService["inspect"]>["postcapture"]["status"] = "unused";
   // Kept only for uncertain writes. Recovery never substitutes a fresh command/current/nonce.
   let retained: { operation: PostcaptureOperation; command: unknown; current?: unknown } | undefined;
@@ -2000,11 +2034,16 @@ export function createIsolatedPublicComparisonService(
       fail("PUBLIC_COMPARISON_POSTCAPTURE_EXECUTION_PENDING");
   }
   function cleanStorage() {
+    companyRead?.finish();
+    companyRead = undefined;
     if (!storage) return;
     // Only this service's successful acquisition can reach this explicit cleanup.
-    if (storage.connection.db.isTransaction) storage.connection.db.exec("ROLLBACK");
+    if (storage.connection.db.isTransaction && (readStorage !== storage || qualityReadOpen))
+      storage.connection.db.exec("ROLLBACK");
     finishComparisonStorageCall(storage);
     storage = undefined;
+    readStorage = undefined;
+    qualityReadOpen = false;
   }
   function withStorage<T>(work: (call: ComparisonStorageCall) => T): T {
     if (storage) fail("PUBLIC_COMPARISON_POSTCAPTURE_CLEANUP_REQUIRED");
@@ -2017,8 +2056,11 @@ export function createIsolatedPublicComparisonService(
       throw error;
     } finally {
       try {
+        if (companyRead?.pending()) fail("PUBLIC_COMPARISON_POSTCAPTURE_CLEANUP_REQUIRED");
         finishComparisonStorageCall(call);
         storage = undefined;
+        readStorage = undefined;
+        qualityReadOpen = false;
       } catch (error) {
         postStatus = "recovery-required";
         throw error;
@@ -2046,6 +2088,109 @@ export function createIsolatedPublicComparisonService(
       fail("PUBLIC_COMPARISON_POSTCAPTURE_RUN_CHANGED");
     return { requested, binding };
   }
+  function storedRead(raw: unknown, currentRequested: boolean): StoredComparisonRead {
+    requireHandoff();
+    if (retained) fail("PUBLIC_COMPARISON_POSTCAPTURE_RECOVERY_REQUIRED");
+    const requested = storedComparisonSelection.parse(copyComparisonStoredRead(raw, "selection"));
+    postBusy = true;
+    try {
+      cleanStorage();
+      return withStorage((call) => {
+        readStorage = call;
+        const { db, selection } = call.connection;
+        enter(db);
+        try {
+          try { db.exec("BEGIN"); }
+          finally { qualityReadOpen = db.isTransaction; }
+          if (!qualityReadOpen) fail("PUBLIC_COMPARISON_STORED_READ_LOCK_LOST");
+          const a = inspectTransaction(db, selection, 13);
+          checkComparisonWitnessCompany(session, companyGuard, 3);
+          const cp = checkpoint(db, { ...a, state: a.inspection.state }, a.inspection);
+          checkComparisonWitness(session, cp, 3);
+          const state = a.transmission!.state;
+          const pick = select(state, { runId: requested.runId, dispatchCommandDigest: requested.dispatchCommandDigest });
+          const records = state.reservation.archive.records;
+          const run = records.runs.find((r) => r.id === requested.runId)!;
+          const event = records.events.find((e) => e.runId === run.id && e.payload.kind === "comparison-recorded");
+          if (!event) fail("PUBLIC_COMPARISON_STORED_RESULT_MISSING");
+          if (event.eventDigest !== requested.comparisonEventDigest ||
+              event.payload.kind !== "comparison-recorded" ||
+              event.payload.responseArtifactSha256 !== requested.responseArtifactSha256 ||
+              event.payload.validatedArtifactSha256 !== requested.validatedArtifactSha256)
+            fail("PUBLIC_COMPARISON_STORED_RESULT_CHANGED");
+          const context = records.artifacts.find((v) => v.runId === run.id && v.key === "comparison-context")!;
+          const response = records.artifacts.find((v) => v.runId === run.id && v.key === "comparison-response")!;
+          const validated = records.artifacts.find((v) => v.runId === run.id && v.key === "comparison-validated")!;
+          const { prepared } = inspectArchivedPublicClaimRequest(run.command, context.body);
+          const result = publicComparisonValidatedBody(run.identity, response.sha256,
+            derivePublicComparisonCapturedResult(prepared, captureProviderResponse(JSON.parse(response.body)), run.command.model));
+          // The whole SQL13 audit already proves the event, receipt, artifacts and original request.
+          // Repeat the narrow projection equality; never trust an isolated validated JSON object.
+          if (validated.sha256 !== requested.validatedArtifactSha256 || validated.body !== JSON.stringify(result))
+            fail("PUBLIC_COMPARISON_STORED_RESULT_CHANGED");
+          selected = pick.requested;
+          const current: StoredComparisonRead["current"] = {
+            status: "not-checked", originalRevision: run.command.selection.companyRevision,
+            observedRevision: null, reason: null,
+          };
+          if (currentRequested) {
+            companyRead = createComparisonCompanyReadScope(companyGuard);
+            try {
+              const company = companyRead.read(run.command.selection.companyId);
+              current.observedRevision = company.revision;
+              try {
+                inspectPublicClaimComparisonRequest(company, run.command, run.identity);
+                current.status = "exact-original-request";
+              } catch (error) {
+                const code = error && typeof error === "object" && "code" in error ? String(error.code) : "";
+                if (["PUBLIC_CLAIM_STALE", "PUBLIC_CLAIM_MISSING", "PUBLIC_CLAIM_REQUEST_CHANGED"].includes(code)) {
+                  current.status = "changed"; current.reason = code;
+                } else {
+                  current.status = "unavailable";
+                  current.reason = ["PUBLIC_CLAIM_HISTORY", "PUBLIC_CLAIM_FORMAT", "PUBLIC_CLAIM_LIMIT",
+                    "PUBLIC_CLAIM_UNSUPPORTED", "PUBLIC_CLAIM_REQUEST_LIMIT"].includes(code) ? code : "CURRENT_AUDIT_UNAVAILABLE";
+                }
+              }
+              companyRead.check(company.id);
+            } catch (error) {
+              const message = error instanceof Error ? error.message : "";
+              // File/binding/lock failures cannot be converted to a historical success.
+              if (message.startsWith("PUBLIC_COMPARISON_") &&
+                  !["PUBLIC_COMPARISON_COMPANY_TRANSACTION_ACTIVE", "PUBLIC_COMPARISON_COMPANY_ROW_INVALID"].includes(message))
+                throw error;
+              current.status = "unavailable";
+              current.reason = message === "PUBLIC_COMPARISON_COMPANY_TRANSACTION_ACTIVE" ? "COMPANY_BUSY" :
+                message === "PUBLIC_COMPARISON_COMPANY_ROW_INVALID" ? "COMPANY_ROW_INVALID" : "CURRENT_READ_UNAVAILABLE";
+            }
+          }
+          checkComparisonWitness(session, cp, 3);
+          const native = a.inspection.view.native;
+          const saved = native.runs.find((r) => r.runId === run.id)!;
+          postStatus = "review";
+          return copyComparisonStoredRead({
+            source: "synthetic-comparison-stored-review" as const,
+            resultIdentity: { ...requested, requestIdentity: run.identity,
+              preparationDigest: prepared.preparationDigest, selection: prepared.selection, binding: prepared.binding },
+            historical: { prepared, result, currentContextVerified: false as const },
+            database: { comparisonRecorded: saved.comparisonRecorded, costSettled: saved.costSettled,
+              finalized: saved.finalized, currentContextVerified: false as const, runHeldBytes: saved.heldBytes,
+              scopeHeldUnits: native.heldUnits, scopeRecognizedUnits: native.recognizedUnits },
+            current, owner: null, runtimeObserved: false as const, authority: comparisonPlanAuthority,
+          }, "result");
+        } finally {
+          try {
+            companyRead?.finish();
+            companyRead = undefined;
+            if (qualityReadOpen) {
+              db.exec("ROLLBACK");
+              if (db.isTransaction) fail("PUBLIC_COMPARISON_POSTCAPTURE_CLEANUP_REQUIRED");
+              qualityReadOpen = false;
+            }
+          } finally { busy.delete(db); }
+        }
+      });
+    } finally { postBusy = false; refresh(); }
+  }
   function parseCommand(operation: PostcaptureOperation, raw: unknown) {
     if (operation !== "record-result" && operation !== "settle-finalize")
       fail("PUBLIC_COMPARISON_POSTCAPTURE_OPERATION");
@@ -2057,7 +2202,7 @@ export function createIsolatedPublicComparisonService(
     const command = parseCommand(operation, raw);
     if (retained && (retained.operation !== operation || digest(retained.command) !== digest(command)))
       fail("PUBLIC_COMPARISON_POSTCAPTURE_ORIGINAL_COMMAND_REQUIRED");
-    if (!recovery && (retained || storage))
+    if (!recovery && (retained || storage || companyRead))
       fail("PUBLIC_COMPARISON_POSTCAPTURE_RECOVERY_REQUIRED");
     postBusy = true;
     try {
@@ -2134,11 +2279,11 @@ export function createIsolatedPublicComparisonService(
     refresh();
     return Object.freeze({
       source: "synthetic-comparison-service",
-      status: retired ? (!lifetime && !postBusy && !retained && !storage ? "closed" : "draining") : "ready",
+      status: retired ? (!lifetime && !postBusy && !retained && !storage && !companyRead ? "closed" : "draining") : "ready",
       activeCalls: pending.size,
       execution: last,
       postcapture: Object.freeze({ status: postStatus, runId: selected?.runId ?? null,
-        commandDigest: retained ? digest(retained.command) : null, cleanupRequired: !!storage }),
+        commandDigest: retained ? digest(retained.command) : null, cleanupRequired: !!storage || !!companyRead }),
       owner: null,
       runtimeObserved: false,
       authority: comparisonPlanAuthority,
@@ -2146,7 +2291,7 @@ export function createIsolatedPublicComparisonService(
   };
   return Object.freeze({
     async execute(command: unknown, current: unknown) {
-      if (retired || !lifetime || selected || postBusy || storage || retained)
+      if (retired || !lifetime || selected || postBusy || storage || retained || companyRead)
         fail("PUBLIC_COMPARISON_SERVICE_RETIRED");
       if (original) {
         assertPublicComparisonDataOnly(command);
@@ -2192,6 +2337,8 @@ export function createIsolatedPublicComparisonService(
         });
       } finally { postBusy = false; refresh(); }
     },
+    readStoredComparison: (raw: unknown) => storedRead(raw, false),
+    inspectStoredComparisonContext: (raw: unknown) => storedRead(raw, true),
     writePostcapture: (operation: PostcaptureOperation, command: unknown, current?: unknown) =>
       storageOperation(operation, command, current, false),
     recoverPostcapture: (operation: PostcaptureOperation, command: unknown) =>
