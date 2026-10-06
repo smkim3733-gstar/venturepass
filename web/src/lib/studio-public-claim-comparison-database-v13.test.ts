@@ -71,14 +71,28 @@ import { createIsolatedPublicComparisonExecution } from "./studio-public-claim-c
 import { endComparisonCompanyRead } from "./studio-public-comparison-company-guard";
 import {
   createSyntheticComparisonDriver,
+  requireSyntheticComparisonDriver,
   comparisonSyntheticWireKey,
   type PublicComparisonTransportBoundary,
   type SyntheticComparisonHooks,
 } from "./studio-public-claim-comparison-transport";
+import {
+  createSyntheticComparisonSdkDriver,
+  type SyntheticComparisonSdkOptions,
+} from "./studio-public-claim-comparison-sdk-adapter";
 import * as storageWitness22 from "./studio-public-comparison-storage-witness";
 import * as companyGuard22 from "./studio-public-comparison-company-guard";
 import * as databaseRows22 from "./studio-public-claim-comparison-database-rows";
 vi.mock("server-only", () => ({}));
+vi.mock("openai/error", () => {
+  class APIError extends Error {}
+  return {
+    APIError,
+    APIConnectionError: class extends APIError {},
+    APIConnectionTimeoutError: class extends APIError {},
+    APIUserAbortError: class extends APIError {},
+  };
+});
 vi.mock(
   "./studio-plan-quality-provider-configuration-current",
   () => import("./studio-plan-quality-provider-configuration-20260927-test-fixture"),
@@ -2026,6 +2040,719 @@ for (const mode of ["sync-start-throw", "driver-throw-after-start"] as const)
       });
       expect(started).toHaveBeenCalledTimes(1);
       expect(JSON.stringify(result)).not.toMatch(/private synthetic|private driver/);
+    },
+    limit,
+  );
+
+// 4I24: SDK shape only; no openai runtime import or network fallback.
+const tick24 = () => new Promise<void>((done) => setImmediate(done));
+function sdkWire24(body: unknown) {
+  return {
+    method: "POST",
+    body: JSON.stringify(body),
+    redirect: "error",
+    signal: new AbortController().signal,
+    headers: {
+      authorization: "Bearer " + comparisonSyntheticWireKey,
+      "content-type": "application/json",
+      "x-stainless-retry-count": "0",
+    },
+  };
+}
+it(
+  "4I24 Response completion precedes SDK capture under the same lease and all promises drain",
+  async () => {
+    const { g, command, current } = ownerFixture22();
+    const ready = deferred22<void>(),
+      net = deferred22<Response>(),
+      decode = deferred22<void>(),
+      drain = deferred22<void>();
+    let options!: SyntheticComparisonSdkOptions, hooks!: SyntheticComparisonHooks;
+    let received: Response | undefined;
+    let underBothLocks = false;
+    const network = vi.fn(() => {
+      underBothLocks = g.db.isTransaction;
+      expect(() => g.companyDb.exec("BEGIN IMMEDIATE")).toThrow(/locked/);
+      ready.resolve();
+      return net.promise;
+    });
+    const driver = createSyntheticComparisonSdkDriver((o) => {
+      options = o;
+      return {
+        responses: {
+          create: async (body) => {
+            received = await o.fetch("https://api.openai.com/v1/responses", sdkWire24(body));
+            await decode.promise;
+            const value = { ...response, usage: undefined, output_text: "ignore-derived-text" };
+            Object.defineProperty(value, "_request_id", { value: "non-enumerable-request-24" });
+            return value;
+          },
+        },
+      };
+    }, network);
+    const execution = createIsolatedPublicComparisonExecution(
+      g.session,
+      g.cap,
+      createSyntheticComparisonDriver(async (b, h) => {
+        hooks = h;
+        await requireSyntheticComparisonDriver(driver)(b, h);
+        await drain.promise;
+      }),
+    );
+    const running = execution.execute(command, current);
+    await Promise.race([
+      ready.promise,
+      running.then((v) => {
+        throw Error("not started: " + JSON.stringify(v));
+      }),
+    ]);
+    expect(underBothLocks).toBe(true);
+    expect(g.db.isTransaction).toBe(false);
+    g.companyDb.exec("BEGIN IMMEDIATE");
+    g.companyDb.exec("ROLLBACK");
+    const raw = new Response("{}");
+    net.resolve(raw);
+    await tick24();
+    expect(received).toBe(raw);
+    expect(execution.inspect()).toMatchObject({
+      networkSettled: true,
+      sdkSettled: false,
+      capturePersisted: false,
+      retainedCaptureCount: 0,
+      promiseSettled: false,
+    });
+    expect(() => beginComparisonStorageSession(g.session)).toThrow(/BUSY/);
+    expect(() => options.fetch("https://api.openai.com/v1/responses", sdkWire24({}))).toThrow(
+      /START_REFUSED/,
+    );
+    hooks.markUnknown();
+    g.companyDb.prepare("DELETE FROM studio_cases WHERE id=?").run(fixture.company.id);
+    vi.setSystemTime(later);
+    decode.resolve();
+    await tick24();
+    expect(execution.inspect()).toMatchObject({
+      capturePersisted: true,
+      sdkSettled: true,
+      promiseSettled: false,
+      retainedCaptureCount: 1,
+    });
+    expect(execution.retire().phase).toBe("draining");
+    drain.resolve();
+    expect(await running).toMatchObject({
+      phase: "closed",
+      promiseSettled: true,
+      owner: null,
+      runtimeObserved: false,
+    });
+    expect(network).toHaveBeenCalledTimes(1);
+    const s = state13(g);
+    expect(JSON.stringify(s)).toContain("non-enumerable-request-24");
+    expect(JSON.stringify(s)).not.toContain("ignore-derived-text");
+    expect(
+      s.reservation.archive.records.events.some((e) => e.payload.kind === "dispatch-unknown"),
+    ).toBe(true);
+    result13(g);
+    const close = closeInput(g);
+    expect(
+      writeGuardedPublicComparisonV13(g.session, "settle-finalize", close.command, close.current)
+        .status,
+    ).toBe("blocked");
+  },
+  limit,
+);
+it(
+  "4I24 stored nonce replay never prepares an SDK-shaped driver or reads current",
+  async () => {
+    const { g, command, current } = ownerFixture22();
+    writeGuardedPublicComparisonV13(g.session, "approve-dispatch", command, {
+      ...current,
+      companyGuard: g.cap,
+    });
+    const factory = vi.fn(() => {
+        throw Error("SDK prepared during replay");
+      }),
+      network = vi.fn(async () => new Response("{}"));
+    const execution = createIsolatedPublicComparisonExecution(
+      g.session,
+      g.cap,
+      createSyntheticComparisonSdkDriver(factory, network),
+    );
+    const before = snapshot(g.db);
+    expect(await execution.execute(command, explode())).toMatchObject({
+      phase: "replay",
+      owner: null,
+      startAttempted: false,
+    });
+    expect(factory).not.toHaveBeenCalled();
+    expect(network).not.toHaveBeenCalled();
+    expect(snapshot(g.db)).toEqual(before);
+  },
+  limit,
+);
+
+for (const fault of ["company-delete", "expired", "option", "retired", "aborted"] as const)
+  it(
+    "4I24 delayed SDK preparation rechecks " + fault + " at the actual start",
+    async () => {
+      const { g, command, current } = ownerFixture22();
+      let checked = false;
+      const network = vi.fn(async () => new Response("{}"));
+      const driver = createSyntheticComparisonSdkDriver(
+        (o) => ({
+          responses: {
+            create: async (body) => {
+              await Promise.resolve();
+              const wire: Record<string, unknown> = sdkWire24(body);
+              if (fault === "company-delete")
+                g.companyDb.prepare("DELETE FROM studio_cases WHERE id=?").run(fixture.company.id);
+              if (fault === "expired") vi.setSystemTime(command.approval.expiresAt);
+              if (fault === "option")
+                wire.body = JSON.stringify({ ...body, service_tier: "default" });
+              if (fault === "retired") execution.retire();
+              if (fault === "aborted") {
+                const c = new AbortController();
+                c.abort();
+                wire.signal = c.signal;
+              }
+              await expect(
+                Promise.resolve().then(() => o.fetch("https://api.openai.com/v1/responses", wire)),
+              ).rejects.toThrow(/START_REFUSED/);
+              checked = true;
+              throw Error("no decoded response");
+            },
+          },
+        }),
+        network,
+      );
+      const execution = createIsolatedPublicComparisonExecution(g.session, g.cap, driver);
+      const view = await execution.execute(command, current);
+      expect(checked).toBe(true);
+      expect(view).toMatchObject({
+        phase: "recovery-required",
+        startAttempted: false,
+        capturePersisted: false,
+        sdkSettled: true,
+        promiseSettled: true,
+      });
+      expect(network).not.toHaveBeenCalled();
+      expect(state13(g).reservation.archive.financial.events).toHaveLength(1);
+      expect(() => beginComparisonStorageSession(g.session)).toThrow(/BUSY/);
+    },
+    limit,
+  );
+
+for (const mode of [
+  "factory",
+  "sync-network",
+  "network-reject",
+  "parse",
+  "sdk-error",
+  "getter",
+  "oversize",
+  "no-response",
+] as const)
+  it(
+    "4I24 SDK-shaped " + mode + " failure keeps an unknown hold and no replacement start",
+    async () => {
+      const { g, command, current } = ownerFixture22();
+      const network = vi.fn(() => {
+        if (mode === "sync-network") throw Error("secret sync failure");
+        if (mode === "network-reject") return Promise.reject(Error("secret connection failure"));
+        return Promise.resolve(
+          new Response(mode === "parse" ? "{broken" : "{}", {
+            status: mode === "sdk-error" ? 429 : 200,
+          }),
+        );
+      });
+      let capturedOptions: SyntheticComparisonSdkOptions | undefined;
+      const execution = createIsolatedPublicComparisonExecution(
+        g.session,
+        g.cap,
+        createSyntheticComparisonSdkDriver((o) => {
+          capturedOptions = o;
+          if (mode === "factory") throw Error("secret factory failure");
+          return {
+            responses: {
+              create: async (body) => {
+                if (mode === "no-response") return response; // No guarded Response: not a provider observation.
+                const raw = await o.fetch("https://api.openai.com/v1/responses", sdkWire24(body));
+                if (!raw.ok) throw Error("secret SDK body");
+                await raw.json();
+                if (mode === "getter")
+                  return Object.defineProperty({ ...response }, "output", {
+                    get() {
+                      throw Error("getter must not run");
+                    },
+                  });
+                if (mode === "oversize")
+                  return {
+                    ...response,
+                    output: [
+                      {
+                        type: "message",
+                        content: [{ type: "output_text", text: "x".repeat(4 * 1024 * 1024) }],
+                      },
+                    ],
+                  };
+                return response;
+              },
+            },
+          };
+        }, network),
+      );
+      const view = await execution.execute(command, current);
+      expect(view).toMatchObject({
+        phase: "recovery-required",
+        capturePersisted: false,
+        retainedCaptureCount: 0,
+        sdkSettled: true,
+        promiseSettled: true,
+        owner: null,
+      });
+      expect(network).toHaveBeenCalledTimes(mode === "factory" || mode === "no-response" ? 0 : 1);
+      expect(JSON.stringify(view)).not.toMatch(/secret|authorization|rawBody|output_text/);
+      expect(() =>
+        capturedOptions!.fetch("https://api.openai.com/v1/responses", sdkWire24({})),
+      ).toThrow(/START_REFUSED/);
+      const s = state13(g);
+      expect(s.reservation.archive.financial.events).toHaveLength(1);
+      expect(s.reservation.archive.records.events.at(-1)!.payload.kind).toBe("dispatch-unknown");
+      const before = snapshot(g.db);
+      expect(
+        execution.recover({ runId: command.runId, dispatchCommandDigest: digest(command) }).phase,
+      ).toBe("recovery-required");
+      expect(snapshot(g.db)).toEqual(before);
+      expect(() => beginComparisonStorageSession(g.session)).toThrow(/BUSY/);
+    },
+    limit,
+  );
+
+for (const mode of ["refusal", "incomplete", "zero"] as const)
+  it(
+    "4I24 decoded " + mode + " capture is independent of SDK-shaped network completion",
+    async () => {
+      const { g, command, current } = ownerFixture22();
+      const value = {
+        ...response,
+        status: mode === "incomplete" ? "incomplete" : "completed",
+        usage:
+          mode === "zero"
+            ? {
+                input_tokens: 0,
+                output_tokens: 0,
+                total_tokens: 0,
+                input_tokens_details: { cached_tokens: 0 },
+                output_tokens_details: { reasoning_tokens: 0 },
+              }
+            : response.usage,
+        output:
+          mode === "refusal"
+            ? [{ type: "message", content: [{ type: "refusal", refusal: "No" }] }]
+            : [],
+      };
+      const execution = createIsolatedPublicComparisonExecution(
+        g.session,
+        g.cap,
+        createSyntheticComparisonSdkDriver(
+          (o) => ({
+            responses: {
+              create: async (body) => {
+                const raw = await o.fetch("https://api.openai.com/v1/responses", sdkWire24(body));
+                return raw.json();
+              },
+            },
+          }),
+          async () => new Response(JSON.stringify(value)),
+        ),
+      );
+      expect(await execution.execute(command, current)).toMatchObject({
+        phase: "closed",
+        capturePersisted: true,
+        networkSettled: true,
+        sdkSettled: true,
+        owner: null,
+      });
+      expect(state13(g).reservation.archive.financial.events).toHaveLength(1); // Capture is not settlement.
+      if (mode === "zero") {
+        result13(g);
+        const close = closeInput(g);
+        expect(
+          writeGuardedPublicComparisonV13(
+            g.session,
+            "settle-finalize",
+            close.command,
+            close.current,
+          ).status,
+        ).toBe("committed");
+        expect(state13(g).reservation.archive.records.events.at(-1)!.payload.kind).toBe(
+          "finalized",
+        );
+      }
+    },
+    limit,
+  );
+
+for (const mode of ["timeout-before-response", "decode-after-driver-error"] as const)
+  it(
+    "4I24 " + mode + " retains every acquired promise and the original late capture",
+    async () => {
+      const { g, command, current } = ownerFixture22();
+      const ready = deferred22<void>(),
+        net = deferred22<Response>(),
+        decoding = deferred22<unknown>();
+      let options!: SyntheticComparisonSdkOptions, hooks!: SyntheticComparisonHooks;
+      const adapter = createSyntheticComparisonSdkDriver(
+        (o) => {
+          options = o;
+          return {
+            responses: {
+              create: (body) => {
+                const received = o.fetch("https://api.openai.com/v1/responses", sdkWire24(body));
+                void received.catch(() => undefined); // synthetic timeout may finish before the underlying request.
+                return mode === "timeout-before-response"
+                  ? decoding.promise
+                  : received.then(() => decoding.promise);
+              },
+            },
+          };
+        },
+        () => {
+          ready.resolve();
+          return net.promise;
+        },
+      );
+      const driver =
+        mode === "decode-after-driver-error"
+          ? createSyntheticComparisonDriver((b, h) => {
+              hooks = h;
+              void requireSyntheticComparisonDriver(adapter)(b, h);
+              throw Error("driver failed after acquiring both promises");
+            })
+          : adapter;
+      const execution = createIsolatedPublicComparisonExecution(g.session, g.cap, driver);
+      const running = execution.execute(command, current);
+      await Promise.race([
+        ready.promise,
+        running.then(() => {
+          throw Error("never started");
+        }),
+      ]);
+      if (mode === "timeout-before-response") {
+        decoding.reject(Error("synthetic SDK timeout"));
+        await tick24();
+        expect(execution.inspect()).toMatchObject({
+          sdkSettled: true,
+          networkSettled: false,
+          promiseSettled: false,
+          capturePersisted: false,
+        });
+        expect(execution.retire().phase).toBe("draining");
+        expect(() => beginComparisonStorageSession(g.session)).toThrow(/BUSY/);
+        net.resolve(new Response(JSON.stringify(response)));
+      } else {
+        net.resolve(new Response("{}"));
+        await tick24();
+        expect(execution.inspect()).toMatchObject({
+          networkSettled: true,
+          sdkSettled: false,
+          promiseSettled: false,
+          capturePersisted: false,
+        });
+        expect(() =>
+          hooks.sdk(
+            async () => response,
+            async () => new Response("{}"),
+          ),
+        ).toThrow(/SDK_REFUSED/);
+        expect(() => options.fetch("https://api.openai.com/v1/responses", sdkWire24({}))).toThrow(
+          /START_REFUSED/,
+        );
+        execution.retire();
+        g.companyDb.prepare("DELETE FROM studio_cases WHERE id=?").run(fixture.company.id);
+        vi.setSystemTime(later);
+        decoding.resolve(response);
+      }
+      const view = await running;
+      expect(view).toMatchObject({
+        phase: mode === "timeout-before-response" ? "recovery-required" : "closed",
+        promiseSettled: true,
+        capturePersisted: mode === "decode-after-driver-error",
+        networkSettled: true,
+        sdkSettled: true,
+      });
+      expect(state13(g).reservation.archive.financial.events).toHaveLength(1);
+      if (mode === "timeout-before-response") {
+        const before = snapshot(g.db);
+        expect(
+          execution.recover({ runId: command.runId, dispatchCommandDigest: digest(command) }).phase,
+        ).toBe("recovery-required");
+        expect(snapshot(g.db)).toEqual(before);
+      }
+    },
+    limit,
+  );
+
+it(
+  "4I24 first decoded callback snapshots synchronously and a repeated callback cannot replace it",
+  async () => {
+    const { g, command, current } = ownerFixture22();
+    let callbackVerified = false;
+    let lateCallback!: (value: unknown) => unknown;
+    const initial = structuredClone(response);
+    const execution = createIsolatedPublicComparisonExecution(
+      g.session,
+      g.cap,
+      createSyntheticComparisonSdkDriver(
+        (o) => ({
+          responses: {
+            create: (body) => {
+              const responseReady = o.fetch("https://api.openai.com/v1/responses", sdkWire24(body));
+              const hostileThenable = {
+                then(onValue: (v: unknown) => unknown) {
+                  lateCallback = onValue;
+                  return responseReady.then(() => {
+                    onValue(initial);
+                    expect(execution.inspect()).toMatchObject({
+                      capturePersisted: true,
+                      retainedCaptureCount: 1,
+                    });
+                    initial.id = "mutated-after-callback";
+                    onValue({ ...response, id: "replacement" });
+                    expect(execution.inspect().retainedCaptureCount).toBe(1);
+                    callbackVerified = true;
+                  });
+                },
+              };
+              // Synthetic protocol violation deliberately calls the registered callback twice.
+              return hostileThenable as PromiseLike<unknown>;
+            },
+          },
+        }),
+        async () => new Response("{}"),
+      ),
+    );
+    const view = await execution.execute(command, current);
+    expect(callbackVerified).toBe(true);
+    expect(view).toMatchObject({ phase: "closed", capturePersisted: true });
+    lateCallback({ ...response, id: "late-after-closed" });
+    expect(execution.inspect()).toEqual(view);
+    const stored = state13(g).reservation.archive.records.artifacts.filter(
+      (a) => a.runId === command.runId && a.key === "comparison-response",
+    );
+    expect(stored).toHaveLength(1);
+    expect(JSON.parse(stored[0].body)).toEqual(response);
+  },
+  limit,
+);
+
+for (const fault of [
+  "dispatch-commit",
+  "dispatch-ack",
+  "capture-commit",
+  "capture-ack",
+  "capture-insert",
+  "read-rollback",
+  "lease-close",
+] as const)
+  it(
+    "4I24 SDK-shaped " +
+      fault +
+      " failure preserves nonce bytes and recovers only storage acknowledgements",
+    async () => {
+      const { g, command, current } = ownerFixture22();
+      let capturePhase = false,
+        hit = false,
+        restoreEnd: (() => void) | undefined;
+      let insert: ReturnType<typeof injectInsert> | undefined;
+      const exec = g.db.exec.bind(g.db);
+      const sql = vi.spyOn(g.db, "exec").mockImplementation((statement) => {
+        if (capturePhase && fault === "read-rollback" && statement === "ROLLBACK") {
+          hit = true;
+          throw Error("read release failed");
+        }
+        exec(statement);
+        if (
+          !hit &&
+          statement === "COMMIT" &&
+          ((fault === "dispatch-commit" && !capturePhase) ||
+            (fault === "capture-commit" && capturePhase))
+        ) {
+          hit = true;
+          throw Error("COMMIT return lost");
+        }
+      });
+      const io = vi
+        .spyOn(journalIO, "writeJournalJson")
+        .mockImplementation((file, value, ...args) => {
+          if (
+            (value as { payload: { type: string } }).payload.type === "ack" &&
+            ((fault === "dispatch-ack" && !capturePhase) ||
+              (fault === "capture-ack" && capturePhase))
+          ) {
+            hit = true;
+            throw Error("ack return lost");
+          }
+          return originalWrite(file, value, ...args);
+        });
+      const network = vi.fn(() => {
+        if (fault === "read-rollback") capturePhase = true;
+        if (fault === "lease-close") {
+          const spy = vi
+            .spyOn(storageWitness22, "endComparisonStorageSession")
+            .mockImplementation(() => {
+              hit = true;
+              throw Error("close failed");
+            });
+          restoreEnd = () => spy.mockRestore();
+        }
+        return Promise.resolve(new Response("{}"));
+      });
+      const factory = vi.fn((o: SyntheticComparisonSdkOptions) => ({
+        responses: {
+          create: async (body: PublicComparisonTransportBoundary["body"]) => {
+            const raw = await o.fetch("https://api.openai.com/v1/responses", sdkWire24(body));
+            await raw.json();
+            capturePhase = true;
+            if (fault === "capture-insert") {
+              insert = injectInsert(g.db, 2);
+              hit = true;
+            }
+            return response;
+          },
+        },
+      }));
+      const execution = createIsolatedPublicComparisonExecution(
+        g.session,
+        g.cap,
+        createSyntheticComparisonSdkDriver(factory, network),
+      );
+      const view = await execution.execute(command, current);
+      expect(hit).toBe(true);
+      expect(view).toMatchObject({
+        phase: "recovery-required",
+        retainedCaptureCount: fault.startsWith("dispatch") ? 0 : 1,
+        owner: null,
+      });
+      expect(() => beginComparisonStorageSession(g.session)).toThrow(/BUSY/);
+      sql.mockRestore();
+      io.mockRestore();
+      insert?.mockRestore();
+      restoreEnd?.();
+      const before = snapshot(g.db);
+      const recovered = execution.recover({
+        runId: command.runId,
+        dispatchCommandDigest: digest(command),
+      });
+      if (fault !== "read-rollback") expect(snapshot(g.db)).toEqual(before);
+      if (fault.startsWith("dispatch")) {
+        expect(factory).not.toHaveBeenCalled();
+        expect(network).not.toHaveBeenCalled();
+        expect(recovered.phase).toBe("recovery-required");
+      } else if (fault === "capture-insert") {
+        expect(recovered).toMatchObject({
+          phase: "recovery-required",
+          retainedCaptureCount: 1,
+          capturePersisted: false,
+        });
+      } else {
+        expect(recovered).toMatchObject({
+          phase: "closed",
+          capturePersisted: true,
+          retainedCaptureCount: 0,
+        });
+        const after = snapshot(g.db);
+        expect(() =>
+          execution.recover({ runId: command.runId, dispatchCommandDigest: digest(command) }),
+        ).toThrow(/OWNER_REQUIRED/);
+        expect(snapshot(g.db)).toEqual(after);
+      }
+      expect(network.mock.calls.length).toBeLessThanOrEqual(1);
+    },
+    limit,
+  );
+
+for (const mode of ["toJSON", "cyclic"] as const)
+  it(
+    "4I24 decoded " + mode + " is rejected without executing unsafe response serialization",
+    async () => {
+      const { g, command, current } = ownerFixture22();
+      let executed = false;
+      const value: Record<string, unknown> = { ...response };
+      if (mode === "toJSON")
+        value.output = [
+          {
+            toJSON() {
+              executed = true;
+              return response;
+            },
+          },
+        ];
+      else value.output = [value];
+      const network = vi.fn(async () => new Response("{}"));
+      const execution = createIsolatedPublicComparisonExecution(
+        g.session,
+        g.cap,
+        createSyntheticComparisonSdkDriver(
+          (o) => ({
+            responses: {
+              create: async (body) => {
+                await o.fetch("https://api.openai.com/v1/responses", sdkWire24(body));
+                return value;
+              },
+            },
+          }),
+          network,
+        ),
+      );
+      expect(await execution.execute(command, current)).toMatchObject({
+        phase: "recovery-required",
+        capturePersisted: false,
+        retainedCaptureCount: 0,
+        promiseSettled: true,
+      });
+      expect(executed).toBe(false);
+      expect(network).toHaveBeenCalledTimes(1);
+      expect(state13(g).reservation.archive.financial.events).toHaveLength(1);
+      expect(() => beginComparisonStorageSession(g.session)).toThrow(/BUSY/);
+    },
+    limit,
+  );
+
+for (const wrongPort of ["network-json", "sdk-response"] as const)
+  it(
+    "4I24 mismatched " + wrongPort + " never substitutes one completion boundary for the other",
+    async () => {
+      const { g, command, current } = ownerFixture22();
+      const network = vi.fn(async () =>
+        wrongPort === "network-json" ? (response as unknown as Response) : new Response("{}"),
+      );
+      const execution = createIsolatedPublicComparisonExecution(
+        g.session,
+        g.cap,
+        createSyntheticComparisonSdkDriver(
+          (o) => ({
+            responses: {
+              create: async (body) => {
+                const raw = await o.fetch("https://api.openai.com/v1/responses", sdkWire24(body));
+                return wrongPort === "sdk-response" ? raw : response;
+              },
+            },
+          }),
+          network,
+        ),
+      );
+      expect(await execution.execute(command, current)).toMatchObject({
+        phase: "recovery-required",
+        capturePersisted: false,
+        retainedCaptureCount: 0,
+        networkSettled: true,
+        sdkSettled: true,
+        promiseSettled: true,
+        owner: null,
+      });
+      expect(network).toHaveBeenCalledTimes(1);
+      expect(state13(g).reservation.archive.financial.events).toHaveLength(1);
+      expect(() => beginComparisonStorageSession(g.session)).toThrow(/BUSY/);
     },
     limit,
   );

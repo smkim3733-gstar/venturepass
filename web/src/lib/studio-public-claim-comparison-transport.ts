@@ -1,5 +1,6 @@
 import "server-only";
 import { z } from "zod";
+import { freezeProviderValue } from "../../scripts/local-data-quality-provider-usage.mjs";
 import { assertPublicComparisonDataOnly } from "./studio-public-claim-comparison-budget";
 import { inspectArchivedPublicClaimRequest } from "./studio-public-claim-comparison-request";
 import { providerDigest as digest } from "../../scripts/local-data-quality-provider.mjs";
@@ -17,6 +18,7 @@ export function preparePublicComparisonTransportBoundary(raw: unknown) {
   return Object.freeze({
     source: "supplied-comparison-transport-boundary" as const,
     rawBody: request.rawBody,
+    body: freezeProviderValue(request.body),
     destination: request.contract.destination,
     requestedTier: null,
     maxCalls: 1,
@@ -33,6 +35,10 @@ export type SyntheticComparisonHooks = Readonly<{
     url: unknown,
     wire: unknown,
     startFake: (wire: RequestInit) => Promise<unknown>,
+  ): Promise<void>;
+  sdk(
+    invoke: (fetch: (url: unknown, input: unknown) => Promise<Response>) => PromiseLike<unknown>,
+    network: (url: unknown, wire: RequestInit) => Promise<Response>,
   ): Promise<void>;
   markUnknown(): void;
 }>;

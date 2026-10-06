@@ -1243,6 +1243,11 @@ export function createIsolatedPublicComparisonExecution(
   let boundary: ReturnType<typeof preparePublicComparisonTransportBoundary> | undefined;
   let retained: ReturnType<typeof captureProviderResponse> | undefined;
   let network: Promise<void> | undefined;
+  let sdkCompletion: Promise<void> | undefined;
+  let sdkEntered = false,
+    sdkDone = false,
+    decodedDelivered = false,
+    networkResponseObserved = false;
   let companyReadOpen = false;
   let pending:
     | { operation: "mark-unknown" | "persist-capture"; command: unknown; current: unknown }
@@ -1266,6 +1271,8 @@ export function createIsolatedPublicComparisonExecution(
       startAttempted,
       capturePersisted,
       promiseSettled,
+      networkSettled: networkDone,
+      sdkSettled: sdkEntered ? sdkDone : null,
       cleanupRequired,
       retainedCaptureCount: retained ? 1 : 0,
       authority: comparisonPlanAuthority,
@@ -1298,7 +1305,7 @@ export function createIsolatedPublicComparisonExecution(
     leaseActive = false;
   }
   function finish() {
-    promiseSettled = driverDone && (!network || networkDone);
+    promiseSettled = driverDone && (!network || networkDone) && (!sdkEntered || sdkDone);
     if (!leaseActive || !capturePersisted || !promiseSettled || pending || dispatchUncertain)
       return;
     try {
@@ -1437,12 +1444,21 @@ export function createIsolatedPublicComparisonExecution(
       phase = "recovery-required";
     }
   }
-  function start(
+  function startRequest<T>(
     url: unknown,
     input: unknown,
-    startFake: (wire: RequestInit) => Promise<unknown>,
-  ): Promise<void> {
-    if (hookEntered || !owners.has(owner) || retired || driverDone || cleanupRequired)
+    startFake: (wire: RequestInit) => Promise<T>,
+    captureRaw: boolean,
+  ): Promise<T> {
+    let completion: Promise<T> | undefined;
+    if (
+      hookEntered ||
+      !owners.has(owner) ||
+      retired ||
+      driverDone ||
+      cleanupRequired ||
+      (sdkEntered && sdkDone)
+    )
       fail("PUBLIC_COMPARISON_START_REFUSED");
     hookEntered = true;
     const activeOwner = owners.get(owner)!;
@@ -1515,26 +1531,40 @@ export function createIsolatedPublicComparisonExecution(
         fail("PUBLIC_COMPARISON_START_EXPIRED");
       startAttempted = true;
       // Synchronous start and rejection handler installation occur inside both SELECT locks.
-      const started = startFake(wire);
-      syntheticStartObserved = true;
-      network = Promise.resolve(started)
-        .then(
-          (raw) => {
+      // Preserve synchronous throws as an attempted but unobserved request.
+      let started: Promise<T>;
+      try {
+        started = startFake(wire);
+        syntheticStartObserved = true;
+      } catch (error) {
+        started = Promise.reject(error);
+      }
+      completion = Promise.resolve(started);
+      network = completion.then(
+        (raw) => {
+          networkDone = true;
+          if (captureRaw) {
             try {
               retainResponse(raw);
             } catch {
               cleanupRequired = true;
               phase = "recovery-required";
             }
-          },
-          () => {
+          } else if (raw instanceof Response) {
+            networkResponseObserved = true;
+          } else {
             unknown();
-          },
-        )
-        .then(() => {
-          networkDone = true;
+            cleanupRequired = true;
+            phase = "recovery-required";
+          }
           finish();
-        });
+        },
+        () => {
+          networkDone = true;
+          unknown();
+          finish();
+        },
+      );
       phase = "in-flight";
     } catch {
       phase = startAttempted ? "recovery-required" : "start-refused";
@@ -1548,8 +1578,72 @@ export function createIsolatedPublicComparisonExecution(
         phase = "recovery-required";
       }
     }
-    if (!network) return Promise.reject(Error("PUBLIC_COMPARISON_START_REFUSED"));
-    return network;
+    if (!completion) return Promise.reject(Error("PUBLIC_COMPARISON_START_REFUSED"));
+    return completion;
+  }
+  function sdk(
+    invoke: (fetch: (url: unknown, input: unknown) => Promise<Response>) => PromiseLike<unknown>,
+    startFake: (url: unknown, wire: RequestInit) => Promise<Response>,
+  ): Promise<void> {
+    if (sdkEntered || hookEntered || !owners.has(owner) || retired || driverDone || cleanupRequired)
+      fail("PUBLIC_COMPARISON_SDK_REFUSED");
+    if (typeof invoke !== "function" || typeof startFake !== "function")
+      fail("PUBLIC_COMPARISON_SDK_REFUSED");
+    sdkEntered = true;
+    const failed = () => {
+      unknown();
+      if (!retained && !capturePersisted) phase = "recovery-required";
+    };
+    try {
+      const decoded = invoke((url, input) =>
+        startRequest(url, input, (wire) => startFake(url, wire), false),
+      );
+      // Register the FIRST decoded callback directly. No await, projection or DB precedes capture.
+      const watched = decoded.then((raw) => {
+        // A misbehaving fixture cannot reopen a finished owner with a late callback.
+        if (sdkDone || !owners.has(owner)) return;
+        if (decodedDelivered || !networkResponseObserved || raw instanceof Response) {
+          cleanupRequired = true;
+          phase = "recovery-required";
+          return;
+        }
+        decodedDelivered = true;
+        try {
+          retainResponse(raw);
+        } catch {
+          cleanupRequired = true;
+          phase = "recovery-required";
+        }
+      }, failed);
+      sdkCompletion = Promise.resolve(watched).then(
+        () => {
+          sdkDone = true;
+          finish();
+        },
+        () => {
+          failed();
+          sdkDone = true;
+          finish();
+        },
+      );
+    } catch {
+      // A factory/create/then throw cannot erase an already-started network promise.
+      failed();
+      sdkDone = true;
+      sdkCompletion = Promise.resolve();
+    }
+    return sdkCompletion;
+  }
+  function start(
+    url: unknown,
+    input: unknown,
+    startFake: (wire: RequestInit) => Promise<unknown>,
+  ): Promise<void> {
+    if (sdkEntered) fail("PUBLIC_COMPARISON_START_REFUSED");
+    const completion = startRequest(url, input, startFake, true);
+    // Legacy fixture completion remains a safe observation, not a Response-returning port.
+    void completion.catch(() => undefined);
+    return network ?? completion.then(() => undefined);
   }
   async function execute(rawCommand: unknown, current: unknown) {
     if (executing || retired) fail("PUBLIC_COMPARISON_EXECUTION_BUSY");
@@ -1670,13 +1764,14 @@ export function createIsolatedPublicComparisonExecution(
       phase = "dispatch-recorded";
       executing = false;
       try {
-        await fixture(boundary, Object.freeze({ start, markUnknown: unknown }));
+        await fixture(boundary, Object.freeze({ start, sdk, markUnknown: unknown }));
       } catch {
         unknown();
       } finally {
         driverDone = true;
         if (network) await network;
-        promiseSettled = true;
+        if (sdkCompletion) await sdkCompletion;
+        promiseSettled = driverDone && (!network || networkDone) && (!sdkEntered || sdkDone);
         if (!retained && !capturePersisted) {
           unknown();
           phase = "recovery-required";

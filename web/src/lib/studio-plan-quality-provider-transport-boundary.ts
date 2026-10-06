@@ -23,20 +23,8 @@ import type {
   ProviderObservationRequest,
 } from "./studio-provider-observation";
 
-/** Server-owned SDK options, with no credentials, hooks, model or caller overrides.
- * This is NOT an SDK client or a capability to send. Even responses.create() starts
- * fetch asynchronously: a future owner must recheck at the actual fetch boundary. */
-export const providerTransportSdkOptions = freezeProviderValue({
-  baseURL: "https://api.openai.com/v1",
-  maxRetries: 0,
-  timeout: 120_000,
-  logLevel: "off",
-  adminAPIKey: null,
-  webhookSecret: null,
-  organization: null,
-  project: null,
-  fetchOptions: { redirect: "error" },
-} as const);
+import { providerTransportSdkOptions } from "./studio-plan-quality-provider-sdk-options";
+export { providerTransportSdkOptions };
 
 const hash = z.string().regex(/^[a-f0-9]{64}$/);
 const preparedSchema = z

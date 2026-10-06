@@ -49,6 +49,16 @@ import {
 import * as configuration from "./studio-plan-quality-provider-configuration";
 import { comparisonReservationTestFixture } from "./studio-public-claim-comparison-reservation-test-helpers";
 vi.mock("server-only", () => ({}));
+// Keep the real SDK error module out of isolated storage regression imports.
+vi.mock("openai/error", () => {
+  class APIError extends Error {}
+  return {
+    APIError,
+    APIConnectionError: class extends APIError {},
+    APIConnectionTimeoutError: class extends APIError {},
+    APIUserAbortError: class extends APIError {},
+  };
+});
 vi.mock(
   "./studio-plan-quality-provider-configuration-current",
   () => import("./studio-plan-quality-provider-configuration-20260927-test-fixture"),
