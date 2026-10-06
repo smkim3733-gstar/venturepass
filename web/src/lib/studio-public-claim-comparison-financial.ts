@@ -16,17 +16,8 @@ import {
   publicClaimComparisonRequestPins,
 } from "./studio-public-claim-comparison-request-types";
 
-export const comparisonPlanAuthority = Object.freeze({
-  approvalVerified: false,
-  humanConsentVerified: false,
-  priceAuthenticityVerified: false,
-  contextFitVerified: false,
-  transactionCommitVerified: false,
-  providerExecutionObserved: false,
-  budgetWrite: false,
-  databaseWrite: false,
-  dispatchAllowed: false,
-} as const);
+import { comparisonPlanAuthority } from "./studio-public-claim-comparison-types";
+export { comparisonPlanAuthority };
 export const comparisonHashSchema = z.string().regex(/^[a-f0-9]{64}$/);
 const count = z.number().int().positive().safe().max(1_000_000_000);
 const units = z.string().regex(/^(0|[1-9][0-9]{0,29})$/);

@@ -1,4 +1,5 @@
 import "server-only";
+import { assertPublicComparisonDataOnly as dataOnly } from "./studio-public-claim-comparison-data-only";
 import { inspectPublicComparisonNativeRecords } from "./studio-public-claim-comparison-native";
 import { z } from "zod";
 import { inspectQualitySuppliedRows } from "../../scripts/local-data-quality.mjs";
@@ -68,43 +69,6 @@ const authority = Object.freeze({
 function invalid(code = "PUBLIC_COMPARISON_ARCHIVE_INVALID"): never { throw new Error(code); }
 const bytes = (v: unknown) => Buffer.byteLength(JSON.stringify(v));
 
-/** Reject accessors, hooks, cycles and oversized supplied copies before schema parsing.
- * Repeated references are allowed; they are copied by the schemas, never treated as authority. */
-function dataOnly(value: unknown, limit = 600 * MiB) {
-  let size = 0, nodes = 0;
-  const seen = new Set<object>();
-  function visit(v: unknown, depth: number) {
-    if (++nodes > 1000000 || depth > 100) invalid();
-    if (typeof v === "string") size += Buffer.byteLength(v);
-    else if (typeof v === "number") { if (!Number.isFinite(v)) invalid(); }
-    else if (v === null || typeof v === "boolean") { /* JSON scalar */ }
-    else if (typeof v === "object") {
-      if (v instanceof Uint8Array) {
-        if (![Uint8Array.prototype, Buffer.prototype].includes(Object.getPrototypeOf(v))) invalid();
-        for (const key of Reflect.ownKeys(v)) {
-          if (typeof key !== "string" || !/^(0|[1-9][0-9]*)$/.test(key)) invalid();
-        }
-        size += v.byteLength;
-      }
-      else {
-        if (seen.has(v) || (!Array.isArray(v) && ![Object.prototype, null].includes(Object.getPrototypeOf(v)))) invalid();
-        seen.add(v);
-        for (const key of Reflect.ownKeys(v)) {
-          if (typeof key !== "string") invalid();
-          const d = Object.getOwnPropertyDescriptor(v, key)!;
-          if (!("value" in d) || (!d.enumerable && !(Array.isArray(v) && key === "length"))) invalid();
-          if (Array.isArray(v) && key === "length") continue;
-          if (Array.isArray(v) && !/^(0|[1-9][0-9]*)$/.test(key)) invalid();
-          size += Buffer.byteLength(key);
-          visit(d.value, depth + 1);
-        }
-        seen.delete(v);
-      }
-    } else invalid();
-    if (size > limit) invalid("PUBLIC_COMPARISON_ARCHIVE_LIMIT");
-  }
-  visit(value, 0);
-}
 function ordered<T>(rows: T[], keys: (keyof T)[]) {
   for (let i = 1; i < rows.length; i++) {
     let order = 0;

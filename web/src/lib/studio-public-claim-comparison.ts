@@ -18,6 +18,7 @@ import {
   publicClaimComparisonBoundaries as boundaries,
   publicClaimComparisonSelectionSchema,
   publicClaimComparisonResponseSchema,
+  publicClaimComparisonMismatch,
   type PublicClaimComparisonSelection,
 } from "./studio-public-claim-comparison-types";
 
@@ -225,38 +226,8 @@ export function validatePublicClaimComparison(
 export function validatePreparedPublicClaimComparison(prepared: PublicClaimComparisonPreparation, rawResponse: unknown) {
   json(rawResponse, publicClaimComparisonLimits.responseCharacters);
   const response = parse(publicClaimComparisonResponseSchema, rawResponse);
-  if (
-    response.preparationDigest !== prepared.preparationDigest ||
-    response.claimQuote !== prepared.input.claimQuote
-  )
-    fail("PUBLIC_CLAIM_RESPONSE_MISMATCH", "응답의 원래 주장·준비본이 일치하지 않습니다.", 422);
-  const byId = new Map(response.evidence.map((item) => [item.sourceId, item]));
-  if (
-    byId.size !== response.evidence.length ||
-    byId.size !== prepared.input.selectedEvidence.length ||
-    prepared.input.selectedEvidence.some((item) => !byId.has(item.sourceId)) ||
-    response.checks.some((item) => item.sourceIds.some((id) => !byId.has(id)))
-  )
-    fail("PUBLIC_CLAIM_RESPONSE_MISMATCH", "응답의 공개 자료 선택 범위가 일치하지 않습니다.", 422);
-  for (const source of prepared.input.selectedEvidence) {
-    if (byId.get(source.sourceId)!.quotes.some((quote) => !source.excerpt.includes(quote)))
-      fail(
-        "PUBLIC_CLAIM_RESPONSE_MISMATCH",
-        "응답 인용이 원래 공개 발췌와 일치하지 않습니다.",
-        422,
-      );
-  }
-  if (
-    (response.overall.relation === "provided-text-support" &&
-      response.evidence.some((item) => item.relation !== "provided-text-support")) ||
-    (response.overall.relation === "provided-text-conflict" &&
-      !response.evidence.some((item) => item.relation === "provided-text-conflict"))
-  )
-    fail(
-      "PUBLIC_CLAIM_RESPONSE_MISMATCH",
-      "전체 의견과 자료별 의견의 범위가 일치하지 않습니다.",
-      422,
-    );
+  const mismatch = publicClaimComparisonMismatch(prepared, response);
+  if (mismatch) fail("PUBLIC_CLAIM_RESPONSE_MISMATCH", mismatch, 422);
   return {
     contractVersion: prepared.contractVersion,
     source: "supplied-response" as const,
