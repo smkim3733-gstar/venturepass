@@ -1981,6 +1981,7 @@ export type IsolatedPublicComparisonService = Readonly<{
   execute(command: unknown, current: unknown): Promise<IsolatedComparisonView>;
   recover(selection: unknown): IsolatedComparisonView;
   previewPostcapture(selection: unknown): PostcapturePreview;
+  readStoredReviewByRun(query: unknown): StoredComparisonRead;
   readStoredComparison(selection: unknown): StoredComparisonRead;
   inspectStoredComparisonContext(selection: unknown): StoredComparisonRead;
   writePostcapture(operation: PostcaptureOperation, command: unknown, current?: unknown): PostcaptureReceipt;
@@ -2275,6 +2276,36 @@ export function createIsolatedPublicComparisonService(
       refresh();
     }
   }
+  function previewPostcapture(raw: unknown): PostcapturePreview {
+    requireHandoff();
+    if (retained) fail("PUBLIC_COMPARISON_POSTCAPTURE_RECOVERY_REQUIRED");
+    postBusy = true;
+    try {
+      cleanStorage(); // An explicit read can finish only its own previously failed read cleanup.
+      return withStorage((call) => {
+        const { a, state, cp } = read(call);
+        const { requested, binding } = select(state, raw);
+        checkComparisonWitness(session, cp, 3);
+        const preview = createComparisonPostcapturePreview(state, requested.runId);
+        const events = state.reservation.archive.records.events.filter((e) => e.runId === requested.runId);
+        const head = events.at(-1)!;
+        const run = a.inspection.view.native.runs.find((r) => r.runId === requested.runId)!;
+        selected = requested;
+        postStatus = "review";
+        return structuredClone({ ...preview, source: "synthetic-comparison-postcapture" as const,
+          runtimeObserved: false as const, ...requested,
+          transmissionBindingDigest: binding.recordDigest,
+          dispatchEventDigest: binding.dispatchEventDigest,
+          expectedRunHead: { revision: head.revision, headDigest: head.eventDigest },
+          expectedBudgetHead: { revision: a.inspection.view.native.revision, headDigest: a.inspection.view.native.headDigest },
+          comparisonEventDigest: events.find((e) => e.payload.kind === "comparison-recorded")?.eventDigest ?? null,
+          database: { comparisonRecorded: run.comparisonRecorded, costSettled: run.costSettled,
+            finalized: run.finalized, currentContextVerified: false as const, runHeldBytes: run.heldBytes,
+            scopeHeldUnits: a.inspection.view.native.heldUnits, scopeRecognizedUnits: a.inspection.view.native.recognizedUnits },
+        });
+      });
+    } finally { postBusy = false; refresh(); }
+  }
   const inspect: IsolatedPublicComparisonService["inspect"] = () => {
     refresh();
     return Object.freeze({
@@ -2307,35 +2338,22 @@ export function createIsolatedPublicComparisonService(
       try { return lifetime.execution.recover(selection); }
       finally { refresh(); }
     },
-    previewPostcapture(raw: unknown) {
+    previewPostcapture,
+    readStoredReviewByRun(raw: unknown) {
       requireHandoff();
-      if (retained) fail("PUBLIC_COMPARISON_POSTCAPTURE_RECOVERY_REQUIRED");
-      postBusy = true;
-      try {
-        cleanStorage(); // An explicit read can finish only its own previously failed read cleanup.
-        return withStorage((call) => {
-          const { a, state, cp } = read(call);
-          const { requested, binding } = select(state, raw);
-          checkComparisonWitness(session, cp, 3);
-          const preview = createComparisonPostcapturePreview(state, requested.runId);
-          const events = state.reservation.archive.records.events.filter((e) => e.runId === requested.runId);
-          const head = events.at(-1)!;
-          const run = a.inspection.view.native.runs.find((r) => r.runId === requested.runId)!;
-          selected = requested;
-          postStatus = "review";
-          return structuredClone({ ...preview, source: "synthetic-comparison-postcapture" as const,
-            runtimeObserved: false as const, ...requested,
-            transmissionBindingDigest: binding.recordDigest,
-            dispatchEventDigest: binding.dispatchEventDigest,
-            expectedRunHead: { revision: head.revision, headDigest: head.eventDigest },
-            expectedBudgetHead: { revision: a.inspection.view.native.revision, headDigest: a.inspection.view.native.headDigest },
-            comparisonEventDigest: events.find((e) => e.payload.kind === "comparison-recorded")?.eventDigest ?? null,
-            database: { comparisonRecorded: run.comparisonRecorded, costSettled: run.costSettled,
-              finalized: run.finalized, currentContextVerified: false as const, runHeldBytes: run.heldBytes,
-              scopeHeldUnits: a.inspection.view.native.heldUnits, scopeRecognizedUnits: a.inspection.view.native.recognizedUnits },
-          });
-        });
-      } finally { postBusy = false; refresh(); }
+      const query = postcaptureSelection.extend({
+        mode: z.enum(["historical", "inspect-current"]),
+      }).strict().parse(copyComparisonStoredRead(raw, "selection"));
+      const preview = previewPostcapture({ runId: query.runId, dispatchCommandDigest: query.dispatchCommandDigest });
+      if (!preview.database.comparisonRecorded || !preview.comparisonEventDigest)
+        fail("PUBLIC_COMPARISON_STORED_RESULT_MISSING");
+      // Separate audited reads, not one snapshot. The second read verifies the actual event/artifacts again.
+      return storedRead({
+        runId: preview.runId, dispatchCommandDigest: preview.dispatchCommandDigest,
+        comparisonEventDigest: preview.comparisonEventDigest,
+        responseArtifactSha256: preview.responseArtifactSha256,
+        validatedArtifactSha256: preview.expectedValidatedArtifactSha256,
+      }, query.mode === "inspect-current");
     },
     readStoredComparison: (raw: unknown) => storedRead(raw, false),
     inspectStoredComparisonContext: (raw: unknown) => storedRead(raw, true),

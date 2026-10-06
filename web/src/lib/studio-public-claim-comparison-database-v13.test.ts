@@ -3127,7 +3127,8 @@ it("4I28 service cannot release unknown with no capture and all visible promises
   expect(() => service.previewPostcapture({ runId: command.runId, dispatchCommandDigest: digest(command) })).toThrow(/EXECUTION_PENDING/);
   expect(() => service.readStoredComparison({})).toThrow(/EXECUTION_PENDING/);
   expect(() => service.inspectStoredComparisonContext({})).toThrow(/EXECUTION_PENDING/);
-  expect(Object.keys(service)).toEqual(["execute", "recover", "previewPostcapture", "readStoredComparison", "inspectStoredComparisonContext", "writePostcapture", "recoverPostcapture", "inspect", "retire"]);
+  expect(() => service.readStoredReviewByRun({})).toThrow(/EXECUTION_PENDING/);
+  expect(Object.keys(service)).toEqual(["execute", "recover", "previewPostcapture", "readStoredReviewByRun", "readStoredComparison", "inspectStoredComparisonContext", "writePostcapture", "recoverPostcapture", "inspect", "retire"]);
 }, limit);
 
 for (const mode of ["unused", "invalid-command"] as const)
@@ -3421,6 +3422,7 @@ it("4I30 original pending execution denies handoff; retire retains late capture 
   expect(() => service.writePostcapture("record-result", {}, explode())).toThrow(/EXECUTION_PENDING/);
   expect(() => service.readStoredComparison({})).toThrow(/EXECUTION_PENDING/);
   expect(() => service.inspectStoredComparisonContext({})).toThrow(/EXECUTION_PENDING/);
+  expect(() => service.readStoredReviewByRun({})).toThrow(/EXECUTION_PENDING/);
   expect(service.retire().status).toBe("draining");
   net.resolve(new Response(JSON.stringify(response)));
   expect((await running).capturePersisted).toBe(true);
@@ -3820,7 +3822,8 @@ for (const mode of ["missing", "binding3", "zero", "excess", "refusal", "incompl
     result13(g);
     const pick = selected32(g), { service, start, selected } = service30(g);
     const preview = service.previewPostcapture(selected), before = snapshot(g.db), files = witnessFiles(g);
-    const out = service.readStoredComparison(pick);
+    const out = service.readStoredReviewByRun({ ...selected, mode: "historical" });
+    expect(out.resultIdentity).toMatchObject(pick);
     expect(out.historical.result.state).toBe(preview.comparisonState);
     expect(out.historical.result.comparison).toBeNull();
     expect(out.database).toEqual(preview.database);
@@ -3934,6 +3937,7 @@ it("4I32 pending result ack cannot be repaired by either read port or a restarte
   const write = vi.spyOn(journalIO, "writeJournalJson");
   expect(() => service.readStoredComparison(pick)).toThrow(/RECOVERY_REQUIRED/);
   expect(() => service.inspectStoredComparisonContext(pick)).toThrow(/RECOVERY_REQUIRED/);
+  expect(() => service.readStoredReviewByRun({ runId: pick.runId, dispatchCommandDigest: pick.dispatchCommandDigest, mode: "historical" })).toThrow(/RECOVERY_REQUIRED/);
   const reopened = openComparisonStorageSession(g.paths, selection);
   try {
     const next = createIsolatedPublicComparisonService(reopened, g.cap, createSyntheticComparisonDriver(forbidden));
@@ -4005,4 +4009,132 @@ it("4I32 projection loss and SELECT failure release only completed reads; malfor
   expect(snapshot(g.db)).toEqual(before); expect(witnessFiles(g)).toEqual(files);
   expect(start).not.toHaveBeenCalled();
   expect(service.retire().status).toBe("closed");
+}, postLimit30);
+
+// 4I34: compose existing audit and strict read in the same retained service.
+it("4I34 original run obtains saved identity and delivers copied historical/current results through retirement and restart", () => {
+  const g = throughResult(readyResponse32()), { service, start, selected } = service30(g);
+  const before = snapshot(g.db), files = witnessFiles(g), company = allCompany(g.companyDb);
+  const scope = vi.spyOn(companyGuard22, "createComparisonCompanyReadScope");
+  const writer = vi.spyOn(journalIO, "writeJournalJson");
+  const historical = service.readStoredReviewByRun({ ...selected, mode: "historical" });
+  expect(scope).not.toHaveBeenCalled();
+  expect(historical.resultIdentity).toMatchObject(selected32(g));
+  expect(historical.current.status).toBe("not-checked");
+  expect(historical.historical.result).toMatchObject({ state: "comparison-ready", source: "supplied-response",
+    evidenceOrigin: "manual-unverified", currentContextVerified: false });
+  const stable = structuredClone(historical);
+  historical.resultIdentity.selection.sourceIds.reverse();
+  historical.historical.prepared.input.section.content = "changed returned copy";
+  const current = service.readStoredReviewByRun({ ...selected, mode: "inspect-current" });
+  expect(current.current).toMatchObject({ status: "exact-original-request",
+    observedRevision: fixture.company.revision, originalRevision: fixture.company.revision });
+  expect(current.historical).toEqual(stable.historical);
+  expect(Object.values(current.authority).every((v) => v === false)).toBe(true);
+  expect(current).toMatchObject({ owner: null, runtimeObserved: false });
+  expect(writer).not.toHaveBeenCalled();
+  expect(snapshot(g.db)).toEqual(before); expect(witnessFiles(g)).toEqual(files); expect(allCompany(g.companyDb)).toEqual(company);
+  expect(service.retire().status).toBe("closed");
+  const reopened = openComparisonStorageSession(g.paths, selection);
+  try {
+    const next = createIsolatedPublicComparisonService(reopened, g.cap, createSyntheticComparisonDriver(forbidden));
+    expect(next.readStoredReviewByRun({ ...selected, mode: "historical" })).toEqual(stable);
+    expect(next.retire().status).toBe("closed");
+  } finally { closeComparisonStorageSession(reopened); }
+  expect(start).not.toHaveBeenCalled();
+}, postLimit30);
+it("4I34 computed ready preview and caller-supplied identities cannot become saved results", () => {
+  const g = throughCapture(readyResponse32()), { service, selected, start } = service30(g);
+  const p = service.previewPostcapture(selected), before = snapshot(g.db), files = witnessFiles(g);
+  expect(p.comparisonState).toBe("comparison-ready");
+  const query = { ...selected, mode: "historical" };
+  expect(() => service.readStoredReviewByRun(query)).toThrow(/STORED_RESULT_MISSING/);
+  const begin = vi.spyOn(storageWitness22, "beginComparisonStorageSession");
+  for (const raw of [selected, { ...query, mode: "auto" }, { ...query, preview: p }, { ...query, authority: true },
+    { ...query, comparisonEventDigest: bad }, { ...query, text: "가".repeat(3000) }])
+    expect(() => service.readStoredReviewByRun(raw)).toThrow();
+  const getter = vi.fn(() => selected.runId);
+  expect(() => service.readStoredReviewByRun(Object.defineProperty({}, "runId", { enumerable: true, get: getter }))).toThrow();
+  expect(getter).not.toHaveBeenCalled(); expect(begin).not.toHaveBeenCalled(); begin.mockRestore();
+  for (const raw of [{ ...query, runId: randomUUID() }, { ...query, dispatchCommandDigest: bad }])
+    expect(() => service.readStoredReviewByRun(raw)).toThrow(/RUN_CHANGED/);
+  expect(snapshot(g.db)).toEqual(before); expect(witnessFiles(g)).toEqual(files); expect(start).not.toHaveBeenCalled();
+}, postLimit30);
+for (const action of ["close", "pending-ack", "rows", "first-cleanup", "second-cleanup", "projection"] as const)
+  it("4I34 two audits preserve original selection and responsibilities after " + action, () => {
+    const g = throughResult(readyResponse32()), { service, selected, start } = service30(g);
+    const pick = selected32(g), close = closeInput(g), before = snapshot(g.db), files = witnessFiles(g);
+    const originalEnd = storageWitness22.endComparisonStorageSession;
+    let count = 0, changed = false;
+    const prepare = g.db.prepare.bind(g.db);
+    const sql = vi.spyOn(g.db, "prepare").mockImplementation((q) => {
+      const st = prepare(q);
+      if (changed && action === "rows" && q.startsWith("SELECT") && q.includes("quality_actual_artifacts")) {
+        const all = st.all.bind(st);
+        vi.spyOn(st, "all").mockImplementation((...args) => all(...args).map((row) =>
+          row.artifact_key === "comparison-validated" ? { ...row, payload: "{}" } : row));
+      }
+      return st;
+    });
+    const copy = storedRead32.copyComparisonStoredRead;
+    const projection = vi.spyOn(storedRead32, "copyComparisonStoredRead").mockImplementation((v, kind) => {
+      if (action === "projection" && kind === "result") throw Error("projection lost");
+      return copy(v, kind);
+    });
+    const lease = vi.spyOn(storageWitness22, "endComparisonStorageSession").mockImplementation((s) => {
+      count++;
+      if ((action === "first-cleanup" && count === 1) || (action === "second-cleanup" && count === 2))
+        throw Error("owned lease cleanup failed");
+      originalEnd(s);
+      if (changed) return;
+      changed = true;
+      if (action === "close" || action === "pending-ack") {
+        const ack = vi.spyOn(journalIO, "writeJournalJson").mockImplementation((file, value, ...args) => {
+          if (action === "pending-ack" && (value as { payload: { type: string } }).payload.type === "ack")
+            throw Error("ack lost between reads");
+          return originalWrite(file, value, ...args);
+        });
+        if (action === "close") writeGuardedPublicComparisonV13(g.session, "settle-finalize", close.command, close.current);
+        else expect(() => writeGuardedPublicComparisonV13(g.session, "settle-finalize", close.command, close.current)).toThrow();
+        ack.mockRestore();
+      }
+    });
+    cleanups.push(() => { if (g.db.isTransaction) g.db.exec("ROLLBACK"); try { endComparisonStorageSession(g.session); } catch {} });
+    const query = { ...selected, mode: "historical" };
+    if (action === "close") {
+      const out = service.readStoredReviewByRun(query);
+      expect(out.resultIdentity).toMatchObject(pick);
+      expect(out.database).toMatchObject({ finalized: true, costSettled: true, runHeldBytes: 0, scopeHeldUnits: "0" });
+      expect(out.historical.result.state).toBe("comparison-ready");
+    } else expect(() => service.readStoredReviewByRun(query)).toThrow();
+    lease.mockRestore(); sql.mockRestore(); projection.mockRestore();
+    if (action.endsWith("cleanup")) {
+      expect(service.retire()).toMatchObject({ status: "draining", postcapture: { cleanupRequired: true } });
+      expect(service.readStoredReviewByRun(query).resultIdentity).toMatchObject(pick);
+      expect(service.inspect().status).toBe("closed");
+    }
+    if (action === "pending-ack") {
+      const pending = witnessFiles(g), now = snapshot(g.db);
+      const write = vi.spyOn(journalIO, "writeJournalJson");
+      expect(() => service.readStoredReviewByRun(query)).toThrow();
+      expect(write).not.toHaveBeenCalled(); expect(witnessFiles(g)).toEqual(pending); expect(snapshot(g.db)).toEqual(now);
+    } else if (action !== "close") {
+      expect(snapshot(g.db)).toEqual(before); expect(witnessFiles(g)).toEqual(files);
+    }
+    expect(start).not.toHaveBeenCalled();
+  }, postLimit30);
+it("4I34 unavailable current and newer snapshot leave separately audited historical bytes intact", () => {
+  const g = throughResult(), { service, selected } = service30(g);
+  const before = snapshot(g.db), files = witnessFiles(g);
+  const original = service.readStoredReviewByRun({ ...selected, mode: "historical" });
+  const newer = structuredClone(fixture.company); newer.revision++;
+  g.companyDb.prepare("UPDATE studio_cases SET revision=?,body=? WHERE id=?").run(newer.revision, JSON.stringify(newer), newer.id);
+  const changed = service.readStoredReviewByRun({ ...selected, mode: "inspect-current" });
+  expect(changed.current).toMatchObject({ status: "changed", originalRevision: fixture.company.revision, observedRevision: newer.revision });
+  g.companyDb.prepare("DELETE FROM studio_cases WHERE id=?").run(newer.id);
+  const unavailable = service.readStoredReviewByRun({ ...selected, mode: "inspect-current" });
+  expect(unavailable.current).toMatchObject({ status: "unavailable", observedRevision: null });
+  expect(unavailable.historical).toEqual(original.historical); expect(changed.historical).toEqual(original.historical);
+  expect(service.readStoredReviewByRun({ ...selected, mode: "historical" })).toEqual(original);
+  expect(snapshot(g.db)).toEqual(before); expect(witnessFiles(g)).toEqual(files);
 }, postLimit30);
