@@ -32,7 +32,7 @@ const titleRows = z
       .strict(),
   )
   .max(1);
-const periodRows = z
+const periodPointRows = z
   .array(
     z
       .object({
@@ -42,6 +42,20 @@ const periodRows = z
       .strict(),
   )
   .max(32);
+// Basic PRD response observed without detail=Y. Limits are application policy.
+// Preserve the old individual-point shape separately; mixed arrays are unsupported.
+const periodRangeRows = z
+  .array(
+    z
+      .object({
+        PRD_SE: z.string().min(1).max(300),
+        STRT_PRD_DE: z.string().max(20),
+        END_PRD_DE: z.string().max(20),
+      })
+      .strict(),
+  )
+  .max(32);
+const periodRows = z.union([periodPointRows, periodRangeRows]);
 const sourceRows = z
   .array(
     z
@@ -85,7 +99,15 @@ export function decodePublicTableMetadata(raw: unknown, kind: PublicTableMetadat
   if (kind === "SOURCE") return { kind, rows: sourceRows.parse(raw) };
   if (kind !== "PRD") throw Error("지원하는 표 정보가 아닙니다.");
   const rows = periodRows.parse(raw);
-  if (new Set(rows.map((r) => JSON.stringify([r.PRD_SE, r.PRD_DE]))).size !== rows.length)
+  if (
+    new Set(
+      rows.map((r) =>
+        JSON.stringify(
+          "PRD_DE" in r ? [r.PRD_SE, r.PRD_DE] : [r.PRD_SE, r.STRT_PRD_DE, r.END_PRD_DE],
+        ),
+      ),
+    ).size !== rows.length
+  )
     throw Error("수록 시점을 구분할 수 없습니다.");
   return { kind, rows };
 }

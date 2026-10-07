@@ -21,7 +21,7 @@ assert.equal(
 const staging = await realpath(process.argv[2]);
 const serverMode = process.argv[3] ?? "start";
 const scope = process.argv[4] ?? "all";
-assert.ok(["all", "cmmt-error"].includes(scope));
+assert.ok(["all", "cmmt-error", "prd-range"].includes(scope));
 assert.ok(["dev", "start"].includes(serverMode));
 const relativeBuild = path.relative(temporaryRoot, staging);
 assert.ok(relativeBuild && !relativeBuild.startsWith("..") && !path.isAbsolute(relativeBuild));
@@ -97,7 +97,15 @@ globalThis.fetch=async(input,init)=>{
     {CMMT_NM:"같은 코드의 다른 주석",CMMT_DC:"마지막 원문",OBJ_ID:"",ITM_ID:" 01 "}
   ]);
   if(kind==="TBL")return Response.json([{TBL_NM:"<img src=x onerror=alert(1)> "+ "긴합성문자".repeat(45),TBL_NM_ENG:null}]);
-  if(kind==="PRD")return Response.json([{PRD_SE:"IR",PRD_DE:"unknown"},{PRD_SE:"Y",PRD_DE:"2024"}]);
+  if(kind==="PRD"){
+   if(u.searchParams.has("detail"))throw Error("Unexpected detail selector");
+   const range=[{PRD_SE:" 알수없음 ",STRT_PRD_DE:"<b>시작</b>",END_PRD_DE:"끝: 원문"},{PRD_SE:"Y",STRT_PRD_DE:"",END_PRD_DE:" \n "},{PRD_SE:"Y",STRT_PRD_DE:"가".repeat(20),END_PRD_DE:"나".repeat(20)}];
+   if(mode==="prd-mixed")return Response.json([range[0],{PRD_SE:"Y",PRD_DE:"2024"}]);
+   if(mode==="prd-duplicate")return new Response('[{"PRD_SE":"Y","STRT_PRD_DE":"a","END_PRD_DE":"b","END_PRD_DE":"c"}]');
+   if(mode==="prd-range"||mode==="hold")return Response.json(range);
+   return Response.json([{PRD_SE:"IR",PRD_DE:"unknown"},{PRD_SE:"Y",PRD_DE:"2024"}]);
+  }
+
   if(kind==="SOURCE")return Response.json([{JOSA_NM:"합성 조사",STAT_ID:"SYNTHETIC",DEPT_NM:null,DEPT_PHONE:"<a href=x>연락처</a>"}]);
   throw Error("Wrong metadata type");
  }
@@ -138,7 +146,7 @@ async function start() {
   child = spawn(
     process.execPath,
     [
-      "--max-old-space-size=1536",
+      "--max-old-space-size=3072",
       "--max-semi-space-size=8",
       "--import",
       pathToFileURL(guard).href,
@@ -389,7 +397,9 @@ try {
   });
   await reopen();
   assert.equal(queryRequests.length, 0);
-  if (scope === "cmmt-error") {
+  if (scope === "prd-range") {
+    await periodRangeChecks();
+  } else if (scope === "cmmt-error") {
     await commentErrorChecks();
   } else {
     await search();
@@ -882,4 +892,123 @@ async function commentErrorChecks() {
   record(
     "4H21 fresh candidate remount clears error, preserves draft/consent, fixed guidance fits mobile",
   );
+}
+
+async function periodRangeChecks() {
+  await mode("prd-range");
+  await search();
+  await openTable();
+  const select = table().getByLabel("읽을 표 정보", { exact: true });
+  await select.selectOption("PRD");
+  const title = panel().getByLabel("공개 자료 제목", { exact: true });
+  const quote = panel().getByLabel("원문 발췌", { exact: false });
+  await title.fill("PRIVATE_DRAFT");
+  await quote.fill("PRIVATE_BODY");
+  await panel().getByRole("checkbox").check();
+  const before = queryRequests.length,
+    wireBefore = (await wires()).length;
+  await read().evaluate((b) => {
+    b.click();
+    b.click();
+  });
+  await result().waitFor();
+  assert.equal(queryRequests.length, before + 1);
+  assert.equal((await wires()).length, wireBefore + 2);
+  assert.equal(await result().locator("article").count(), 3);
+  const text = await result().innerText();
+  assert.ok(text.includes("시작 시점 원문: <b>시작</b>"));
+  assert.ok(text.includes("끝 시점 원문: 끝: 원문"));
+  assert.ok(text.includes("시작 시점 원문: 빈 문자열"));
+  assert.ok(!text.includes("개별 시점 원문"));
+  assert.equal(await result().locator("b,script,a").count(), 0);
+  assert.equal(
+    await result().locator("article").nth(1).locator("p").last().textContent(),
+    "끝 시점 원문:  \n ",
+  );
+  assert.ok(!(await wires()).some((w) => Object.hasOwn(w.params, "detail")));
+  assert.equal(await quote.inputValue(), "PRIVATE_BODY");
+  assert.equal(await panel().getByRole("checkbox").isChecked(), true);
+  record(
+    "4H26 range originals/empty/whitespace/order preserved; explicit double click one command; no detail or transfer",
+  );
+  await page.setViewportSize({ width: 390, height: 844 });
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+  await table().screenshot({ path: path.join(output, "prd-range-390.png") });
+  record("4H26 separate start/end literal text and maximum-length bounds fit mobile");
+
+  await mode("normal");
+  await read().click();
+  await result().waitFor();
+  assert.ok((await result().innerText()).includes("개별 시점 원문: unknown"));
+  assert.ok(!(await result().innerText()).includes("시작 시점 원문"));
+  await mode("empty");
+  await read().click();
+  await result().waitFor();
+  assert.ok((await result().innerText()).includes("표 정보 행이 없습니다"));
+  assert.equal(await result().locator("article").count(), 0);
+  record("4H26 existing point format stays explicit; empty array distinct from absent statistics");
+
+  for (const m of ["prd-mixed", "prd-duplicate"]) {
+    await mode(m);
+    const count = (await wires()).length;
+    await read().click();
+    await table().getByRole("alert").waitFor();
+    assert.equal(await result().count(), 0);
+    assert.ok((await table().getByRole("alert").innerText()).startsWith("표 정보가 미확인입니다."));
+    await until(async () => await read().isEnabled());
+    assert.equal((await wires()).length, count + 2);
+    assert.equal(await quote.inputValue(), "PRIVATE_BODY");
+  }
+  record(
+    "4H26 mixed formats and original duplicate properties fail safely without retry or previous result",
+  );
+
+  const inner = panel().getByText("이 표의 기본 정보 확인 (선택)", { exact: true });
+  const outer = panel().getByText("공개 통계 찾기 (선택)", { exact: true });
+  await mode("prd-range");
+  await read().click();
+  await result().waitFor();
+  await select.selectOption("SOURCE");
+  assert.equal(await result().count(), 0);
+  await select.selectOption("PRD");
+  assert.equal(await result().count(), 0);
+  await read().click();
+  await result().waitFor();
+  await outer.click();
+  await until(async () => (await result().count()) === 0);
+  const closed = queryRequests.length;
+  await outer.click();
+  assert.equal(queryRequests.length, closed);
+  assert.equal(await quote.inputValue(), "PRIVATE_BODY");
+  assert.equal(await panel().getByRole("checkbox").isChecked(), true);
+  record(
+    "4H26 kind and ancestor close clear displayed range, preserve manual draft/consent, no automatic query",
+  );
+
+  for (const boundary of ["close", "kind"]) {
+    await select.selectOption("PRD");
+    await mode("hold");
+    const count = (await wires()).length;
+    await read().click();
+    await until(async () => (await wires()).length === count + 2);
+    if (boundary === "close") await inner.click();
+    else await select.selectOption("SOURCE");
+    await mode("prd-range");
+    await page.waitForTimeout(150);
+    if (boundary === "close") await inner.click();
+    assert.equal(await result().count(), 0);
+    assert.equal(await table().getByRole("alert").count(), 0);
+    assert.equal((await wires()).length, count + 2);
+    assert.equal(await quote.inputValue(), "PRIVATE_BODY");
+    record("4H26 pending range discarded on " + boundary + "; late response cannot restore result");
+  }
+  await search();
+  assert.equal(await panel().getByRole("region", { name: "읽은 표 정보", exact: true }).count(), 0);
+  await openTable();
+  await select.selectOption("PRD");
+  assert.equal(await result().count(), 0);
+  assert.equal(await title.inputValue(), "PRIVATE_DRAFT");
+  assert.equal(await quote.inputValue(), "PRIVATE_BODY");
+  assert.equal(await panel().getByRole("checkbox").isChecked(), true);
+  record("4H26 new search remount discards old period result while preserving draft and consent");
 }

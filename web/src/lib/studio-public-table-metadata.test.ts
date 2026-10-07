@@ -786,3 +786,156 @@ it("4H21 aborted late code30 remains cancellation while original IO retains the 
   });
   expect(fetch).toHaveBeenCalledTimes(2);
 });
+
+const rangeRow = { PRD_SE: "Y", STRT_PRD_DE: "2020", END_PRD_DE: "2024" };
+const prdCommand = { ...command, kind: "PRD" as const };
+it("4H26 preserves range originals, order, empty/whitespace and separate point support", async () => {
+  const raw = [
+    { PRD_SE: " unknown ", STRT_PRD_DE: "끝이 먼저", END_PRD_DE: "시작이 나중" },
+    { PRD_SE: " ", STRT_PRD_DE: "", END_PRD_DE: " \n " },
+    { PRD_SE: "Y", STRT_PRD_DE: "<b>x</b>", END_PRD_DE: '":{}[],\\' },
+    rangeRow,
+    { ...rangeRow, END_PRD_DE: "2025" },
+  ];
+  const s = setup(raw),
+    value = await s.read(prdCommand);
+  expect(value.metadata).toEqual({ kind: "PRD", rows: raw });
+  expect(readPublicTableMetadataResult(value, prdCommand)).toEqual(value);
+  expect(s.fetch).toHaveBeenCalledTimes(2);
+  expect(new URL(String(s.fetch.mock.calls[1][0])).searchParams.has("detail")).toBe(false);
+  expect(value).toMatchObject({
+    periodsComplete: false,
+    numericalDataRead: false,
+    originalRead: false,
+    factChecked: false,
+    companyApplicabilityChecked: false,
+    databaseChanged: false,
+    aiInputApproved: false,
+    identityBasis: "request-target-not-echoed",
+  });
+  const copied = decodePublicTableMetadata(raw, "PRD");
+  if (copied.kind !== "PRD") throw Error("Unexpected test metadata kind");
+  copied.rows[0].PRD_SE = "changed";
+  expect(raw[0].PRD_SE).toBe(" unknown ");
+  expect(decodePublicTableMetadata(rows.PRD, "PRD")).toEqual({ kind: "PRD", rows: rows.PRD });
+});
+it("4H26 accepts exact application boundaries without truncating", async () => {
+  const raw = Array.from({ length: 32 }, (_, i) => ({
+    PRD_SE: ("종" + i).padEnd(300, "x"),
+    STRT_PRD_DE: "시".repeat(20),
+    END_PRD_DE: "끝".repeat(20),
+  }));
+  expect((await setup(raw).read(prdCommand)).metadata?.rows).toEqual(raw);
+});
+it.each([
+  ["missing start", { PRD_SE: "Y", END_PRD_DE: "2024" }],
+  ["missing end", { PRD_SE: "Y", STRT_PRD_DE: "2020" }],
+  ["missing period", { STRT_PRD_DE: "2020", END_PRD_DE: "2024" }],
+  ["null start", { ...rangeRow, STRT_PRD_DE: null }],
+  ["numeric end", { ...rangeRow, END_PRD_DE: 2024 }],
+  ["boolean period", { ...rangeRow, PRD_SE: true }],
+  ["empty period", { ...rangeRow, PRD_SE: "" }],
+  ["long period", { ...rangeRow, PRD_SE: "x".repeat(301) }],
+  ["long start", { ...rangeRow, STRT_PRD_DE: "x".repeat(21) }],
+  ["long end", { ...rangeRow, END_PRD_DE: "x".repeat(21) }],
+  ["unknown field", { ...rangeRow, PRIVATE_PROVIDER: "secret" }],
+  ["hybrid row", { ...rangeRow, PRD_DE: "2024" }],
+  ["nested start", { ...rangeRow, STRT_PRD_DE: { value: "2020" } }],
+])("4H26 rejects %s with fixed private error and no retry", async (_name, row) => {
+  const s = setup([row]);
+  await expect(s.read(prdCommand)).rejects.toMatchObject({
+    status: 502,
+    code: "PUBLIC_TABLE_METADATA_UNAVAILABLE",
+  });
+  expect(s.fetch).toHaveBeenCalledTimes(2);
+  expect(() => decodePublicTableMetadata([row], "PRD")).toThrow();
+});
+it.each([
+  ["mixed", [rangeRow, rows.PRD[0]]],
+  ["mixed reverse", [rows.PRD[0], rangeRow]],
+  ["duplicate row", [rangeRow, rangeRow]],
+  ["too many", Array.from({ length: 33 }, (_, i) => ({ ...rangeRow, PRD_SE: String(i) }))],
+  ["error object", { err: "30" }],
+])("4H26 rejects unsupported array %s", async (_name, raw) => {
+  const s = setup(raw);
+  await expect(s.read(prdCommand)).rejects.toMatchObject({
+    code: "PUBLIC_TABLE_METADATA_UNAVAILABLE",
+  });
+  expect(s.fetch).toHaveBeenCalledTimes(2);
+});
+function setupPeriodText(text: string) {
+  const fetch = vi.fn(async (input: Parameters<typeof globalThis.fetch>[0]) =>
+    new URL(String(input)).pathname.endsWith("statisticsSearch.do")
+      ? Response.json([searchRow])
+      : new Response(text),
+  );
+  return {
+    fetch,
+    read: createPublicTableMetadataService({
+      apiKey: () => "synthetic-only-key",
+      fetch,
+      now: () => at,
+      gate: createKosisReadGate(),
+    }),
+  };
+}
+it.each([
+  '[{"PRD_SE":"Y","PRD_SE":"Y","STRT_PRD_DE":"a","END_PRD_DE":"b"}]',
+  '[{"PRD_SE":"Y","STRT_PRD_DE":"a","STRT_PRD_DE":"b","END_PRD_DE":"c"}]',
+  '[{"PRD_SE":"Y","STRT_PRD_DE":"a","END_PRD_DE":"b","END_PRD_DE":"b"}]',
+  '[{"PRD_SE":"Y","STRT_PRD_DE":"a","END_PRD_DE":"b","END_PRD_\\u0044E":"b"}]',
+  '[{"PRD_SE":"Y","PRD_DE":"a","PRD_DE":"a"}]',
+  '[{"PRD_SE":"Y","STRT_PRD_DE":"a","END_PRD_DE":"b"},{"PRD_SE":"M","PRD_SE":"M","STRT_PRD_DE":"c","END_PRD_DE":"d"}]',
+])("4H26 rejects original JSON row property duplication %s", async (text) => {
+  const s = setupPeriodText(text);
+  await expect(s.read(prdCommand)).rejects.toMatchObject({
+    code: "PUBLIC_TABLE_METADATA_UNAVAILABLE",
+  });
+  expect(s.fetch).toHaveBeenCalledTimes(2);
+});
+it("4H26 literal escaped punctuation and escaped distinct names do not resemble duplicate properties", async () => {
+  const raw = [{ PRD_SE: '"\\:[{}]', STRT_PRD_DE: 'a\\":{},[]', END_PRD_DE: ": : \n" }];
+  const s = setupPeriodText(JSON.stringify(raw).replace("STRT_PRD_DE", "STRT_PRD_\\u0044E"));
+  expect((await s.read(prdCommand)).metadata?.rows).toEqual(raw);
+});
+it.each(["empty", "missing", "hybrid", "extra", "authority", "candidate"] as const)(
+  "4H26 strict client rechecks range envelope %s",
+  async (change) => {
+    const value = await setup([rangeRow]).read(prdCommand);
+    const raw = structuredClone(value);
+    if (change === "empty") raw.status = "empty";
+    if (change === "missing")
+      raw.metadata = { kind: "PRD", rows: [{ PRD_SE: "Y", STRT_PRD_DE: "2020" }] } as never;
+    if (change === "hybrid")
+      raw.metadata = { kind: "PRD", rows: [{ ...rangeRow, PRD_DE: "2024" }] } as never;
+    if (change === "extra")
+      raw.metadata = { kind: "PRD", rows: [rangeRow], format: "range" } as never;
+    if (change === "authority") raw.periodsComplete = true as never;
+    if (change === "candidate") raw.command.candidate.periodEnd = "changed";
+    expect(() => readPublicTableMetadataResult(raw, prdCommand)).toThrow();
+  },
+);
+it("4H26 range response remains bounded and private through route / empty is distinct", async () => {
+  vi.stubEnv("KOSIS_API_KEY", "synthetic-only-key");
+  const s = setup([rangeRow]);
+  vi.stubGlobal("fetch", s.fetch);
+  const response = await POST(request(prdCommand));
+  expect(response.status).toBe(200);
+  expect(response.headers.get("cache-control")).toContain("no-store");
+  expect(readPublicTableMetadataResult(await response.json(), prdCommand).metadata?.rows).toEqual([
+    rangeRow,
+  ]);
+  const bad = setupPeriodText(
+    '[{"PRD_SE":"Y","STRT_PRD_DE":"a","END_PRD_DE":"PRIVATE_PROVIDER","END_PRD_DE":"b"}]',
+  );
+  vi.stubGlobal("fetch", bad.fetch);
+  const rejected = await POST(request(prdCommand));
+  expect(rejected.status).toBe(502);
+  expect(await rejected.text()).not.toMatch(/PRIVATE_PROVIDER|synthetic-only-key|STRT_PRD_DE/);
+  const empty = await setup([]).read(prdCommand);
+  expect(empty).toMatchObject({
+    status: "empty",
+    metadata: { kind: "PRD", rows: [] },
+    periodsComplete: false,
+  });
+});

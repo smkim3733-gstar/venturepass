@@ -308,9 +308,22 @@ export function PublicTableMetadata({
               ))}
             {metadata.kind === "PRD" &&
               metadata.rows.map((r, i) => (
-                <p key={i}>
-                  주기 원문: {r.PRD_SE} · 시점 원문: {r.PRD_DE}
-                </p>
+                <article
+                  key={i}
+                  aria-label={`수록 시점 ${i + 1}`}
+                  className="grid gap-1 whitespace-pre-wrap [overflow-wrap:anywhere]"
+                >
+                  <p>주기 원문: {r.PRD_SE}</p>
+                  {"PRD_DE" in r ? (
+                    <p>개별 시점 원문: {r.PRD_DE}</p>
+                  ) : (
+                    <>
+                      <p>수록 범위 응답 · 시작·끝 원문을 각각 표시합니다.</p>
+                      <p>시작 시점 원문: {r.STRT_PRD_DE === "" ? "빈 문자열" : r.STRT_PRD_DE}</p>
+                      <p>끝 시점 원문: {r.END_PRD_DE === "" ? "빈 문자열" : r.END_PRD_DE}</p>
+                    </>
+                  )}
+                </article>
               ))}
             {metadata.kind === "SOURCE" &&
               metadata.rows.map((r, i) => (

@@ -2,6 +2,7 @@ import "server-only";
 import { z } from "zod";
 import { StudioError } from "./studio-http";
 import { isSupportedCommentNoResults } from "./studio-public-comment-error";
+import { hasDuplicatePublicPeriodProperties } from "./studio-public-period-json";
 
 const MAX_BYTES = 512 * 1024;
 const endpoints = {
@@ -39,7 +40,12 @@ export type KosisReadDependencies = {
   now: () => string;
   gate?: KosisReadGate;
 };
-async function bodyJson(response: Response, signal: AbortSignal, recognizeCommentError: boolean) {
+async function bodyJson(
+  response: Response,
+  signal: AbortSignal,
+  recognizeCommentError: boolean,
+  checkPeriodProperties: boolean,
+) {
   const declared = response.headers.get("content-length");
   if (
     signal.aborted ||
@@ -79,6 +85,8 @@ async function bodyJson(response: Response, signal: AbortSignal, recognizeCommen
   }
   const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
   const body: unknown = JSON.parse(text);
+  if (checkPeriodProperties && hasDuplicatePublicPeriodProperties(text, body))
+    throw Error("Ambiguous public period response");
   return {
     body,
     commentNoResults: recognizeCommentError && isSupportedCommentNoResults(text, body),
@@ -140,6 +148,7 @@ export function createKosisReadTransport(deps: KosisReadDependencies, fail: () =
           response,
           controller.signal,
           kind === "metadata" && parameters.method === "getMeta" && parameters.type === "CMMT",
+          kind === "metadata" && parameters.method === "getMeta" && parameters.type === "PRD",
         );
         if (controller.signal.aborted) throw fail();
         const retrievedAt = z.iso.datetime().parse(deps.now());
