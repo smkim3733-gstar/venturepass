@@ -58,6 +58,8 @@ export function createPublicTableMetadataService(deps: KosisReadDependencies) {
           orgId: candidate.organizationId,
           tblId: candidate.tableId,
           format: "json",
+          // Match the official getMeta JSON URL generator.
+          jsonVD: "Y",
           content: "json",
         },
         controller.signal,

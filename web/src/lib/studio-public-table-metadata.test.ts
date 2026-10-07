@@ -101,6 +101,7 @@ it.each(["TBL", "PRD", "SOURCE"] as const)(
       orgId: "999",
       tblId: "DT_SYNTHETIC",
       format: "json",
+      jsonVD: "Y",
       content: "json",
       apiKey: "synthetic-only-key",
     });
@@ -399,6 +400,7 @@ it("4H9 reads the exact CMMT target through the existing route without scope pro
     orgId: "999",
     tblId: "DT_SYNTHETIC",
     format: "json",
+    jsonVD: "Y",
     content: "json",
     apiKey: "synthetic-only-key",
   });
@@ -556,3 +558,56 @@ it("4H9 aborted original I/O holds the shared slot until its own completion", as
     release();
   });
 });
+
+it.each(["TBL", "CMMT", "PRD", "SOURCE"] as const)(
+  "4H17 requests strict JSON and preserves escaped literals for %s",
+  async (kind) => {
+    const literal = '한글 "인용"\n역슬래시 \\ 원문';
+    const payloads = {
+      TBL: [{ TBL_NM: literal, TBL_NM_ENG: null }],
+      CMMT: [{ CMMT_NM: " 주석 ", CMMT_DC: literal, OBJ_ID: "", OBJ_NM: null }],
+      PRD: [{ PRD_SE: literal, PRD_DE: "2024" }],
+      SOURCE: [{ JOSA_NM: literal, STAT_ID: "", DEPT_NM: null }],
+    };
+    const s = setup(payloads[kind]);
+    const result = await s.read({ ...command, kind });
+    expect(result.metadata).toEqual({ kind, rows: payloads[kind] });
+    expect(s.fetch).toHaveBeenCalledTimes(2);
+    for (const [input] of s.fetch.mock.calls)
+      expect(new URL(String(input)).searchParams.getAll("jsonVD")).toEqual(["Y"]);
+    expect(result.originalRead).toBe(false);
+    expect(result.factChecked).toBe(false);
+  },
+);
+it.each([
+  '[{TBL_NM:"private"}]',
+  "[{'TBL_NM':'private'}]",
+  'callback([{"TBL_NM":"private"}])',
+  '[{"TBL_NM":"private"},]',
+  '[{"TBL_NM":"private\nline"}]',
+])("4H17 rejects malformed JSON metadata %# without repair, disclosure or retry", async (raw) => {
+  const fetch = vi.fn(async (input: Parameters<typeof globalThis.fetch>[0]) =>
+    new URL(String(input)).pathname.endsWith("statisticsSearch.do")
+      ? Response.json([searchRow])
+      : new Response(raw, { headers: { "Content-Type": "application/json" } }),
+  );
+  const read = createPublicTableMetadataService({
+    apiKey: () => "synthetic-only-key",
+    fetch,
+    now: () => at,
+    gate: createKosisReadGate(),
+  });
+  await expect(read(command)).rejects.toMatchObject({
+    code: "PUBLIC_TABLE_METADATA_UNAVAILABLE",
+    message: "선택한 표 정보를 확인하지 못했습니다. 검색 후보를 다시 확인해 주세요.",
+  });
+  expect(fetch).toHaveBeenCalledTimes(2);
+});
+it.each([{ jsonVD: "N" }, { jsonVD: "y" }, { format: "jsonp" }])(
+  "4H17 rejects caller output overrides %j before any I/O",
+  async (patch) => {
+    const s = setup();
+    await expect(s.read({ ...command, ...patch })).rejects.toThrow();
+    expect(s.fetch).not.toHaveBeenCalled();
+  },
+);
