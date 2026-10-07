@@ -58,6 +58,7 @@ it("sends only the fixed topic and server key once, strips untrusted content, an
     apiKey: "synthetic-test-key",
     searchNm: "서비스업",
     format: "json",
+    jsonVD: "Y",
     content: "json",
     sort: "RANK",
     startCount: "1",
@@ -300,3 +301,55 @@ it("SSR performs no lookup and renders no API key, candidate or external link be
   expect(html).not.toContain("href=");
   expect(html).not.toContain("KOSIS_API_KEY");
 });
+
+it("4H15 requests official JSON output and preserves quoted Korean text through the route", async () => {
+  vi.stubEnv("KOSIS_API_KEY", "synthetic-test-key");
+  const title = '합성 "온라인쇼핑"\n경로\\문자';
+  const fetch = vi.fn(async (input: Parameters<typeof globalThis.fetch>[0]) => {
+    const url = new URL(String(input));
+    expect(url.searchParams.getAll("jsonVD")).toEqual(["Y"]);
+    expect(url.searchParams.get("searchNm")).toBe("온라인쇼핑");
+    return new Response(JSON.stringify([{ ...row, TBL_NM: title }]), {
+      headers: { "content-type": "application/json" },
+    });
+  });
+  vi.stubGlobal("fetch", fetch);
+  const response = await POST(request({ topic: "ecommerce" }));
+  expect(response.status).toBe(200);
+  const result = readPublicResearchResult(await response.json(), "ecommerce");
+  expect(result.candidates[0].title).toBe(title);
+  expect(result.originalRead).toBe(false);
+  expect(result.databaseChanged).toBe(false);
+  expect(fetch).toHaveBeenCalledOnce();
+});
+it.each([
+  ["unquoted field", '[{ORG_ID:"synthetic-private-marker"}]'],
+  ["single quotes", "[{'ORG_ID':'synthetic-private-marker'}]"],
+  ["JSONP", 'callback([{"ORG_ID":"synthetic-private-marker"}])'],
+  ["trailing comma", '[{"ORG_ID":"synthetic-private-marker"},]'],
+  ["unescaped newline", '[{"ORG_ID":"synthetic-private-marker\n"}]'],
+])("4H15 rejects %s despite JSON MIME without repair, disclosure or retry", async (_label, body) => {
+  vi.stubEnv("KOSIS_API_KEY", "synthetic-test-key");
+  const fetch = vi.fn(async () => new Response(body, {
+    headers: { "content-type": "application/json" },
+  }));
+  vi.stubGlobal("fetch", fetch);
+  const response = await POST(request({ topic: "ecommerce" }));
+  expect(response.status).toBe(502);
+  expect(response.headers.get("cache-control")).toContain("no-store");
+  const output = await response.text();
+  expect(JSON.parse(output).code).toBe("PUBLIC_RESEARCH_UNAVAILABLE");
+  expect(output).not.toMatch(/synthetic-test-key|synthetic-private-marker|SyntaxError|callback/);
+  expect(fetch).toHaveBeenCalledOnce();
+});
+it.each([{ jsonVD: "N" }, { jsonVD: "y" }, { format: "jsonp" }])(
+  "4H15 rejects caller output-format overrides before any provider request %j",
+  async (patch) => {
+    vi.stubEnv("KOSIS_API_KEY", "synthetic-test-key");
+    const fetch = vi.fn();
+    vi.stubGlobal("fetch", fetch);
+    const response = await POST(request({ topic: "ecommerce", ...patch }));
+    expect(response.status).toBe(400);
+    expect(fetch).not.toHaveBeenCalled();
+  },
+);

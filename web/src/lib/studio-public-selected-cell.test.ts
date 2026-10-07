@@ -106,6 +106,8 @@ it.each([1, 8])(
     expect(readPublicSelectedCellResult(result, original)).toEqual(result);
     const url = new URL(String(s.fetch.mock.calls[1][0]));
     expect(url.pathname).toBe("/openapi/Param/statisticsParameterData.do");
+    expect(new URL(String(s.fetch.mock.calls[0][0])).searchParams.getAll("jsonVD")).toEqual(["Y"]);
+    expect(url.searchParams.has("jsonVD")).toBe(false);
     expect(url.searchParams.get("itmId")).toBe("t00a");
     expect(url.searchParams.get("objL" + count)).toBe("00a");
     expect(url.searchParams.get("smblChk")).toBe("Y");

@@ -94,6 +94,7 @@ it.each(["TBL", "PRD", "SOURCE"] as const)(
     const first = new URL(String(s.fetch.mock.calls[0][0])),
       second = new URL(String(s.fetch.mock.calls[1][0]));
     expect(first.searchParams.get("searchNm")).toBe("서비스업");
+    expect(first.searchParams.getAll("jsonVD")).toEqual(["Y"]);
     expect(Object.fromEntries(second.searchParams)).toEqual({
       method: "getMeta",
       type: kind,

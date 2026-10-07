@@ -53,6 +53,8 @@ export function createPublicResearchService(deps: KosisReadDependencies) {
         method: "getList",
         searchNm: selection.query,
         format: "json",
+        // Matches the official statisticsSearch URL generator (2026-10-07).
+        jsonVD: "Y",
         content: "json",
         sort: "RANK",
         startCount: "1",
