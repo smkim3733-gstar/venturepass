@@ -1,6 +1,7 @@
 import "server-only";
 import { z } from "zod";
 import { StudioError } from "./studio-http";
+import { isSupportedCommentNoResults } from "./studio-public-comment-error";
 
 const MAX_BYTES = 512 * 1024;
 const endpoints = {
@@ -38,7 +39,7 @@ export type KosisReadDependencies = {
   now: () => string;
   gate?: KosisReadGate;
 };
-async function bodyJson(response: Response, signal: AbortSignal) {
+async function bodyJson(response: Response, signal: AbortSignal, recognizeCommentError: boolean) {
   const declared = response.headers.get("content-length");
   if (
     signal.aborted ||
@@ -76,7 +77,12 @@ async function bodyJson(response: Response, signal: AbortSignal) {
     bytes.set(part, offset);
     offset += part.byteLength;
   }
-  return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as unknown;
+  const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  const body: unknown = JSON.parse(text);
+  return {
+    body,
+    commentNoResults: recognizeCommentError && isSupportedCommentNoResults(text, body),
+  };
 }
 /** Internal fixed-origin transport. Parameters come only from each service's validated command. */
 export function createKosisReadTransport(deps: KosisReadDependencies, fail: () => StudioError) {
@@ -85,7 +91,8 @@ export function createKosisReadTransport(deps: KosisReadDependencies, fail: () =
     parameters: Readonly<Record<string, string>>,
     callerSignal?: AbortSignal,
   ): Promise<
-    { status: "not-configured" } | { status: "received"; body: unknown; retrievedAt: string }
+    | { status: "not-configured" }
+    | { status: "received"; body: unknown; retrievedAt: string; commentNoResults: boolean }
   > {
     let key: string | undefined;
     try {
@@ -129,11 +136,15 @@ export function createKosisReadTransport(deps: KosisReadDependencies, fail: () =
           await response.body?.cancel();
           throw fail();
         }
-        const body = await bodyJson(response, controller.signal);
+        const decoded = await bodyJson(
+          response,
+          controller.signal,
+          kind === "metadata" && parameters.method === "getMeta" && parameters.type === "CMMT",
+        );
         if (controller.signal.aborted) throw fail();
         const retrievedAt = z.iso.datetime().parse(deps.now());
         if (controller.signal.aborted) throw fail();
-        return { status: "received" as const, body, retrievedAt };
+        return { status: "received" as const, ...decoded, retrievedAt };
       } catch {
         throw fail();
       } finally {

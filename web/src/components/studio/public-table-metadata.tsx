@@ -14,7 +14,11 @@ import {
   publicCommentEvidenceFields,
   type PublicCommentSelection,
 } from "@/lib/studio-public-comment-evidence";
-import { jsonBody, studioFetch } from "./shared";
+import {
+  publicCommentNoResultsCode,
+  publicCommentNoResultsMessage,
+} from "@/lib/studio-public-comment-error";
+import { StudioApiError, jsonBody, studioFetch } from "./shared";
 import styles from "./guided-workspace.module.css";
 
 function commentField(value: string | null | undefined) {
@@ -158,14 +162,21 @@ export function PublicTableMetadata({
         visible()
       )
         setResult(value);
-    } catch {
+    } catch (cause) {
       if (
         mounted.current &&
         !controller.signal.aborted &&
         flight.current === controller &&
         visible()
       )
-        setError("표 정보가 미확인입니다. 검색 후보를 다시 확인한 뒤 명시적으로 조회해 주세요.");
+        setError(
+          command.kind === "CMMT" &&
+            cause instanceof StudioApiError &&
+            cause.status === 502 &&
+            cause.code === publicCommentNoResultsCode
+            ? publicCommentNoResultsMessage
+            : "표 정보가 미확인입니다. 검색 후보를 다시 확인한 뒤 명시적으로 조회해 주세요.",
+        );
     } finally {
       if (flight.current === controller) {
         flight.current = null;

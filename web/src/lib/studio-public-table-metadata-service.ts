@@ -14,6 +14,10 @@ import {
   publicTableMetadataLimits,
   readPublicTableMetadataResult,
 } from "./studio-public-table-metadata";
+import {
+  publicCommentNoResultsCode,
+  publicCommentNoResultsMessage,
+} from "./studio-public-comment-error";
 const fail = () =>
   new StudioError(
     "선택한 표 정보를 확인하지 못했습니다. 검색 후보를 다시 확인해 주세요.",
@@ -67,6 +71,8 @@ export function createPublicTableMetadataService(deps: KosisReadDependencies) {
       if (controller.signal.aborted) throw fail();
       // A configuration change after the checked search must not become a successful empty result.
       if (response.status !== "received") throw fail();
+      if (command.kind === "CMMT" && response.commentNoResults)
+        throw new StudioError(publicCommentNoResultsMessage, 502, publicCommentNoResultsCode);
       const metadata = decodePublicTableMetadata(response.body, command.kind);
       return readPublicTableMetadataResult(
         {
@@ -82,7 +88,11 @@ export function createPublicTableMetadataService(deps: KosisReadDependencies) {
     } catch (error) {
       if (
         error instanceof StudioError &&
-        ["PUBLIC_RESEARCH_BUSY", "PUBLIC_TABLE_SELECTION_CHANGED"].includes(error.code)
+        [
+          "PUBLIC_RESEARCH_BUSY",
+          "PUBLIC_TABLE_SELECTION_CHANGED",
+          publicCommentNoResultsCode,
+        ].includes(error.code)
       )
         throw error;
       throw fail();

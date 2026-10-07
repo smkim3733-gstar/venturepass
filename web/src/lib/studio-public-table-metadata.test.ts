@@ -1,3 +1,5 @@
+import { publicCommentNoResultsMessage } from "./studio-public-comment-error";
+import { studioFetch, StudioApiError } from "@/components/studio/shared";
 import { afterEach, expect, it, vi } from "vitest";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -442,7 +444,7 @@ it("4H9 accepts all application row and field boundaries without shortening", ()
 it.each([
   null,
   {},
-  { err: "30", errMsg: "synthetic-only-key" },
+  { err: "31", errMsg: "synthetic-only-key" },
   "<html>private</html>",
   Array(101).fill(comment),
   ...["CMMT_NM", "CMMT_DC"].flatMap((key) =>
@@ -611,3 +613,176 @@ it.each([{ jsonVD: "N" }, { jsonVD: "y" }, { format: "jsonp" }])(
     expect(s.fetch).not.toHaveBeenCalled();
   },
 );
+
+it.each([
+  '{"err":"30"}',
+  '{"err":"30","errMsg":""}',
+  '{"errMsg":"private \\"quote\\" \\\\ \\n { : }","err":"30"}',
+  '{"\\u0065rr":"3\\u0030","errMsg":"private"}',
+])("4H21 keeps supported CMMT no-results as a fixed error %#", async (body) => {
+  const fetch = vi.fn(async (input: Parameters<typeof globalThis.fetch>[0]) =>
+    new URL(String(input)).pathname.endsWith("statisticsSearch.do")
+      ? Response.json([searchRow])
+      : new Response(body),
+  );
+  const read = createPublicTableMetadataService({
+    apiKey: () => "synthetic-only-key",
+    fetch,
+    now: () => at,
+    gate: createKosisReadGate(),
+  });
+  await expect(read(commentCommand)).rejects.toMatchObject({
+    status: 502,
+    code: "PUBLIC_COMMENT_NO_RESULTS",
+    message: publicCommentNoResultsMessage,
+  });
+  expect(fetch).toHaveBeenCalledTimes(2);
+});
+it.each([
+  '{"err":30}',
+  '{"err":" 30"}',
+  '{"err":"030"}',
+  '{"err":"31"}',
+  '{"err":"99"}',
+  '{"code":"30"}',
+  '{"errMsg":"30"}',
+  '{"err":"30","code":"30"}',
+  '{"err":"30","error":"30"}',
+  '{"err":"30","private":"extra"}',
+  '{"err":"30","errMsg":null}',
+  '{"err":"30","errMsg":30}',
+  '{"err":"30","errMsg":{}}',
+  '{"err":"30","err":"30"}',
+  '{"err":"99","err":"30"}',
+  '{"err":"30","\\u0065rr":"30"}',
+  '{"err":"30","errMsg":"a","errMsg":"b"}',
+  '{"err":"30","errMsg":"a","err\\u004dsg":"b"}',
+  '[{"err":"30"}]',
+  '{"wrapped":{"err":"30"}}',
+  "null",
+  '{"err":"30",}',
+  '{"err":"30","errMsg":"bad\nline"}',
+])("4H21 leaves ambiguous or unsupported error wire %# unconfirmed", async (body) => {
+  const fetch = vi.fn(async (input: Parameters<typeof globalThis.fetch>[0]) =>
+    new URL(String(input)).pathname.endsWith("statisticsSearch.do")
+      ? Response.json([searchRow])
+      : new Response(body),
+  );
+  const read = createPublicTableMetadataService({
+    apiKey: () => "synthetic-only-key",
+    fetch,
+    now: () => at,
+    gate: createKosisReadGate(),
+  });
+  await expect(read(commentCommand)).rejects.toMatchObject({
+    status: 502,
+    code: "PUBLIC_TABLE_METADATA_UNAVAILABLE",
+  });
+  expect(fetch).toHaveBeenCalledTimes(2);
+});
+it.each(["TBL", "PRD", "SOURCE"] as const)(
+  "4H21 never relabels another metadata kind %s as a comment error",
+  async (kind) => {
+    await expect(setup({ err: "30" }).read({ ...command, kind })).rejects.toMatchObject({
+      code: "PUBLIC_TABLE_METADATA_UNAVAILABLE",
+    });
+  },
+);
+it("4H21 never relabels a failed candidate search as a comment response", async () => {
+  const s = setup({ err: "30" }, { err: "30" });
+  await expect(s.read(commentCommand)).rejects.toMatchObject({
+    code: "PUBLIC_TABLE_METADATA_UNAVAILABLE",
+  });
+  expect(s.fetch).toHaveBeenCalledOnce();
+});
+it("4H21 candidate mismatch still stops before any comment response", async () => {
+  const s = setup({ err: "30" }, [{ ...searchRow, TBL_NM: "changed" }]);
+  await expect(s.read(commentCommand)).rejects.toMatchObject({
+    code: "PUBLIC_TABLE_SELECTION_CHANGED",
+  });
+  expect(s.fetch).toHaveBeenCalledOnce();
+});
+it.each(["http", "utf8", "declared", "streamed"] as const)(
+  "4H21 cannot classify code30 before transport checks %s",
+  async (failure) => {
+    const fetch = vi.fn(async (input: Parameters<typeof globalThis.fetch>[0]) => {
+      if (new URL(String(input)).pathname.endsWith("statisticsSearch.do"))
+        return Response.json([searchRow]);
+      if (failure === "http") return Response.json({ err: "30" }, { status: 500 });
+      if (failure === "utf8")
+        return new Response(
+          new Uint8Array([...new TextEncoder().encode('{"err":"30","errMsg":"'), 255, 34, 125]),
+        );
+      if (failure === "declared")
+        return new Response('{"err":"30"}', {
+          headers: { "content-length": String(512 * 1024 + 1) },
+        });
+      return new Response(JSON.stringify({ err: "30", errMsg: "x".repeat(512 * 1024) }));
+    });
+    const read = createPublicTableMetadataService({
+      apiKey: () => "synthetic",
+      fetch,
+      now: () => at,
+      gate: createKosisReadGate(),
+    });
+    await expect(read(commentCommand)).rejects.toMatchObject({
+      code: "PUBLIC_TABLE_METADATA_UNAVAILABLE",
+    });
+    expect(fetch).toHaveBeenCalledTimes(2);
+  },
+);
+it("4H21 safe route and studioFetch carry only the fixed code/message with error status", async () => {
+  vi.stubEnv("KOSIS_API_KEY", "synthetic-only-key");
+  const s = setup({ err: "30", errMsg: "PRIVATE_PROVIDER https://private.invalid?apiKey=secret" });
+  vi.stubGlobal("fetch", s.fetch);
+  const response = await POST(request(commentCommand));
+  expect(response.status).toBe(502);
+  expect(response.headers.get("cache-control")).toContain("no-store");
+  const body = await response.clone().json();
+  expect(body).toEqual({ code: "PUBLIC_COMMENT_NO_RESULTS", error: publicCommentNoResultsMessage });
+  expect(JSON.stringify(body)).not.toMatch(/PRIVATE_PROVIDER|apiKey|secret|errMsg/);
+  expect(s.fetch).toHaveBeenCalledTimes(2);
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () => response),
+  );
+  await expect(studioFetch("/api/studio/public-research/search")).rejects.toBeInstanceOf(
+    StudioApiError,
+  );
+});
+it("4H21 aborted late code30 remains cancellation while original IO retains the gate", async () => {
+  let finish!: (value: Response) => void;
+  let entered!: () => void;
+  const reached = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  const gate = createKosisReadGate();
+  const fetch = vi.fn(async (input: Parameters<typeof globalThis.fetch>[0]) => {
+    if (new URL(String(input)).pathname.endsWith("statisticsSearch.do"))
+      return Response.json([searchRow]);
+    entered();
+    return new Promise<Response>((resolve) => {
+      finish = resolve;
+    });
+  });
+  const read = createPublicTableMetadataService({
+    apiKey: () => "synthetic",
+    fetch,
+    now: () => at,
+    gate,
+  });
+  const controller = new AbortController();
+  const pending = expect(read(commentCommand, controller.signal)).rejects.toMatchObject({
+    code: "PUBLIC_TABLE_METADATA_UNAVAILABLE",
+  });
+  await reached;
+  controller.abort();
+  await pending;
+  await expect(read(commentCommand)).rejects.toMatchObject({ code: "PUBLIC_RESEARCH_BUSY" });
+  finish(Response.json({ err: "30" }));
+  await vi.waitFor(() => {
+    const release = gate.acquire();
+    release();
+  });
+  expect(fetch).toHaveBeenCalledTimes(2);
+});
