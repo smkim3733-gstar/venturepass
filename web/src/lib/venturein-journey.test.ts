@@ -340,3 +340,55 @@ describe("공식 화면 관찰 이력 보존", () => {
     expect(ventureJourneyEntrySchema.safeParse({ ...entry, url }).success).toBe(false);
   });
 });
+
+describe("완료 후 현재 원고 연결 재확인", () => {
+  it.each(["missing", "company", "snapshot", "account", "session"] as const)(
+    "과거 입력 완료보다 현재 연결의 불일치를 먼저 안내한다: %s",
+    (mismatch) => {
+      const input = fixture();
+      input.execution = receipt();
+      if (mismatch === "missing") input.draft = null;
+      if (mismatch === "company") input.companyRevision += 1;
+      if (mismatch === "snapshot") input.draft!.snapshotId = "previous-screen";
+      if (mismatch === "account") input.draft!.accountRevision -= 1;
+      if (mismatch === "session") input.draft!.sessionStartedAt = "2026-09-24T01:00:00.000Z";
+      const original = structuredClone(input);
+      const journey = buildVentureJourney(input);
+      expect(journey.phase).toBe("map");
+      expect(journey.message).not.toContain("이동한 뒤");
+      expect(journey.entries[0].execution).toEqual(input.execution);
+      expect(input).toEqual(original);
+    },
+  );
+
+  it.each(["blocked", "missing"] as const)(
+    "완료 기록이 있어도 현재 선택 점검을 통과하지 못하면 보완을 안내한다: %s",
+    (state) => {
+      const input = fixture();
+      input.execution = receipt();
+      if (state === "blocked") input.report.inputReadiness.ready = false;
+      else Reflect.deleteProperty(input.report, "inputReadiness");
+      const journey = buildVentureJourney(input);
+      expect(journey.phase).toBe("review");
+      expect(journey.entries[0].execution).toEqual(input.execution);
+      expect(input.report.automaticSubmissionAvailable).toBe(false);
+    },
+  );
+
+  it.each(["running", "stopped", "completed"] as const)(
+    "원고가 바뀌어도 진행 중/결과 불명 기록은 먼저 확인하며 재입력을 안내하지 않는다: %s",
+    (status) => {
+      const input = fixture();
+      input.companyRevision += 1;
+      input.execution = receipt({
+        status,
+        code: "INPUT_RESULT_UNKNOWN",
+        finishedAt: status === "running" ? null : now,
+      });
+      const journey = buildVentureJourney(input);
+      expect(journey.phase).toBe("verify");
+      expect(journey.message).toContain("같은 화면 기록으로 재실행하지 않습니다");
+      expect(journey.entries[0].execution).toEqual(input.execution);
+    },
+  );
+});

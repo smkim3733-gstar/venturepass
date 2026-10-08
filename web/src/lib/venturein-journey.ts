@@ -87,17 +87,12 @@ export function buildVentureJourney(input: {
     return result("inspect", "현재 공식 화면을 읽어 신청기업과 항목을 확인하세요.");
   const execution =
     input.execution?.snapshotId === input.snapshot.screen.id ? input.execution : null;
-  if (execution) {
-    if (execution.status !== "completed" || execution.code === "INPUT_RESULT_UNKNOWN")
-      return result(
-        "verify",
-        "마지막 입력·첨부 결과를 공식 화면에서 확인하세요. 같은 화면 기록으로 재실행하지 않습니다. 확인 후 현재 화면을 다시 연결하세요.",
-      );
+  // Uncertain prior input stays first: changing a draft must never invite a resend.
+  if (execution && (execution.status !== "completed" || execution.code === "INPUT_RESULT_UNKNOWN"))
     return result(
-      "handoff",
-      "화면의 입력·첨부 값 확인을 마쳤습니다. 공식 사이트에서 다음 동작을 확인해 이동한 뒤 ‘다음 화면 연결’을 누르세요. 저장·동의·제출·접수 완료를 뜻하지 않습니다.",
+      "verify",
+      "마지막 입력·첨부 결과를 공식 화면에서 확인하세요. 같은 화면 기록으로 재실행하지 않습니다. 확인 후 현재 화면을 다시 연결하세요.",
     );
-  }
   if (
     !input.draft ||
     input.draft.companyRevision !== input.companyRevision ||
@@ -113,6 +108,12 @@ export function buildVentureJourney(input: {
     return result(
       "review",
       "선택한 입력·첨부의 보완사항을 해결하세요. 기업 일치·자료·연결 확인을 유지하며 동의나 전체 제출 완료를 추정하지 않습니다.",
+    );
+  // A completed historical receipt does not make the current draft ready.
+  if (execution)
+    return result(
+      "handoff",
+      "화면의 입력·첨부 값 확인을 마쳤습니다. 공식 사이트에서 다음 동작을 확인해 이동한 뒤 ‘다음 화면 연결’을 누르세요. 저장·동의·제출·접수 완료를 뜻하지 않습니다.",
     );
   return result(
     "execute",
