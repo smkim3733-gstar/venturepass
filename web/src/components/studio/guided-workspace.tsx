@@ -1,4 +1,5 @@
 "use client";
+import { guidedDescriptionAcknowledged } from "./guided-description-save";
 import { PlanSupplementPanel } from "./plan-supplement-panel";
 import {
   savedGuidedAnswer,
@@ -459,11 +460,14 @@ export function GuidedWorkspace({
   }
   async function saveDescription() {
     if (!description.trim() || locked || inFlight.current) return;
-    const next = await mutateOnce({
-      action: "profile",
-      profile: { ...company.profile, technologySummary: description.trim() },
-    });
-    if (!next || !mounted.current) return;
+    const submitted = { ...company.profile, technologySummary: description.trim() };
+    const next = await mutateOnce({ action: "profile", profile: submitted });
+    if (!mounted.current) return;
+    if (!guidedDescriptionAcknowledged(next, company, submitted) || !next) {
+      setError("입력한 회사 설명의 저장 응답을 확인하지 못했습니다. 설명을 유지하며 AI 준비로 넘기지 않았습니다.");
+      return;
+    }
+    setError("");
     setDescribing(false);
     setDescriptionTouched(false);
     setStep("plan");
