@@ -3,6 +3,11 @@
 import type { BusinessPlan, StudioCase } from "@/lib/studio-schema";
 import { Button } from "@/components/ui/button";
 import { PlanReviewDecisions } from "./plan-review-decisions";
+import {
+  latestPlanReviewDecision,
+  planReviewStatusLabels,
+  planReviewStaleReasonLabels,
+} from "@/lib/studio-plan-review-types";
 import type { StudioMutation } from "./shared";
 
 export type GuidedReviewTarget = {
@@ -71,6 +76,43 @@ export function GuidedPlanReview({
               : ""
         }
       />
+    </div>
+  );
+}
+
+/** Read-only projection of this company's existing manual record. No confirmation or write. */
+export function GuidedReviewDecisionSummary({
+  company,
+  plan,
+  findingIndex,
+}: {
+  company: StudioCase;
+  plan: BusinessPlan;
+  findingIndex: number;
+}) {
+  const record = latestPlanReviewDecision(company.planReviewDecisions ?? [], plan, findingIndex);
+  return (
+    <div
+      aria-label={`의견 ${findingIndex + 1}의 최근 담당자 판단`}
+      className="mt-2 space-y-1 text-xs text-muted-foreground [overflow-wrap:anywhere]"
+    >
+      {record ? (
+        <>
+          <p>
+            최근 수동 판단: {planReviewStatusLabels[record.status]} · {record.reviewer}
+          </p>
+          <p>현재 근거 연결: {record.stale ? "재검토 필요" : "저장 기준 유지"}</p>
+          {record.staleReasons.length > 0 && (
+            <ul className="list-inside list-disc text-amber-900">
+              {record.staleReasons.map((reason) => (
+                <li key={reason}>{planReviewStaleReasonLabels[reason]}</li>
+              ))}
+            </ul>
+          )}
+        </>
+      ) : (
+        <p>담당자 판단 미기록</p>
+      )}
     </div>
   );
 }

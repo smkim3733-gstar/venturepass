@@ -17,6 +17,8 @@ const temporaryRoot = await realpath(path.resolve(app, "../../.venturepass-tools
 const staging = await realpath(process.argv[2]);
 const serverMode = process.argv[3] ?? "start";
 assert.ok(["start", "dev"].includes(serverMode));
+const scenario = process.argv[4] ?? "link";
+assert.ok(["link", "summary"].includes(scenario));
 const relative = path.relative(temporaryRoot, staging);
 assert.ok(relative && !relative.startsWith("..") && !path.isAbsolute(relative));
 assert.match(path.basename(staging), /^venturepass-build-/);
@@ -32,7 +34,12 @@ for (const file of [
     sha(await readFile(path.join(app, file))),
     sha(await readFile(path.join(staging, file))),
   );
-const output = await mkdtemp(path.join(temporaryRoot, "venturepass-review-link-ui-"));
+const output = await mkdtemp(
+  path.join(
+    temporaryRoot,
+    scenario === "summary" ? "venturepass-review-summary-ui-" : "venturepass-review-link-ui-",
+  ),
+);
 const guard = path.join(output, "network-guard.mjs");
 await writeFile(
   guard,
@@ -364,153 +371,251 @@ try {
   );
   page.on("request", (r) => network.push({ request: new URL(r.url()).pathname }));
 
-  await reopen();
-  const panel = () => page.getByLabel("간단 원고 검토 판단", { exact: true });
-  const choose = () => page.getByLabel("판단할 검토 의견 직접 선택", { exact: true });
-  const save = () => page.getByRole("button", { name: "검토 판단 이력 저장", exact: true });
-  const back = () => page.getByRole("button", { name: "원고로 돌아가기", exact: true });
-  const original = structuredClone(company.plans);
-  await page.getByRole("button", { name: "검토 의견 확인하기", exact: true }).click();
-  await panel().waitFor();
-  assert.equal(await choose().inputValue(), "");
-  assert.equal(await page.getByLabel("판단 담당자 *", { exact: true }).count(), 0);
-  assert.equal(commands.length, 0);
-  await back().click();
-  record("primary action opens the existing decision panel without auto-selecting or writing");
+  if (scenario === "summary") {
+    const original = structuredClone(company.plans);
+    const summary = (n) => page.getByLabel("의견 " + n + "의 최근 담당자 판단", { exact: true });
+    const saveJudgement = async (status, reason, count) => {
+      await page
+        .getByRole("button", { name: "의견 3: 동일한 근거 대조 의견", exact: true })
+        .click();
+      assert.equal(
+        await page.getByLabel("판단할 검토 의견 직접 선택", { exact: true }).inputValue(),
+        "2",
+      );
+      await page.getByLabel("처리 상태", { exact: true }).selectOption(status);
+      await page.getByLabel("판단 담당자 *", { exact: true }).fill("합성 검토 담당자");
+      await page.getByLabel("확인한 내용과 판단 이유 *", { exact: true }).fill(reason);
+      await page.getByRole("button", { name: "검토 판단 이력 저장", exact: true }).click();
+      await page.getByText("원고 v2의 판단 이력 " + count + "개", { exact: true }).waitFor();
+      await page.waitForFunction(() => !document.querySelector("#plan-review-reviewer"));
+      await page.getByRole("button", { name: "원고로 돌아가기", exact: true }).click();
+    };
+    await reopen();
+    assert.equal(await summary(1).count(), 0); // Hidden info does not renumber original findings.
+    assert.ok((await summary(2).innerText()).includes("담당자 판단 미기록"));
+    assert.ok((await summary(3).innerText()).includes("담당자 판단 미기록"));
+    assert.equal(commands.length, 0);
+    await saveJudgement("deferred", "외부 근거 확인 전까지 보류합니다.", 1);
+    assert.ok((await summary(3).innerText()).includes("최근 수동 판단: 보류"));
+    assert.ok((await summary(3).innerText()).includes("합성 검토 담당자"));
+    assert.ok((await summary(3).innerText()).includes("재검토 필요"));
+    assert.ok(
+      (await summary(3).innerText()).includes(
+        "이 원고가 최신 근거를 반영했는지 다시 확인해야 합니다.",
+      ),
+    );
+    assert.ok((await summary(2).innerText()).includes("담당자 판단 미기록"));
+    assert.deepEqual(company.plans, original);
+    record(
+      "saved deferred judgement appears on its original index without reopening the form or affecting an identical opinion",
+    );
 
-  await page.getByRole("button", { name: "의견 3: 동일한 근거 대조 의견", exact: true }).click();
-  assert.equal(await choose().inputValue(), "2");
-  assert.ok((await panel().innerText()).includes("두 번째 원래 근거를 대조하세요"));
-  assert.equal(await page.getByLabel("처리 상태", { exact: true }).inputValue(), "pending");
-  await page.getByLabel("처리 상태", { exact: true }).selectOption("deferred");
-  await page.getByLabel("판단 담당자 *", { exact: true }).fill("합성 담당자");
-  await page
-    .getByLabel("확인한 내용과 판단 이유 *", { exact: true })
-    .fill("추가 근거 대조 전까지 보류합니다.");
-  record("explicit opinion uses original index 2 despite a hidden info row and duplicate messages");
+    await saveJudgement("resolved", "담당자의 수동 해결 판단을 남깁니다.", 2);
+    assert.ok((await summary(3).innerText()).includes("최근 수동 판단: 담당자 해결 판단"));
+    assert.ok(!(await summary(3).innerText()).includes("최근 수동 판단: 보류"));
+    assert.ok((await summary(3).innerText()).includes("재검토 필요"));
+    assert.equal(commands[1].decision.previousRecordId, company.planReviewDecisions[0].id);
+    assert.equal(company.planReviewDecisions.length, 2);
+    assert.deepEqual(company.plans, original);
+    assert.equal(company.plans.at(-1).confirmedAt, null);
+    assert.equal(company.analysis, null);
+    assert.equal(company.selectedCandidateId, null);
+    assert.ok(
+      (await page.getByRole("region", { name: "현재 원고와 검토 상태" }).innerText()).includes(
+        "전체 검토 미완료",
+      ),
+    );
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.waitForFunction(
+      () => document.querySelectorAll('[data-sonner-toast][data-visible="true"]').length === 0,
+      undefined,
+      { timeout: 15000 },
+    );
+    await page.getByRole("region", { name: "의견별 검토 판단 바로가기" }).scrollIntoViewIfNeeded();
+    assert.equal(
+      await page.evaluate(() => document.documentElement.scrollWidth > innerWidth),
+      false,
+    );
+    await page.screenshot({ path: path.join(output, "judgement-summary-mobile.png") });
+    record(
+      "latest manual resolution replaces the summary only; earlier history, stale warning and manuscript confirmation remain unchanged on mobile",
+    );
 
-  page.once("dialog", (d) => d.dismiss());
-  await back().click();
-  assert.equal(
-    await page.getByLabel("확인한 내용과 판단 이유 *", { exact: true }).inputValue(),
-    "추가 근거 대조 전까지 보류합니다.",
-  );
-  page.once("dialog", (d) => d.dismiss());
-  await choose().selectOption("1");
-  assert.equal(await choose().inputValue(), "2");
-  await page.setViewportSize({ width: 390, height: 844 });
-  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
-  await page.screenshot({ path: path.join(output, "review-decision-mobile.png"), fullPage: true });
-  record("cancelled close or opinion switch preserves the draft and mobile form fits");
+    company.plans.push({
+      ...structuredClone(company.plans.at(-1)),
+      id: "a0000000-0000-4000-8000-000000000003",
+      version: 3,
+    });
+    company.revision += 1;
+    await reopen();
+    await page.getByRole("heading", { name: "현재 원고 v3", exact: true }).waitFor();
+    assert.ok((await summary(3).innerText()).includes("담당자 판단 미기록"));
+    assert.ok((await summary(2).innerText()).includes("담당자 판단 미기록"));
+    assert.equal(company.planReviewDecisions.length, 2);
+    assert.equal(commands.length, 2);
+    assert.deepEqual(company.plans.slice(0, 2), original);
+    record(
+      "new manuscript shows no judgement while preserving old-version records and performing no automatic write",
+    );
+  } else {
+    await reopen();
+    const panel = () => page.getByLabel("간단 원고 검토 판단", { exact: true });
+    const choose = () => page.getByLabel("판단할 검토 의견 직접 선택", { exact: true });
+    const save = () => page.getByRole("button", { name: "검토 판단 이력 저장", exact: true });
+    const back = () => page.getByRole("button", { name: "원고로 돌아가기", exact: true });
+    const original = structuredClone(company.plans);
+    await page.getByRole("button", { name: "검토 의견 확인하기", exact: true }).click();
+    await panel().waitFor();
+    assert.equal(await choose().inputValue(), "");
+    assert.equal(await page.getByLabel("판단 담당자 *", { exact: true }).count(), 0);
+    assert.equal(commands.length, 0);
+    await back().click();
+    record("primary action opens the existing decision panel without auto-selecting or writing");
 
-  holdResponse = true;
-  await save().click();
-  await page.waitForFunction(() => document.querySelector("#plan-review-finding")?.disabled);
-  assert.equal(await back().isDisabled(), true);
-  while (!releaseResponse) await new Promise((r) => setTimeout(r, 20));
-  releaseResponse();
-  holdResponse = false;
-  await page.getByText("원고 v2의 판단 이력 1개", { exact: true }).waitFor();
-  await page.waitForFunction(() => !document.querySelector("#plan-review-reviewer"));
-  assert.equal(commands[0].decision.findingIndex, 2);
-  assert.equal(commands[0].decision.planId, original[1].id);
-  assert.equal(commands[0].decision.planVersion, 2);
-  assert.deepEqual(commands[0].decision.finding, original[1].review[2]);
-  assert.equal(company.planReviewDecisions[0].status, "deferred");
-  assert.deepEqual(company.plans, original);
-  await back().click();
-  assert.ok(
-    (await page.getByRole("region", { name: "현재 원고와 검토 상태" }).innerText()).includes(
-      "전체 검토 미완료",
-    ),
-  );
-  record(
-    "exact acknowledgement clears the draft only after pending save; deferred history leaves original versions unchanged",
-  );
+    await page.getByRole("button", { name: "의견 3: 동일한 근거 대조 의견", exact: true }).click();
+    assert.equal(await choose().inputValue(), "2");
+    assert.ok((await panel().innerText()).includes("두 번째 원래 근거를 대조하세요"));
+    assert.equal(await page.getByLabel("처리 상태", { exact: true }).inputValue(), "pending");
+    await page.getByLabel("처리 상태", { exact: true }).selectOption("deferred");
+    await page.getByLabel("판단 담당자 *", { exact: true }).fill("합성 담당자");
+    await page
+      .getByLabel("확인한 내용과 판단 이유 *", { exact: true })
+      .fill("추가 근거 대조 전까지 보류합니다.");
+    record(
+      "explicit opinion uses original index 2 despite a hidden info row and duplicate messages",
+    );
 
-  await page.getByRole("button", { name: "의견 2: 동일한 근거 대조 의견", exact: true }).click();
-  await page.getByLabel("처리 상태", { exact: true }).selectOption("resolved");
-  await page.getByLabel("판단 담당자 *", { exact: true }).fill("합성 담당자");
-  await page
-    .getByLabel("확인한 내용과 판단 이유 *", { exact: true })
-    .fill("담당자가 근거를 확인했다는 수동 판단");
-  await save().click();
-  await page.getByText("원고 v2의 판단 이력 2개", { exact: true }).waitFor();
-  await page.waitForFunction(() => !document.querySelector("#plan-review-reviewer"));
-  assert.deepEqual(company.plans, original);
-  assert.equal(company.analysis, null);
-  assert.equal(company.selectedCandidateId, null);
-  await back().click();
-  assert.equal(
-    await page.getByRole("button", { name: "검토 의견 확인하기", exact: true }).count(),
-    1,
-  );
-  assert.equal(
-    await page.getByRole("button", { name: "검토 마치고 신청 준비", exact: true }).count(),
-    0,
-  );
-  record(
-    "manual resolution records history without clearing the finding or whole-plan confirmation",
-  );
+    page.once("dialog", (d) => d.dismiss());
+    await back().click();
+    assert.equal(
+      await page.getByLabel("확인한 내용과 판단 이유 *", { exact: true }).inputValue(),
+      "추가 근거 대조 전까지 보류합니다.",
+    );
+    page.once("dialog", (d) => d.dismiss());
+    await choose().selectOption("1");
+    assert.equal(await choose().inputValue(), "2");
+    await page.setViewportSize({ width: 390, height: 844 });
+    assert.equal(
+      await page.evaluate(() => document.documentElement.scrollWidth > innerWidth),
+      false,
+    );
+    await page.screenshot({
+      path: path.join(output, "review-decision-mobile.png"),
+      fullPage: true,
+    });
+    record("cancelled close or opinion switch preserves the draft and mobile form fits");
 
-  await page.getByRole("button", { name: "의견 3: 동일한 근거 대조 의견", exact: true }).click();
-  assert.equal(await page.getByLabel("처리 상태", { exact: true }).inputValue(), "pending");
-  await page.getByLabel("판단 담당자 *", { exact: true }).fill("미확인 담당자");
-  await page
-    .getByLabel("확인한 내용과 판단 이유 *", { exact: true })
-    .fill("저장 응답이 없으면 유지할 입력");
-  replyMode = "missing";
-  await save().click();
-  await page
-    .getByText(
-      "저장 결과를 확인하지 못했습니다. 작성 내용을 유지했습니다. 최신 이력을 확인해 주세요.",
-      { exact: true },
-    )
-    .waitFor();
-  assert.equal(
-    await page.getByLabel("판단 담당자 *", { exact: true }).inputValue(),
-    "미확인 담당자",
-  );
-  assert.equal(commands[2].decision.previousRecordId, company.planReviewDecisions[0].id);
-  await save().click();
-  await page
-    .getByText("원고나 자료가 바뀌었습니다. 최신 검토 의견을 다시 선택해 주세요.", { exact: true })
-    .waitFor();
-  assert.equal(commands.length, 3);
-  page.once("dialog", (d) => d.accept());
-  await back().click();
-  record(
-    "missing receipt preserves input; changed revision blocks a fresh write and retains previous-record binding",
-  );
+    holdResponse = true;
+    await save().click();
+    await page.waitForFunction(() => document.querySelector("#plan-review-finding")?.disabled);
+    assert.equal(await back().isDisabled(), true);
+    while (!releaseResponse) await new Promise((r) => setTimeout(r, 20));
+    releaseResponse();
+    holdResponse = false;
+    await page.getByText("원고 v2의 판단 이력 1개", { exact: true }).waitFor();
+    await page.waitForFunction(() => !document.querySelector("#plan-review-reviewer"));
+    assert.equal(commands[0].decision.findingIndex, 2);
+    assert.equal(commands[0].decision.planId, original[1].id);
+    assert.equal(commands[0].decision.planVersion, 2);
+    assert.deepEqual(commands[0].decision.finding, original[1].review[2]);
+    assert.equal(company.planReviewDecisions[0].status, "deferred");
+    assert.deepEqual(company.plans, original);
+    await back().click();
+    assert.ok(
+      (await page.getByRole("region", { name: "현재 원고와 검토 상태" }).innerText()).includes(
+        "전체 검토 미완료",
+      ),
+    );
+    record(
+      "exact acknowledgement clears the draft only after pending save; deferred history leaves original versions unchanged",
+    );
 
-  await page.getByRole("button", { name: "의견 2: 동일한 근거 대조 의견", exact: true }).click();
-  await page.getByLabel("판단 담당자 *", { exact: true }).fill("원래 의견 담당자");
-  await page
-    .getByLabel("확인한 내용과 판단 이유 *", { exact: true })
-    .fill("새 원고가 와도 보존할 입력");
-  replyMode = "changed";
-  await save().click();
-  await page
-    .getByText(
-      "현재 회사나 원고가 바뀌었습니다. 작성 내용은 유지했습니다. 원고로 돌아가 최신 의견을 선택해 주세요.",
-      { exact: true },
-    )
-    .waitFor();
-  assert.equal(
-    await page.getByLabel("확인한 내용과 판단 이유 *", { exact: true }).inputValue(),
-    "새 원고가 와도 보존할 입력",
-  );
-  assert.equal(await choose().isDisabled(), true);
-  assert.equal(await save().isDisabled(), true);
-  assert.ok((await panel().innerText()).includes("원고 v2"));
-  page.once("dialog", (d) => d.accept());
-  await back().click();
-  await page.getByRole("heading", { name: "현재 원고 v3", exact: true }).waitFor();
-  assert.deepEqual(company.plans.slice(0, 2), original);
-  assert.equal(commands.length, 4);
-  record(
-    "new manuscript blocks stale judgement without replacing the draft; explicit return opens v3",
-  );
+    await page.getByRole("button", { name: "의견 2: 동일한 근거 대조 의견", exact: true }).click();
+    await page.getByLabel("처리 상태", { exact: true }).selectOption("resolved");
+    await page.getByLabel("판단 담당자 *", { exact: true }).fill("합성 담당자");
+    await page
+      .getByLabel("확인한 내용과 판단 이유 *", { exact: true })
+      .fill("담당자가 근거를 확인했다는 수동 판단");
+    await save().click();
+    await page.getByText("원고 v2의 판단 이력 2개", { exact: true }).waitFor();
+    await page.waitForFunction(() => !document.querySelector("#plan-review-reviewer"));
+    assert.deepEqual(company.plans, original);
+    assert.equal(company.analysis, null);
+    assert.equal(company.selectedCandidateId, null);
+    await back().click();
+    assert.equal(
+      await page.getByRole("button", { name: "검토 의견 확인하기", exact: true }).count(),
+      1,
+    );
+    assert.equal(
+      await page.getByRole("button", { name: "검토 마치고 신청 준비", exact: true }).count(),
+      0,
+    );
+    record(
+      "manual resolution records history without clearing the finding or whole-plan confirmation",
+    );
+
+    await page.getByRole("button", { name: "의견 3: 동일한 근거 대조 의견", exact: true }).click();
+    assert.equal(await page.getByLabel("처리 상태", { exact: true }).inputValue(), "pending");
+    await page.getByLabel("판단 담당자 *", { exact: true }).fill("미확인 담당자");
+    await page
+      .getByLabel("확인한 내용과 판단 이유 *", { exact: true })
+      .fill("저장 응답이 없으면 유지할 입력");
+    replyMode = "missing";
+    await save().click();
+    await page
+      .getByText(
+        "저장 결과를 확인하지 못했습니다. 작성 내용을 유지했습니다. 최신 이력을 확인해 주세요.",
+        { exact: true },
+      )
+      .waitFor();
+    assert.equal(
+      await page.getByLabel("판단 담당자 *", { exact: true }).inputValue(),
+      "미확인 담당자",
+    );
+    assert.equal(commands[2].decision.previousRecordId, company.planReviewDecisions[0].id);
+    await save().click();
+    await page
+      .getByText("원고나 자료가 바뀌었습니다. 최신 검토 의견을 다시 선택해 주세요.", {
+        exact: true,
+      })
+      .waitFor();
+    assert.equal(commands.length, 3);
+    page.once("dialog", (d) => d.accept());
+    await back().click();
+    record(
+      "missing receipt preserves input; changed revision blocks a fresh write and retains previous-record binding",
+    );
+
+    await page.getByRole("button", { name: "의견 2: 동일한 근거 대조 의견", exact: true }).click();
+    await page.getByLabel("판단 담당자 *", { exact: true }).fill("원래 의견 담당자");
+    await page
+      .getByLabel("확인한 내용과 판단 이유 *", { exact: true })
+      .fill("새 원고가 와도 보존할 입력");
+    replyMode = "changed";
+    await save().click();
+    await page
+      .getByText(
+        "현재 회사나 원고가 바뀌었습니다. 작성 내용은 유지했습니다. 원고로 돌아가 최신 의견을 선택해 주세요.",
+        { exact: true },
+      )
+      .waitFor();
+    assert.equal(
+      await page.getByLabel("확인한 내용과 판단 이유 *", { exact: true }).inputValue(),
+      "새 원고가 와도 보존할 입력",
+    );
+    assert.equal(await choose().isDisabled(), true);
+    assert.equal(await save().isDisabled(), true);
+    assert.ok((await panel().innerText()).includes("원고 v2"));
+    page.once("dialog", (d) => d.accept());
+    await back().click();
+    await page.getByRole("heading", { name: "현재 원고 v3", exact: true }).waitFor();
+    assert.deepEqual(company.plans.slice(0, 2), original);
+    assert.equal(commands.length, 4);
+    record(
+      "new manuscript blocks stale judgement without replacing the draft; explicit return opens v3",
+    );
+  }
   assert.deepEqual(errors, []);
   assert.deepEqual(unexpected, []);
   assert.ok(!logs.join("").includes("FORBIDDEN_SERVER_FETCH"));
@@ -533,6 +638,7 @@ try {
         sql: 0,
         sdk: 0,
         mode: serverMode,
+        scenario,
       },
       null,
       2,

@@ -52,7 +52,11 @@ import {
 import { GuidedMaterialReadiness } from "./guided-material-readiness";
 import { GuidedBulkUpload } from "./guided-bulk-upload";
 import { PreparedPackagesPanel } from "./prepared-packages-panel";
-import { GuidedPlanReview, type GuidedReviewTarget } from "./guided-plan-review";
+import {
+  GuidedPlanReview,
+  GuidedReviewDecisionSummary,
+  type GuidedReviewTarget,
+} from "./guided-plan-review";
 import { GuidedPlanEvidence } from "./guided-plan-evidence";
 import { GuidedVentureConnection } from "./guided-venture-connection";
 import { GuidedApplicationHistory } from "./guided-application-history";
@@ -1225,6 +1229,11 @@ export function GuidedWorkspace({
                         >
                           의견 {findingIndex + 1}: {finding.message}
                         </button>
+                        <GuidedReviewDecisionSummary
+                          company={company}
+                          plan={latestPlan}
+                          findingIndex={findingIndex}
+                        />
                       </li>
                     ))}
                   </ul>
