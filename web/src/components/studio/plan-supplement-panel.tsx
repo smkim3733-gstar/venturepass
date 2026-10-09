@@ -27,7 +27,11 @@ type Props = {
   onBusyChange: (label: string) => void;
   onUnsettledChange: (value: boolean) => void;
   onClose: () => void;
-  initialSelection?: { sourceId: string; sectionKey: PlanSupplementInput["sectionKey"] };
+  initialSelection?: {
+    sourceId: string;
+    sectionKey?: PlanSupplementInput["sectionKey"];
+    questionIndex?: number;
+  };
 };
 export function PlanSupplementPanel({
   company,
@@ -39,9 +43,9 @@ export function PlanSupplementPanel({
 }: Props) {
   const [status, setStatus] = useState<SupplementStatus | null>(null);
   const [pending, setPending] = useState<SupplementCommand | null>(null);
-  const [questionIndex, setQuestionIndex] = useState(0);
-  const [sectionKey, setSectionKey] = useState<PlanSupplementInput["sectionKey"]>(
-    initialSelection?.sectionKey ?? "development",
+  const [questionIndex, setQuestionIndex] = useState(initialSelection?.questionIndex ?? 0);
+  const [sectionKey, setSectionKey] = useState<PlanSupplementInput["sectionKey"] | "">(
+    initialSelection ? (initialSelection.sectionKey ?? "") : "development",
   );
   const [sourceIds, setSourceIds] = useState<string[]>(() =>
     initialSelection &&
@@ -364,6 +368,7 @@ export function PlanSupplementPanel({
                 setQuestionIndex(Number(event.target.value));
               }}
             >
+              {questionIndex < 0 && <option value={-1}>보완할 질문을 선택해 주세요</option>}
               {plan.content.interviewQuestions.map((question, index) => (
                 <option key={index} value={index}>
                   {index + 1}. {question}
@@ -382,6 +387,7 @@ export function PlanSupplementPanel({
                 setSectionKey(event.target.value as typeof sectionKey);
               }}
             >
+              <option value="">수정할 항목을 선택해 주세요</option>
               {sectionDefinitions.map((item) => (
                 <option key={item.key} value={item.key}>
                   {item.title}
@@ -425,9 +431,15 @@ export function PlanSupplementPanel({
           <button
             type="button"
             className={styles.primary}
-            disabled={!sourceIds.length || sourceIds.length > 6 || sourceCharacters > 60000}
+            disabled={
+              !sectionKey ||
+              questionIndex < 0 ||
+              !sourceIds.length ||
+              sourceIds.length > 6 ||
+              sourceCharacters > 60000
+            }
             onClick={() => {
-              if (flight.current) return;
+              if (flight.current || !sectionKey || questionIndex < 0) return;
               const token = ++epoch.current;
               setPreview(null);
               setComparison(null);

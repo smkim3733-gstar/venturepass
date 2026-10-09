@@ -325,4 +325,37 @@ describe("일반 작업 화면의 실제 상태별 렌더링", () => {
     expect(html).toContain("자료 기반 정리본 · AI 작성 아님");
     expect(html).not.toContain("AI 작성 · 사용자 검토 필요");
   });
+  it.each([true, false])(
+    "새 보완 자료가 생기면 질문 유무(%s)에 맞는 다음 작업을 안내한다",
+    (hasQuestion) => {
+      const savedPlan = plan();
+      savedPlan.content.interviewQuestions = hasQuestion ? ["시험 근거는 무엇인가요?"] : [];
+      const value = company({
+        plans: [savedPlan],
+        guidedPreparationRuns: [run("awaiting_review")],
+        sources: [
+          {
+            id: requestId,
+            name: "새 보완 답변",
+            kind: "consultation",
+            text: "합성 답변",
+            originalName: null,
+            mimeType: null,
+            extraction: "manual",
+            warnings: [],
+            createdAt: "2026-09-26T03:00:00.000Z",
+            updatedAt: "2026-09-26T03:00:00.000Z",
+          },
+        ],
+      });
+      const html = render(value),
+        labels = buttonLabels(html);
+      if (hasQuestion) {
+        expect(labels.filter((label) => label === "보완 자료로 수정안 만들기")).toHaveLength(1);
+        expect(labels).not.toContain("현재 자료로 다시 준비");
+      } else expect(labels).toContain("현재 자료로 다시 준비");
+      expect(labels).toContain("현재 자료로 AI 다시 작성");
+      expect(value.plans).toEqual([savedPlan]);
+    },
+  );
 });

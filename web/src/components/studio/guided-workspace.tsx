@@ -1,5 +1,11 @@
 "use client";
 import { PlanSupplementPanel } from "./plan-supplement-panel";
+import {
+  savedGuidedAnswer,
+  answerSupplementSelection,
+  type SavedGuidedAnswer,
+  type AnswerSupplementSelection,
+} from "./guided-answer-supplement";
 
 import { useEffect, useRef, useState } from "react";
 import { ArrowRight, LoaderCircle } from "lucide-react";
@@ -36,7 +42,6 @@ import { GuidedQuestionCard } from "./guided-question-card";
 import { GuidedSourceReview } from "./guided-source-review";
 import { useFileDropNavigationGuard } from "./guided-file-drop-zone";
 import { PublicEvidencePanel } from "./public-evidence-panel";
-import type { PublicEvidenceDraft } from "@/lib/studio-public-evidence";
 import { GuidedMaterials } from "./guided-materials";
 import { GuidedEvidenceSelection } from "./guided-evidence-selection";
 import {
@@ -124,7 +129,7 @@ export function GuidedWorkspace({
   const [questionAnswers, setQuestionAnswers] = useState<Record<string, string>>({});
   const [answering, setAnswering] = useState(false);
   const [questionLinks, setQuestionLinks] = useState<Record<string, GuidedQuestionLink>>({});
-  const [answerSaved, setAnswerSaved] = useState(false);
+  const [answerSaved, setAnswerSaved] = useState<SavedGuidedAnswer | null>(null);
   const [answerContext, setAnswerContext] = useState<{
     revision: number;
     questions: GuidedQuestionContext[];
@@ -139,7 +144,7 @@ export function GuidedWorkspace({
   const [publicEvidenceDirty, setPublicEvidenceDirty] = useState(false);
   const [publicEvidenceUnsettled, setPublicEvidenceUnsettled] = useState(false);
   const [supplementInitial, setSupplementInitial] = useState<
-    { sourceId: string; sectionKey: PublicEvidenceDraft["sectionKey"] } | undefined
+    (Omit<AnswerSupplementSelection, "questionIndex"> & { questionIndex?: number }) | undefined
   >();
   const [supplementOpen, setSupplementOpen] = useState(false);
   const [supplementUnsettled, setSupplementUnsettled] = useState(false);
@@ -198,6 +203,7 @@ export function GuidedWorkspace({
   const selection = selectedRecord?.candidateId === candidate?.id ? selectedRecord : null;
   const showPlan =
     !!latestPlan && !["awaiting_choice", "awaiting_materials"].includes(lastRun?.status ?? "");
+  const answerSelection = answerSupplementSelection(company, answerSaved);
   const questions = guidedQuestionContexts(company, showPlan ? latestPlan : undefined);
   const shownQuestions = (answering ? (answerContext?.questions ?? questions) : questions).slice(
     0,
@@ -483,7 +489,7 @@ export function GuidedWorkspace({
     else await preparePreview(next);
   }
   function openAnswers() {
-    setAnswerSaved(false);
+    setAnswerSaved(null);
     if (!answerContext) setAnswerContext({ revision: company.revision, questions });
     setAnswering(true);
   }
@@ -506,28 +512,41 @@ export function GuidedWorkspace({
       return;
     }
     const now = new Date().toISOString();
-    const next = await mutateOnce({
-      action: "source",
-      source: {
-        id: crypto.randomUUID(),
-        name: "사업계획서 준비 답변",
-        kind: "consultation",
-        text: answerText,
-        originalName: null,
-        mimeType: null,
-        extraction: "manual",
-        warnings: [],
-        createdAt: now,
-        updatedAt: now,
-      },
-    });
-    if (next) {
+    const source: SourceDocument = {
+      id: crypto.randomUUID(),
+      name: "사업계획서 준비 답변",
+      kind: "consultation",
+      text: answerText,
+      originalName: null,
+      mimeType: null,
+      extraction: "manual",
+      warnings: [],
+      createdAt: now,
+      updatedAt: now,
+    };
+    const next = await mutateOnce({ action: "source", source });
+    if (!mounted.current || !next) return;
+    const saved = savedGuidedAnswer(
+      company,
+      next,
+      source,
+      answerContext?.questions ?? questions,
+      questionAnswers,
+      questionLinks,
+    );
+    if (!saved) {
+      setError(
+        "답변의 저장 결과를 확인하지 못했습니다. 입력을 유지했으니 자료함에서 저장 상태를 확인해 주세요.",
+      );
+      return;
+    }
+    {
       setQuestionAnswers({});
       setQuestionLinks({});
       setAnswerContext(null);
       setVisibleQuestionCount(3);
       setAnswering(false);
-      setAnswerSaved(true);
+      setAnswerSaved(saved);
     }
   }
   async function saveSection() {
@@ -1042,14 +1061,36 @@ export function GuidedWorkspace({
               </section>
               <GuidedPlanEvidence company={company} plan={latestPlan} />
               <GuidedRepairSummary company={company} run={lastRun} />
-              <button
-                type="button"
-                className={styles.link}
-                disabled={locked || editingDirty}
-                onClick={() => setSupplementOpen(true)}
-              >
-                보완 자료로 수정안 만들기
-              </button>
+              {answerSelection && (
+                <section className={styles.notice} aria-label="저장한 답변으로 원고 보완">
+                  <h3 className={styles.subheading}>답변을 저장했어요. 관련 항목을 보완하세요</h3>
+                  <p>
+                    방금 저장한 답변을 선택한 상태로 수정안을 준비합니다. 질문과 항목을 확인한 뒤
+                    전송하며, 기존 원고는 비교 후 새 버전으로 채택할 때까지 그대로입니다.
+                  </p>
+                  <PrimaryAction
+                    disabled={locked || editingDirty}
+                    onClick={() => {
+                      const selected = answerSupplementSelection(company, answerSaved);
+                      if (!selected) return;
+                      setSupplementInitial(selected);
+                      setSupplementOpen(true);
+                    }}
+                  >
+                    이 답변으로 항목 수정안 만들기
+                  </PrimaryAction>
+                </section>
+              )}
+              {!answerSelection && flow.guidedInputState !== "changed" && (
+                <button
+                  type="button"
+                  className={styles.link}
+                  disabled={locked || editingDirty}
+                  onClick={() => setSupplementOpen(true)}
+                >
+                  보완 자료로 수정안 만들기
+                </button>
+              )}
               <button
                 type="button"
                 className={styles.link}
@@ -1104,8 +1145,8 @@ export function GuidedWorkspace({
               )}
               {flow.guidedInputState === "changed" && (
                 <p className={styles.notice}>
-                  자료가 바뀌어 이전 원고를 보여 드리고 있습니다. 현재 자료로 다시 준비한 뒤 검토를
-                  이어가세요.
+                  새 자료가 아직 원고에 반영되지 않았습니다. 보완 자료로 필요한 항목의 수정안을
+                  만들거나, 전체 재작성이 필요하면 아래 추가 메뉴를 이용하세요.
                 </p>
               )}
               <div className={styles.actions}>
@@ -1117,9 +1158,20 @@ export function GuidedWorkspace({
                 >
                   내용 고치기
                 </button>
-                {flow.guidedInputState === "changed" ? (
-                  <PrimaryAction disabled={locked} onClick={() => void preparePreview()}>
-                    {"현재 자료로 다시 준비"}
+                {answerSelection ? null : flow.guidedInputState === "changed" &&
+                  latestPlan.content.interviewQuestions.length > 0 ? (
+                  <PrimaryAction
+                    disabled={locked || editingDirty}
+                    onClick={() => setSupplementOpen(true)}
+                  >
+                    {"보완 자료로 수정안 만들기"}
+                  </PrimaryAction>
+                ) : flow.guidedInputState === "changed" ? (
+                  <PrimaryAction
+                    disabled={locked || editingDirty}
+                    onClick={() => void preparePreview()}
+                  >
+                    현재 자료로 다시 준비
                   </PrimaryAction>
                 ) : flow.guidedInputState === "unverified" ? (
                   <PrimaryAction disabled={locked} onClick={() => void reconcile()}>
