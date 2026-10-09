@@ -665,3 +665,49 @@ describe("복수 접수 화면 의미", () => {
     expect(html).toMatch(/<fieldset[^>]*disabled=""/);
   });
 });
+
+describe("간단 화면의 파일 본문 확인", () => {
+  it("간단 진입은 중복 업로드를 숨기고 미확인 초기 상태에서는 돌아가기를 막는다", () => {
+    const fetcher = vi.fn();
+    vi.stubGlobal("fetch", fetcher);
+    const back = vi.fn();
+    const unsettled = vi.fn();
+    const html = renderToStaticMarkup(
+      createElement(SourceIntakesPanel, {
+        company: reviewCompany(),
+        busy: false,
+        onCompany: vi.fn(),
+        onBusyChange: vi.fn(),
+        onDirtyChange: vi.fn(),
+        onBack: back,
+        onUnsettledChange: unsettled,
+      }),
+    );
+    expect(html).toContain('aria-label="파일 본문 확인"');
+    expect(html).toContain("저장 판독문 교정·확인");
+    expect(html).not.toContain("여러 원본 파일 선택");
+    expect(html).not.toContain("원본 순차 접수");
+    const button = [...html.matchAll(/<button\b[^>]*>[\s\S]*?<\/button>/g)].find(([text]) =>
+      text.includes("자료 선택으로 돌아가기"),
+    )?.[0];
+    expect(button).toContain("disabled");
+    expect(fetcher).not.toHaveBeenCalled();
+    expect(back).not.toHaveBeenCalled();
+    expect(unsettled).not.toHaveBeenCalled();
+  });
+  it("기존 상세 진입은 원본 접수와 미접수 파일 재선택을 유지한다", () => {
+    const html = renderToStaticMarkup(
+      createElement(SourceIntakesPanel, {
+        company: company({ sourceIntakes: [item()] }),
+        busy: false,
+        onCompany: vi.fn(),
+        onBusyChange: vi.fn(),
+        onDirtyChange: vi.fn(),
+      }),
+    );
+    expect(html).toContain('aria-label="복수파일 접수·판독 재개"');
+    expect(html).toContain("여러 원본 파일 선택");
+    expect(html).toContain("미접수 원본 다시 선택");
+    expect(html).not.toContain("자료 선택으로 돌아가기");
+  });
+});

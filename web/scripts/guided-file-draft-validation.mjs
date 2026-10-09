@@ -37,7 +37,10 @@ for (const file of [
   "src/lib/studio-guided-preparation-state.ts",
   "src/lib/studio-candidate-selection.ts",
 ])
-  assert.equal(sha(await readFile(path.join(app, file))), sha(await readFile(path.join(staging, file))));
+  assert.equal(
+    sha(await readFile(path.join(app, file))),
+    sha(await readFile(path.join(staging, file))),
+  );
 const output = await mkdtemp(path.join(temporaryRoot, "venturepass-file-draft-ui-"));
 const guard = path.join(output, "network-guard.mjs");
 await writeFile(
@@ -110,6 +113,12 @@ const name = company.profile.companyName,
 const network = [];
 const previews = [];
 let caseOpens = 0;
+let releaseRead;
+const readGate = new Promise((resolve) => {
+  releaseRead = resolve;
+});
+let readingStarted = false;
+let malformedAdoption = false;
 const commands = [],
   unexpected = [],
   errors = [],
@@ -238,92 +247,128 @@ try {
   context.setDefaultTimeout(30000);
   await context.route("**/*", async (route) => {
     try {
-    const req = route.request(),
-      u = new URL(req.url());
-    if (u.origin !== origin) {
-      unexpected.push("external");
-      return route.abort();
-    }
-    const reply = (body, status = 200) =>
-      route.fulfill({ status, contentType: "application/json", body: JSON.stringify(body) });
-    const root = "/api/studio/cases/" + caseId;
-    if (req.method() === "GET") {
-      if (u.pathname === "/api/studio/status")
-        return reply({
-          aiConfigured: true,
-          model: fixture.model,
-          storage: "local",
-          supportedFiles: [],
-        });
-      if (u.pathname === "/api/studio/cases")
-        return reply({
-          cases: [
-            {
-              id: caseId,
-              companyName: name,
-              industry: "",
-              stage: "preparing",
-              revision: company.revision,
-              createdAt: company.createdAt,
-              updatedAt: company.updatedAt,
-              sourceCount: company.sources.length,
-              planCount: company.plans.length,
-              pendingTaskCount: 0,
-            },
-          ],
-        });
-      if (u.pathname === root) { caseOpens++; return reply(company); }
-      if (u.pathname === root + "/source-intakes") return reply({ company, activeItemIds: [] });
+      const req = route.request(),
+        u = new URL(req.url());
+      if (u.origin !== origin) {
+        unexpected.push("external");
+        return route.abort();
+      }
+      const reply = (body, status = 200) =>
+        route.fulfill({ status, contentType: "application/json", body: JSON.stringify(body) });
+      const root = "/api/studio/cases/" + caseId;
+      if (req.method() === "GET") {
+        if (u.pathname === "/api/studio/status")
+          return reply({
+            aiConfigured: true,
+            model: fixture.model,
+            storage: "local",
+            supportedFiles: [],
+          });
+        if (u.pathname === "/api/studio/cases")
+          return reply({
+            cases: [
+              {
+                id: caseId,
+                companyName: name,
+                industry: "",
+                stage: "preparing",
+                revision: company.revision,
+                createdAt: company.createdAt,
+                updatedAt: company.updatedAt,
+                sourceCount: company.sources.length,
+                planCount: company.plans.length,
+                pendingTaskCount: 0,
+              },
+            ],
+          });
+        if (u.pathname === root) {
+          caseOpens++;
+          return reply(company);
+        }
+        if (u.pathname === root + "/source-intakes") return reply({ company, activeItemIds: [] });
 
-      if (u.pathname === root + "/guided-preparation") return reply(fixture.status(company));
-    }
+        if (u.pathname === root + "/guided-preparation") return reply(fixture.status(company));
+      }
 
-    if (req.method() === "POST" && u.pathname === root + "/source-intakes") {
-      const command=req.postDataJSON();
-      commands.push(command);
-      const result=fixture.intake(company,command);
-      company=result.company;
-      return reply(result);
-    }
-    if (req.method() === "PUT" && u.pathname === root + "/source-intakes/" + company.sourceIntakes[0]?.id + "/original") {
-      const data=await new Request("http://synthetic.invalid", {
-        method:"PUT", headers:{"content-type":req.headers()["content-type"]},body:req.postDataBuffer()
-      }).formData();
-      const file=data.get("file");
-      assert.ok(file instanceof File);
-      assert.deepEqual([...data.keys()].sort(),["clientRequestId","expectedItemVersion","file","revision"]);
-      const input={revision:Number(data.get("revision")),clientRequestId:data.get("clientRequestId"),
-        expectedItemVersion:Number(data.get("expectedItemVersion"))};
-      const result=fixture.original(company,company.sourceIntakes[0].id,input,file,Buffer.from(await file.arrayBuffer()));
-      commands.push({action:"original",...input,sourceId:company.sourceIntakes[0].sourceId});
-      company=result.company;
-      return reply(result);
-    }
-    if (req.method() === "PATCH" && u.pathname === root) {
-      const command=req.postDataJSON();
-      commands.push(command);
-      assert.equal(command.action,"select-candidate");
-      company=fixture.select(company,command);
-      return reply(company);
-    }
-    if (req.method() === "POST" && u.pathname === root + "/guided-preparation/preview") {
-      const command = req.postDataJSON();
-      previews.push(structuredClone(command));
-      return reply(fixture.preview(company, command));
-    }
-    if (req.method() === "POST" && u.pathname === root + "/guided-preparation") {
-      const command = req.postDataJSON();
-      commands.push(command);
-      assert.ok(["start", "continue"].includes(command.action));
-      const result = fixture.prepare(company, command);
-      company = result.company;
-      return reply(result);
-    }
-    if (u.pathname.startsWith("/api/") || !["GET", "HEAD"].includes(req.method())) {
-      unexpected.push(u.pathname);
-      return route.abort();
-    }
-    return await route.continue();
+      if (req.method() === "POST" && u.pathname === root + "/source-intakes") {
+        const command = req.postDataJSON();
+        commands.push(command);
+        if (command.action === "run-next") {
+          readingStarted = true;
+          await readGate;
+        }
+        const result = fixture.intake(company, command);
+        company = result.company;
+        if (command.action === "adopt") {
+          const malformed = structuredClone(result);
+          malformed.company.sources[0].text = "의도한 잘못된 합성 응답";
+          malformedAdoption = true;
+          return reply(malformed);
+        }
+        return reply(result);
+      }
+      if (
+        req.method() === "PUT" &&
+        u.pathname === root + "/source-intakes/" + company.sourceIntakes[0]?.id + "/original"
+      ) {
+        const data = await new Request("http://synthetic.invalid", {
+          method: "PUT",
+          headers: { "content-type": req.headers()["content-type"] },
+          body: req.postDataBuffer(),
+        }).formData();
+        const file = data.get("file");
+        assert.ok(file instanceof File);
+        assert.deepEqual([...data.keys()].sort(), [
+          "clientRequestId",
+          "expectedItemVersion",
+          "file",
+          "revision",
+        ]);
+        const input = {
+          revision: Number(data.get("revision")),
+          clientRequestId: data.get("clientRequestId"),
+          expectedItemVersion: Number(data.get("expectedItemVersion")),
+        };
+        const result = fixture.original(
+          company,
+          company.sourceIntakes[0].id,
+          input,
+          file,
+          Buffer.from(await file.arrayBuffer()),
+        );
+        commands.push({
+          action: "original",
+          ...input,
+          sourceId: company.sourceIntakes[0].sourceId,
+        });
+        company = result.company;
+        return reply(result);
+      }
+      if (req.method() === "PATCH" && u.pathname === root) {
+        const command = req.postDataJSON();
+        commands.push(command);
+        assert.equal(command.action, "select-candidate");
+        company = fixture.select(company, command);
+        return reply(company);
+      }
+      if (req.method() === "POST" && u.pathname === root + "/guided-preparation/preview") {
+        const command = req.postDataJSON();
+        previews.push(structuredClone(command));
+        return reply(fixture.preview(company, command));
+      }
+      if (req.method() === "POST" && u.pathname === root + "/guided-preparation") {
+        const command = req.postDataJSON();
+        commands.push(command);
+        assert.ok(["start", "continue"].includes(command.action));
+        const result = fixture.prepare(company, command);
+        company = result.company;
+        return reply(result);
+      }
+      if (u.pathname.startsWith("/api/") || !["GET", "HEAD"].includes(req.method())) {
+        unexpected.push(u.pathname);
+        return route.abort();
+      }
+      return await route.continue();
     } catch (error) {
       errors.push(error instanceof Error ? error.message : "Synthetic route failure");
       await route.abort().catch(() => {});
@@ -342,120 +387,240 @@ try {
   );
   page.on("request", (r) => network.push({ request: new URL(r.url()).pathname }));
 
-
-
   await page.goto(origin + "/studio", { waitUntil: "networkidle", timeout: 60000 });
   await page.getByRole("button").filter({ hasText: name }).first().click();
   const upload = page.getByRole("region", { name: "자료 업로드와 이어 올리기", exact: true });
   const input = upload.locator('input[type="file"]');
-  await input.waitFor({state:"attached"});
+  await input.waitFor({ state: "attached" });
   await page.waitForFunction(() => {
-    const el = document.querySelector('[aria-label="자료 업로드와 이어 올리기"] input[type="file"]');
+    const el = document.querySelector(
+      '[aria-label="자료 업로드와 이어 올리기"] input[type="file"]',
+    );
     return el && !el.disabled;
   });
   assert.deepEqual(company.sources, []);
   assert.deepEqual(company.plans, []);
-  await input.setInputFiles({name:fixture.fileName,mimeType:"text/plain",buffer:Buffer.from(fixture.rawText)});
-  await upload.getByText("원본을 모두 보관했습니다. 본문 확인·판독에서 내용을 확인해 주세요.",{exact:true}).waitFor();
+  await input.setInputFiles({
+    name: fixture.fileName,
+    mimeType: "text/plain",
+    buffer: Buffer.from(fixture.rawText),
+  });
+  await upload
+    .getByText("원본을 모두 보관했습니다. 본문 확인·판독에서 내용을 확인해 주세요.", {
+      exact: true,
+    })
+    .waitFor();
   const original = structuredClone(company.sourceIntakes[0]);
-  assert.equal(company.revision,3);
-  assert.equal(original.original.sha256,fixture.originalSha);
+  assert.equal(company.revision, 3);
+  assert.equal(original.original.sha256, fixture.originalSha);
   assert.equal(company.sources[0].id, original.sourceId);
-  assert.equal(company.sources[0].text,"");
-  assert.equal(company.sources[0].extraction,"pending");
-  assert.deepEqual(commands.map(c=>c.action),["create","original"]);
-  assert.equal(previews.length,0);
-  await upload.getByRole("button",{name:"선택 목록 닫기",exact:true}).click();
-  record("one file travels through original intake and byte/hash acknowledgment; no body or AI input adopted");
+  assert.equal(company.sources[0].text, "");
+  assert.equal(company.sources[0].extraction, "pending");
+  assert.deepEqual(
+    commands.map((c) => c.action),
+    ["create", "original"],
+  );
+  assert.equal(previews.length, 0);
+  await upload.getByRole("button", { name: "선택 목록 닫기", exact: true }).click();
+  record(
+    "one file travels through original intake and byte/hash acknowledgment; no body or AI input adopted",
+  );
 
-  await page.getByRole("button",{name:"본문 판독·채택 확인",exact:true}).click();
-  const intakes = page.getByRole("region",{name:"복수파일 접수·판독 재개",exact:true});
-  await intakes.getByRole("button",{name:"로컬 문서 판독",exact:true}).click();
-  await intakes.getByRole("button",{name:"저장 판독문 교정·확인",exact:true}).click();
-  const review=page.getByRole("region",{name:"접수 판독문 교정·채택",exact:true});
-  assert.equal(await review.getByLabel("원본과 대조해 교정할 본문",{exact:true}).inputValue(),fixture.rawText);
-  assert.equal(await review.getByRole("button",{name:"확인한 본문 채택",exact:true}).isDisabled(),true);
-  assert.equal(company.sources[0].text,"");
-  assert.equal(company.sourceIntakes[0].result.reviewStatus,"unreviewed");
-  const result=structuredClone(company.sourceIntakes[0].result);
-  await review.getByLabel("원본과 대조해 교정할 본문",{exact:true}).fill(fixture.adoptedText);
-  assert.equal(await review.getByRole("button",{name:"확인한 본문 채택",exact:true}).isDisabled(),true);
-  await review.getByRole("checkbox",{name:"원본과 대조해 교정한 본문을 직접 입력 자료로 채택하는 내용을 확인했습니다.",exact:true}).check();
-  await review.getByRole("button",{name:"확인한 본문 채택",exact:true}).click();
-  await review.waitFor({state:"detached"});
-  assert.equal(company.revision,6);
-  assert.equal(company.sources[0].id,original.sourceId);
-  assert.equal(company.sources[0].text,fixture.adoptedText);
-  assert.equal(company.sources[0].extraction,"manual");
-  assert.deepEqual(company.sourceIntakes[0].result,result);
-  assert.deepEqual(company.sourceIntakes[0].original,original.original);
-  assert.deepEqual(company.plans,[]);
-  record("UI reading and explicitly reviewed edited-body adoption preserve original/result identities and pending factual verification");
+  await page.getByRole("button", { name: "본문 판독·채택 확인", exact: true }).click();
+  const intakes = page.getByRole("region", { name: "파일 본문 확인", exact: true });
+  const back = intakes.getByRole("button", { name: "자료 선택으로 돌아가기", exact: true });
+  await page.getByRole("navigation", { name: "신청 준비 3단계" }).waitFor();
+  assert.equal(await page.getByRole("button", { name: "간단 화면", exact: true }).count(), 0);
+  assert.equal(
+    await intakes.getByLabel("여러 원본 파일 선택 (외부 AI 미전송)", { exact: true }).count(),
+    0,
+  );
+  await intakes.getByRole("button", { name: "로컬 문서 판독", exact: true }).click();
+  const readDeadline = Date.now() + 10000;
+  while (!readingStarted && Date.now() < readDeadline) await new Promise((r) => setTimeout(r, 25));
+  assert.equal(readingStarted, true);
+  assert.equal(await back.isDisabled(), true);
+  assert.equal(await intakes.isVisible(), true);
+  releaseRead();
+  await intakes.getByRole("button", { name: "저장 판독문 교정·확인", exact: true }).click();
+  const review = page.getByRole("region", { name: "접수 판독문 교정·채택", exact: true });
+  assert.equal(
+    await review.getByLabel("원본과 대조해 교정할 본문", { exact: true }).inputValue(),
+    fixture.rawText,
+  );
+  assert.equal(
+    await review.getByRole("button", { name: "확인한 본문 채택", exact: true }).isDisabled(),
+    true,
+  );
+  assert.equal(company.sources[0].text, "");
+  assert.equal(company.sourceIntakes[0].result.reviewStatus, "unreviewed");
+  const result = structuredClone(company.sourceIntakes[0].result);
+  await review.getByLabel("원본과 대조해 교정할 본문", { exact: true }).fill(fixture.adoptedText);
+  assert.equal(
+    await review.getByRole("button", { name: "확인한 본문 채택", exact: true }).isDisabled(),
+    true,
+  );
+  assert.equal(await back.isDisabled(), true);
+  const nav = page.getByRole("navigation", { name: "신청 준비 3단계" }).getByRole("button");
+  for (const b of await nav.all()) assert.equal(await b.isDisabled(), true);
+  page.once("dialog", (d) => d.dismiss());
+  await review.getByRole("button", { name: "교정 닫기", exact: true }).click();
+  assert.equal(
+    await review.getByLabel("원본과 대조해 교정할 본문", { exact: true }).inputValue(),
+    fixture.adoptedText,
+  );
+  await page.setViewportSize({ width: 390, height: 844 });
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+  await page.screenshot({
+    path: path.join(output, "inline-file-review-mobile.png"),
+    fullPage: true,
+  });
+  await page.setViewportSize({ width: 1280, height: 1000 });
+  record(
+    "inline review stays mounted during reading and preserves edited text on cancelled close; guided navigation remains locked",
+  );
+  await review
+    .getByRole("checkbox", {
+      name: "원본과 대조해 교정한 본문을 직접 입력 자료로 채택하는 내용을 확인했습니다.",
+      exact: true,
+    })
+    .check();
+  await review.getByRole("button", { name: "확인한 본문 채택", exact: true }).click();
+  await intakes.getByText("INTAKE_RESULT_UNKNOWN", { exact: true }).waitFor({ state: "attached" });
+  assert.equal(malformedAdoption, true);
+  assert.equal(await back.isDisabled(), true);
+  assert.equal(
+    await page.getByRole("button", { name: "상세 도구", exact: true }).isDisabled(),
+    true,
+  );
+  assert.equal(
+    await review.getByLabel("원본과 대조해 교정할 본문", { exact: true }).inputValue(),
+    fixture.adoptedText,
+  );
+  assert.deepEqual(
+    commands.map((c) => c.action),
+    ["create", "original", "run-next", "adopt"],
+  );
+  await intakes.getByRole("button", { name: "저장 상태 확인", exact: true }).click();
+  await review.waitFor({ state: "detached" });
+  record(
+    "malformed adoption response retains draft and blocks exit; exact read acknowledgement recovers without another write",
+  );
+  assert.equal(company.revision, 6);
+  assert.equal(company.sources[0].id, original.sourceId);
+  assert.equal(company.sources[0].text, fixture.adoptedText);
+  assert.equal(company.sources[0].extraction, "manual");
+  assert.deepEqual(company.sourceIntakes[0].result, result);
+  assert.deepEqual(company.sourceIntakes[0].original, original.original);
+  assert.deepEqual(company.plans, []);
+  record(
+    "UI reading and explicitly reviewed edited-body adoption preserve original/result identities and pending factual verification",
+  );
 
-  await page.getByRole("button",{name:"간단 화면",exact:true}).click();
-  await page.getByRole("button",{name:"AI로 계획서 준비",exact:true}).click();
-  const scope=page.getByRole("dialog",{name:"AI에 사용할 자료 선택",exact:true});
+  await back.click();
+  await intakes.waitFor({ state: "detached" });
+  await page.getByRole("button", { name: "자료 확인 후 다음 단계", exact: true }).click();
+  await page.getByRole("button", { name: "AI로 계획서 준비", exact: true }).click();
+  const scope = page.getByRole("dialog", { name: "AI에 사용할 자료 선택", exact: true });
   await scope.waitFor();
-  const sourceChoice=scope.getByRole("checkbox");
+  const sourceChoice = scope.getByRole("checkbox");
   // Deliberately select the exact newly adopted file; no default selection claim.
-  await scope.getByRole("button",{name:"회사 설명만 사용",exact:true}).click();
-  assert.equal(await sourceChoice.count(),1);
-  assert.equal(await sourceChoice.isDisabled(),false);
+  await scope.getByRole("button", { name: "회사 설명만 사용", exact: true }).click();
+  assert.equal(await sourceChoice.count(), 1);
+  assert.equal(await sourceChoice.isDisabled(), false);
   assert.ok((await scope.innerText()).includes(fixture.fileName));
   await sourceChoice.check();
-  assert.deepEqual(commands.map(c=>c.action),["create","original","run-next","adopt"]);
-  await scope.getByRole("button",{name:"선택 범위 확인",exact:true}).click();
-  const approval=page.getByRole("dialog",{name:"이 자료로 AI가 계획서를 준비할까요?",exact:true});
+  assert.deepEqual(
+    commands.map((c) => c.action),
+    ["create", "original", "run-next", "adopt"],
+  );
+  await scope.getByRole("button", { name: "선택 범위 확인", exact: true }).click();
+  const approval = page.getByRole("dialog", {
+    name: "이 자료로 AI가 계획서를 준비할까요?",
+    exact: true,
+  });
   await approval.waitFor();
   assert.ok((await approval.innerText()).includes("전송할 자료 1개 확인"));
-  assert.deepEqual(previews.at(-1).sourceIds,[original.sourceId]);
-  assert.equal(previews.at(-1).revision,6);
-  assert.equal(commands.length,4);
-  await approval.getByRole("button",{name:"허용하고 AI 준비 시작",exact:true}).click();
-  await page.getByRole("heading",{name:"이 방향으로 계획서를 준비할까요?",exact:true}).waitFor();
-  assert.deepEqual(company.plans,[]);
-  const run=structuredClone(company.guidedPreparationRuns[0]);
-  assert.equal(run.approval.revision,6);
-  assert.deepEqual(run.approval.sourceIds,[original.sourceId]);
-  assert.equal(run.approval.businessNumberIncluded,false);
-  assert.equal(await page.getByRole("button",{name:"이 주제로 작성",exact:true}).isDisabled(),true);
-  record("adopted source reaches explicit scope and separate transmission consent at the current revision; topic still requires human choice");
+  assert.deepEqual(previews.at(-1).sourceIds, [original.sourceId]);
+  assert.equal(previews.at(-1).revision, 6);
+  assert.equal(commands.length, 4);
+  await approval.getByRole("button", { name: "허용하고 AI 준비 시작", exact: true }).click();
+  await page
+    .getByRole("heading", { name: "이 방향으로 계획서를 준비할까요?", exact: true })
+    .waitFor();
+  assert.deepEqual(company.plans, []);
+  const run = structuredClone(company.guidedPreparationRuns[0]);
+  assert.equal(run.approval.revision, 6);
+  assert.deepEqual(run.approval.sourceIds, [original.sourceId]);
+  assert.equal(run.approval.businessNumberIncluded, false);
+  assert.equal(
+    await page.getByRole("button", { name: "이 주제로 작성", exact: true }).isDisabled(),
+    true,
+  );
+  record(
+    "adopted source reaches explicit scope and separate transmission consent at the current revision; topic still requires human choice",
+  );
 
-  await page.getByLabel("이 주제가 우리 회사에 맞는 이유를 한 문장으로 알려 주세요",{exact:true})
+  await page
+    .getByLabel("이 주제가 우리 회사에 맞는 이유를 한 문장으로 알려 주세요", { exact: true })
     .fill("채택한 파일의 개발 계획을 바탕으로 작성하되 계약과 실적은 확인 필요로 남깁니다.");
-  await page.getByRole("button",{name:"이 주제로 작성",exact:true}).click();
-  const overview=page.getByRole("region",{name:"현재 원고와 검토 상태",exact:true});
+  await page.getByRole("button", { name: "이 주제로 작성", exact: true }).click();
+  const overview = page.getByRole("region", { name: "현재 원고와 검토 상태", exact: true });
   await overview.waitFor();
-  const plan=company.plans[0];
-  assert.equal(company.revision,12);
-  assert.equal(company.plans.length,1); assert.equal(plan.version,1);
-  assert.equal(company.guidedPreparationRuns[0].id,run.id);
-  assert.deepEqual(company.guidedPreparationRuns[0].approval,run.approval);
-  assert.equal(company.guidedPreparationRuns[0].planId,plan.id);
-  assert.equal(plan.candidateId,company.candidateSelections[0].candidateId);
-  assert.equal(plan.confirmedAt,null);
-  assert.ok(plan.content.sections.every(s=>s.needsConfirmation &&
-    s.evidence.every(e=>e.sourceId===original.sourceId && e.quote===fixture.adoptedText)));
-  assert.deepEqual(company.sourceIntakes[0].original,original.original);
-  assert.deepEqual(company.sourceIntakes[0].result,result);
-  assert.equal(company.sources[0].text,fixture.adoptedText);
+  const plan = company.plans[0];
+  assert.equal(company.revision, 12);
+  assert.equal(company.plans.length, 1);
+  assert.equal(plan.version, 1);
+  assert.equal(company.guidedPreparationRuns[0].id, run.id);
+  assert.deepEqual(company.guidedPreparationRuns[0].approval, run.approval);
+  assert.equal(company.guidedPreparationRuns[0].planId, plan.id);
+  assert.equal(plan.candidateId, company.candidateSelections[0].candidateId);
+  assert.equal(plan.confirmedAt, null);
+  assert.ok(
+    plan.content.sections.every(
+      (s) =>
+        s.needsConfirmation &&
+        s.evidence.every(
+          (e) => e.sourceId === original.sourceId && e.quote === fixture.adoptedText,
+        ),
+    ),
+  );
+  assert.deepEqual(company.sourceIntakes[0].original, original.original);
+  assert.deepEqual(company.sourceIntakes[0].result, result);
+  assert.equal(company.sources[0].text, fixture.adoptedText);
   assert.ok((await overview.innerText()).includes("항목 확인 필요 10개"));
   assert.ok((await overview.innerText()).includes("전체 검토 미완료"));
-  const download=overview.getByRole("link",{name:"원고 v1 Word 내려받기",exact:true});
-  assert.equal(new URL(await download.getAttribute("href"),origin).searchParams.get("planId"),plan.id);
-  record("same company session reaches first v1 with the exact adopted-file citations and original run; no confirmation promotion");
+  const download = overview.getByRole("link", { name: "원고 v1 Word 내려받기", exact: true });
+  assert.equal(
+    new URL(await download.getAttribute("href"), origin).searchParams.get("planId"),
+    plan.id,
+  );
+  record(
+    "same company session reaches first v1 with the exact adopted-file citations and original run; no confirmation promotion",
+  );
 
-  await page.setViewportSize({width:390,height:844});
-  assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
-  await page.waitForFunction(()=>[...document.querySelectorAll("[data-sonner-toast]")].every(n=>n.getAttribute("data-visible")!=="true"));
-  await page.screenshot({path:path.join(output,"file-first-draft-mobile.png"),fullPage:true});
-  assert.deepEqual(commands.map(c=>c.action),["create","original","run-next","adopt","start","select-candidate","continue"]);
-  assert.ok(previews.every(p=>p.sourceIds.length===1 && p.sourceIds[0]===original.sourceId));
-  assert.deepEqual([...new Set(previews.map(p=>p.revision))],[6,8,12]);
-  assert.deepEqual(commands[4].approval,run.approval);
-  assert.equal(commands[6].runId,run.id);
-  assert.equal(caseOpens,1);
-  record("mobile result and exact v1 link follow seven synthetic commands without reopening the company, replay or downloading");
+  await page.setViewportSize({ width: 390, height: 844 });
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+  await page.waitForFunction(() =>
+    [...document.querySelectorAll("[data-sonner-toast]")].every(
+      (n) => n.getAttribute("data-visible") !== "true",
+    ),
+  );
+  await page.screenshot({ path: path.join(output, "file-first-draft-mobile.png"), fullPage: true });
+  assert.deepEqual(
+    commands.map((c) => c.action),
+    ["create", "original", "run-next", "adopt", "start", "select-candidate", "continue"],
+  );
+  assert.ok(
+    previews.every((p) => p.sourceIds.length === 1 && p.sourceIds[0] === original.sourceId),
+  );
+  assert.deepEqual([...new Set(previews.map((p) => p.revision))], [6, 8, 12]);
+  assert.deepEqual(commands[4].approval, run.approval);
+  assert.equal(commands[6].runId, run.id);
+  assert.equal(caseOpens, 1);
+  record(
+    "mobile result and exact v1 link follow seven synthetic commands without reopening the company, replay or downloading",
+  );
   assert.deepEqual(errors, []);
   assert.deepEqual(unexpected, []);
   assert.ok(!logs.join("").includes("FORBIDDEN_SERVER_FETCH"));
@@ -472,7 +637,7 @@ try {
         syntheticScopePreviews: previews,
         continuousJourneys: 1,
         startingState:
-          "one synthetic file, original upload, UI read and adopted edited body, exact selection and first manuscript; services/writers/extractors/provider never executed",
+          "one synthetic file stays in guided mode for reading, correction, malformed acknowledgement recovery, explicit selection and first manuscript; services/writers/extractors/provider never executed",
         commandActions: commands.map((c) => c.action),
         errors,
         unexpected,
@@ -497,6 +662,7 @@ try {
       .catch(() => {});
   throw error;
 } finally {
+  releaseRead?.();
   await context?.close();
   for (const socket of developmentSockets) socket.destroy();
   proxy.closeAllConnections();
@@ -511,10 +677,17 @@ try {
       child.kill();
     });
   await writeFile(path.join(output, "server.log"), logs.join(""));
-  await writeFile(path.join(output, "cleanup.json"), JSON.stringify({
-    childStopped: !child || child.exitCode !== null || child.signalCode !== null,
-    unusedDataPresent: (await readdir(output)).includes("unused-data"),
-    businessRouteObserved: /(?:GET|POST|PATCH|PUT|DELETE) \/api\//.test(logs.join("")),
-    forbiddenServerFetch: logs.join("").includes("FORBIDDEN_SERVER_FETCH"),
-  }, null, 2));
+  await writeFile(
+    path.join(output, "cleanup.json"),
+    JSON.stringify(
+      {
+        childStopped: !child || child.exitCode !== null || child.signalCode !== null,
+        unusedDataPresent: (await readdir(output)).includes("unused-data"),
+        businessRouteObserved: /(?:GET|POST|PATCH|PUT|DELETE) \/api\//.test(logs.join("")),
+        forbiddenServerFetch: logs.join("").includes("FORBIDDEN_SERVER_FETCH"),
+      },
+      null,
+      2,
+    ),
+  );
 }

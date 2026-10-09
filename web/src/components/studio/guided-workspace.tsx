@@ -65,6 +65,7 @@ import { GuidedFollowupStatus } from "./guided-followup-status";
 import { useLocalDay } from "./case-attention";
 import type { GuidedWorkflowTarget } from "@/lib/studio-guided-followup";
 import { jsonBody, studioFetch, useDirty, type StudioMutation } from "./shared";
+import { SourceIntakesPanel } from "./source-intakes-panel";
 import styles from "./guided-workspace.module.css";
 
 import type { VentureOverview } from "@/lib/venturein-overview-types";
@@ -146,6 +147,9 @@ export function GuidedWorkspace({
   const [reviewDirty, setReviewDirty] = useState(false);
   const [sourceReview, setSourceReview] = useState<SourceDocument | null>(null);
   const [sourceReviewDirty, setSourceReviewDirty] = useState(false);
+  const [intakeOpen, setIntakeOpen] = useState(false);
+  const [intakeDirty, setIntakeDirty] = useState(false);
+  const [intakeUnsettled, setIntakeUnsettled] = useState(false);
   const [packagePlanId, setPackagePlanId] = useState<string | null>(null);
   const [packageUnsettled, setPackageUnsettled] = useState(false);
   const [publicEvidenceOpen, setPublicEvidenceOpen] = useState(false);
@@ -162,6 +166,7 @@ export function GuidedWorkspace({
   const editingDirty =
     Object.values(questionLinks).some((link) => link.sectionKey || link.sourceIds.length) ||
     sourceReviewDirty ||
+    intakeDirty ||
     reviewDirty ||
     publicEvidenceDirty ||
     (descriptionTouched && description !== company.profile.technologySummary) ||
@@ -171,7 +176,11 @@ export function GuidedWorkspace({
   useDirty(editingDirty, setDirty);
   useEffect(() => {
     onUnsettledChange(
-      unsettled || packageUnsettled || supplementUnsettled || publicEvidenceUnsettled,
+      unsettled ||
+        packageUnsettled ||
+        supplementUnsettled ||
+        publicEvidenceUnsettled ||
+        intakeUnsettled,
     );
     return () => onUnsettledChange(false);
   }, [
@@ -179,6 +188,7 @@ export function GuidedWorkspace({
     packageUnsettled,
     supplementUnsettled,
     publicEvidenceUnsettled,
+    intakeUnsettled,
     onUnsettledChange,
   ]);
   useEffect(() => {
@@ -263,7 +273,7 @@ export function GuidedWorkspace({
     );
   }
   function goTo(next: GuidedStep) {
-    if (busy || blocked || sourceReview || packagePlanId) return;
+    if (busy || blocked || sourceReview || packagePlanId || intakeOpen) return;
     setStep(next);
     // Drafts stay in this mounted component when users explore another stage.
     setError("");
@@ -464,7 +474,9 @@ export function GuidedWorkspace({
     const next = await mutateOnce({ action: "profile", profile: submitted });
     if (!mounted.current) return;
     if (!guidedDescriptionAcknowledged(next, company, submitted) || !next) {
-      setError("입력한 회사 설명의 저장 응답을 확인하지 못했습니다. 설명을 유지하며 AI 준비로 넘기지 않았습니다.");
+      setError(
+        "입력한 회사 설명의 저장 응답을 확인하지 못했습니다. 설명을 유지하며 AI 준비로 넘기지 않았습니다.",
+      );
       return;
     }
     setError("");
@@ -616,6 +628,7 @@ export function GuidedWorkspace({
               !!busy ||
               blocked ||
               !!sourceReview ||
+              intakeOpen ||
               !!packagePlanId ||
               supplementOpen ||
               publicEvidenceOpen ||
@@ -703,7 +716,7 @@ export function GuidedWorkspace({
           }}
           onDirtyChange={setSourceReviewDirty}
         />
-      ) : busy && !bulkUploading ? (
+      ) : busy && !bulkUploading && !intakeOpen ? (
         <div role="status" className={styles.sheet}>
           <LoaderCircle aria-hidden="true" className="mb-3 size-5 animate-spin" />
           <h2 className={styles.subheading}>{busy}</h2>
@@ -772,63 +785,83 @@ export function GuidedWorkspace({
             </>
           ) : (
             <>
-              {title(
-                company.sources.length
-                  ? "필요한 자료만 추가해 주세요"
-                  : "자료 첨부는 선택 사항입니다",
-                "자료가 없어도 회사 설명으로 시작할 수 있습니다. 자료는 나중에 추가할 수 있습니다.",
-              )}
-              <GuidedBulkUpload
-                company={company}
-                locked={locked}
-                onCompany={onCompany}
-                onBusyChange={(message) => {
-                  setBulkUploading(!!message);
-                  onBusyChange(message);
-                }}
-                onReviewSources={() => onDetails("sources")}
-              />
-              <GuidedMaterialReadiness
-                company={company}
-                locked={locked}
-                onReviewSources={() => onDetails("sources")}
-                onSelectSources={() => void preparePreview()}
-              />
-              <GuidedMaterials
-                company={company}
-                locked={locked}
-                onReview={setSourceReview}
-                onReviewIntakes={() => onDetails("sources")}
-              />
-              <div className={styles.support}>
-                <button
-                  type="button"
-                  className={styles.link}
-                  disabled={locked}
-                  onClick={() => setDescribing(true)}
-                >
-                  {hasDescription ? "회사 설명 고치기" : "자료 없이 회사 설명부터 시작"}
-                </button>
-                {company.sources.length > 0 && detailLink("자료 내용 확인·정리", "sources")}
-                <button
-                  type="button"
-                  className={styles.link}
-                  disabled={locked || editingDirty}
-                  onClick={() => setPublicEvidenceOpen(true)}
-                >
-                  공개 근거 보완
-                </button>
-              </div>
-              <p className={styles.helper}>
-                이 PC에 보관합니다. 외부 AI로 보낼 자료는 별도로 확인받습니다.
-              </p>
-
-              {(hasSourceText || hasDescription) && (
-                <div className={styles.actions}>
-                  <PrimaryAction disabled={locked} onClick={() => goTo("plan")}>
-                    {company.sources.length ? "자료 확인 후 다음 단계" : "회사 설명으로 다음 단계"}
-                  </PrimaryAction>
+              <div hidden={intakeOpen} className="space-y-6">
+                {title(
+                  company.sources.length
+                    ? "필요한 자료만 추가해 주세요"
+                    : "자료 첨부는 선택 사항입니다",
+                  "자료가 없어도 회사 설명으로 시작할 수 있습니다. 자료는 나중에 추가할 수 있습니다.",
+                )}
+                <GuidedBulkUpload
+                  company={company}
+                  locked={locked}
+                  onCompany={onCompany}
+                  onBusyChange={(message) => {
+                    setBulkUploading(!!message);
+                    onBusyChange(message);
+                  }}
+                  onReviewSources={() => setIntakeOpen(true)}
+                />
+                <GuidedMaterialReadiness
+                  company={company}
+                  locked={locked}
+                  onReviewSources={() => setIntakeOpen(true)}
+                  onSelectSources={() => void preparePreview()}
+                />
+                <GuidedMaterials
+                  company={company}
+                  locked={locked}
+                  onReview={setSourceReview}
+                  onReviewIntakes={() => setIntakeOpen(true)}
+                />
+                <div className={styles.support}>
+                  <button
+                    type="button"
+                    className={styles.link}
+                    disabled={locked}
+                    onClick={() => setDescribing(true)}
+                  >
+                    {hasDescription ? "회사 설명 고치기" : "자료 없이 회사 설명부터 시작"}
+                  </button>
+                  {company.sources.length > 0 && detailLink("자료 내용 확인·정리", "sources")}
+                  <button
+                    type="button"
+                    className={styles.link}
+                    disabled={locked || editingDirty}
+                    onClick={() => setPublicEvidenceOpen(true)}
+                  >
+                    공개 근거 보완
+                  </button>
                 </div>
+                <p className={styles.helper}>
+                  이 PC에 보관합니다. 외부 AI로 보낼 자료는 별도로 확인받습니다.
+                </p>
+
+                {(hasSourceText || hasDescription) && (
+                  <div className={styles.actions}>
+                    <PrimaryAction disabled={locked} onClick={() => goTo("plan")}>
+                      {company.sources.length
+                        ? "자료 확인 후 다음 단계"
+                        : "회사 설명으로 다음 단계"}
+                    </PrimaryAction>
+                  </div>
+                )}
+              </div>
+              {intakeOpen && (
+                <SourceIntakesPanel
+                  company={company}
+                  busy={!!busy}
+                  blockedReason={
+                    blocked || unsettled || existingRunUnknown
+                      ? "진행 중인 준비 상태를 확인한 뒤 저장해 주세요."
+                      : ""
+                  }
+                  onCompany={onCompany}
+                  onBusyChange={onBusyChange}
+                  onDirtyChange={setIntakeDirty}
+                  onUnsettledChange={setIntakeUnsettled}
+                  onBack={() => setIntakeOpen(false)}
+                />
               )}
             </>
           )}

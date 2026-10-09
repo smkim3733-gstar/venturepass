@@ -234,6 +234,8 @@ type Props = {
   onCompany: (company: StudioCase) => void;
   onBusyChange: (message: string) => void;
   onDirtyChange: (dirty: boolean) => void;
+  onUnsettledChange?: (unsettled: boolean) => void;
+  onBack?: () => void;
 };
 export function SourceIntakesPanel(props: Props) {
   return <SourceIntakesPanelInner key={props.company.id} {...props} />;
@@ -245,6 +247,8 @@ function SourceIntakesPanelInner({
   onCompany,
   onBusyChange,
   onDirtyChange,
+  onUnsettledChange,
+  onBack,
 }: Props) {
   const prefix = useId();
   const [files, setFiles] = useState<IntakeFile[]>([]),
@@ -256,6 +260,11 @@ function SourceIntakesPanelInner({
     [checkRequired, setCheckRequired] = useState(false),
     [pendingView, setPendingView] = useState<IntakeRequestIdentity | null>(null);
   const hasPending = pendingView !== null;
+  const navigationUnsettled = !loaded || checkRequired || hasPending || active.length > 0;
+  useEffect(() => {
+    onUnsettledChange?.(navigationUnsettled);
+    return () => onUnsettledChange?.(false);
+  }, [navigationUnsettled, onUnsettledChange]);
   const [error, setError] = useState(""),
     [errorCode, setErrorCode] = useState(""),
     [message, setMessage] = useState(""),
@@ -851,20 +860,59 @@ function SourceIntakesPanelInner({
     setReview(null);
   }
   return (
-    <section aria-label="복수파일 접수·판독 재개" className="mb-7 space-y-4 rounded-2xl border p-5">
-      <h3 className="font-bold">복수파일 접수·판독 재개</h3>
+    <section
+      aria-label={onBack ? "파일 본문 확인" : "복수파일 접수·판독 재개"}
+      className="mb-7 space-y-4 rounded-2xl border p-5"
+    >
+      <h3 className="font-bold">
+        {onBack ? "파일 본문을 확인해 주세요" : "복수파일 접수·판독 재개"}
+      </h3>
+      {onBack && (
+        <div className="space-y-2">
+          <p className="text-sm leading-6">
+            파일을 판독한 뒤 원본과 대조해 본문을 고쳐 주세요. 확인한 본문을 채택하면 자료 선택과
+            계획서 작성으로 이어집니다.
+          </p>
+          <Button
+            type="button"
+            variant="outline"
+            disabled={
+              busy ||
+              requesting ||
+              navigationUnsettled ||
+              files.length > 0 ||
+              !!review ||
+              !!externalReview
+            }
+            onClick={() => {
+              if (!inFlight.current) onBack();
+            }}
+          >
+            자료 선택으로 돌아가기
+          </Button>
+          {(review || externalReview) && (
+            <p className="text-xs">열린 검토를 마치거나 닫으면 자료 선택으로 돌아갈 수 있습니다.</p>
+          )}
+          {navigationUnsettled && (
+            <p className="text-xs">접수·판독의 저장 상태를 확인한 뒤 다음 단계로 이동합니다.</p>
+          )}
+        </div>
+      )}
       <Notice>
         원본 접수 → 미검토 판독문 보관 → 교정·확인 후 본문 채택을 구분합니다. 원본 접수·로컬 판독은
         외부 AI로 전송하지 않습니다. 외부 판독·음성전사는 원본·목적지·모델을 별도로 확인하고 동의한
         요청만 전송합니다. 접수·판독만으로 분석 근거나 검토 완료가 되지 않습니다.
       </Notice>
-      <p className="text-xs leading-6">
-        최대 10개·파일당 12MiB·합계 24MiB. 화면을 닫으면 선택한 파일은 다시 선택해야 합니다. 서버에
-        보관한 원본과 판독 결과는 저장 상태에서 이어갑니다. 접수 요청 번호·파일 이름·크기·내용
-        해시는 이 브라우저에 전송 전에 보관합니다. 파일 본문은 브라우저 보관 기록에 넣지 않습니다.
-        브라우저 기록 삭제·다른 주소나 브라우저에서는 이 요청 보관을 복구할 수 없습니다. 탭 종료 뒤
-        무인 처리를 보장하지 않습니다.
-      </p>
+      <details>
+        <summary className="cursor-pointer text-xs">파일 접수와 복구 안내</summary>
+        <p className="text-xs leading-6">
+          최대 10개·파일당 12MiB·합계 24MiB. 화면을 닫으면 선택한 파일은 다시 선택해야 합니다.
+          서버에 보관한 원본과 판독 결과는 저장 상태에서 이어갑니다. 접수 요청 번호·파일
+          이름·크기·내용 해시는 이 브라우저에 전송 전에 보관합니다. 파일 본문은 브라우저 보관 기록에
+          넣지 않습니다. 브라우저 기록 삭제·다른 주소나 브라우저에서는 이 요청 보관을 복구할 수
+          없습니다. 탭 종료 뒤 무인 처리를 보장하지 않습니다.
+        </p>
+      </details>
       <p aria-label="접수 원본 보관 요약" className="text-sm">
         원본 보관 {recovery.stored}개 · 다시 선택·접수 {recovery.awaiting}개 · 상태 확인{" "}
         {recovery.check}개 · 취소 {recovery.cancelled}개
@@ -966,93 +1014,95 @@ function SourceIntakesPanelInner({
           }}
         />
       )}
-      <fieldset
-        disabled={actionsBlocked || !!review || !!externalReview}
-        className="space-y-3 rounded-xl border p-4"
-      >
-        <Label htmlFor={`${prefix}-files`}>여러 원본 파일 선택 (외부 AI 미전송)</Label>
-        <Input
-          id={`${prefix}-files`}
-          type="file"
-          multiple
-          accept={sourceIntakeExtensions.map((extension) => `.${extension}`).join(",")}
-          onChange={(event) => {
-            const chosen = Array.from(event.target.files ?? []);
-            if (newFiles.length && !window.confirm("접수하지 않은 새 파일 선택을 바꿀까요?"))
-              return;
-            setFiles((previous) => [
-              ...previous.filter((entry) =>
-                company.sourceIntakes.some((item) => item.clientFileId === entry.clientFileId),
-              ),
-              ...chosen.map((file) => ({
-                clientFileId: crypto.randomUUID(),
-                file,
-                kind: "technology" as const,
-              })),
-            ]);
-            setError("");
-            setErrorCode("");
-            setMessage("");
-          }}
-        />
-        {newFiles.map((entry) => (
-          <div
-            key={entry.clientFileId}
-            className="grid gap-2 rounded-lg border p-3 text-sm sm:grid-cols-[1fr_10rem_auto]"
-          >
-            <div className="break-words">
-              <p>{entry.file.name}</p>
-              <p className="text-xs">{entry.file.size.toLocaleString()} bytes</p>
-              {intakeFileError(entry.file) && (
-                <p className="text-xs text-destructive">
-                  {intakeFileError(entry.file)} 이 파일은 접수에서 제외합니다.
-                </p>
-              )}
-            </div>
-            <select
-              aria-label="선택 파일 자료 분류"
-              className={selectClass}
-              value={entry.kind}
-              onChange={(event) =>
-                setFiles((previous) =>
-                  previous.map((file) =>
-                    file.clientFileId === entry.clientFileId
-                      ? { ...file, kind: event.target.value as IntakeFile["kind"] }
-                      : file,
-                  ),
-                )
-              }
-            >
-              {sourceKinds.map((kind) => (
-                <option key={kind} value={kind}>
-                  {sourceKindLabels[kind]}
-                </option>
-              ))}
-            </select>
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() =>
-                setFiles((previous) =>
-                  previous.filter((file) => file.clientFileId !== entry.clientFileId),
-                )
-              }
-            >
-              선택 해제
-            </Button>
-          </div>
-        ))}
-        {newFiles.length > 0 && batchProblem && (
-          <p className="text-xs text-destructive">{batchProblem}</p>
-        )}
-        <Button
-          type="button"
-          disabled={!!batchProblem || company.sourceIntakes.length >= sourceIntakeLimits.items}
-          onClick={() => void createAndUpload()}
+      {!onBack && (
+        <fieldset
+          disabled={actionsBlocked || !!review || !!externalReview}
+          className="space-y-3 rounded-xl border p-4"
         >
-          지원 가능한 {validFiles.length}개 원본 순차 접수
-        </Button>
-      </fieldset>
+          <Label htmlFor={`${prefix}-files`}>여러 원본 파일 선택 (외부 AI 미전송)</Label>
+          <Input
+            id={`${prefix}-files`}
+            type="file"
+            multiple
+            accept={sourceIntakeExtensions.map((extension) => `.${extension}`).join(",")}
+            onChange={(event) => {
+              const chosen = Array.from(event.target.files ?? []);
+              if (newFiles.length && !window.confirm("접수하지 않은 새 파일 선택을 바꿀까요?"))
+                return;
+              setFiles((previous) => [
+                ...previous.filter((entry) =>
+                  company.sourceIntakes.some((item) => item.clientFileId === entry.clientFileId),
+                ),
+                ...chosen.map((file) => ({
+                  clientFileId: crypto.randomUUID(),
+                  file,
+                  kind: "technology" as const,
+                })),
+              ]);
+              setError("");
+              setErrorCode("");
+              setMessage("");
+            }}
+          />
+          {newFiles.map((entry) => (
+            <div
+              key={entry.clientFileId}
+              className="grid gap-2 rounded-lg border p-3 text-sm sm:grid-cols-[1fr_10rem_auto]"
+            >
+              <div className="break-words">
+                <p>{entry.file.name}</p>
+                <p className="text-xs">{entry.file.size.toLocaleString()} bytes</p>
+                {intakeFileError(entry.file) && (
+                  <p className="text-xs text-destructive">
+                    {intakeFileError(entry.file)} 이 파일은 접수에서 제외합니다.
+                  </p>
+                )}
+              </div>
+              <select
+                aria-label="선택 파일 자료 분류"
+                className={selectClass}
+                value={entry.kind}
+                onChange={(event) =>
+                  setFiles((previous) =>
+                    previous.map((file) =>
+                      file.clientFileId === entry.clientFileId
+                        ? { ...file, kind: event.target.value as IntakeFile["kind"] }
+                        : file,
+                    ),
+                  )
+                }
+              >
+                {sourceKinds.map((kind) => (
+                  <option key={kind} value={kind}>
+                    {sourceKindLabels[kind]}
+                  </option>
+                ))}
+              </select>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() =>
+                  setFiles((previous) =>
+                    previous.filter((file) => file.clientFileId !== entry.clientFileId),
+                  )
+                }
+              >
+                선택 해제
+              </Button>
+            </div>
+          ))}
+          {newFiles.length > 0 && batchProblem && (
+            <p className="text-xs text-destructive">{batchProblem}</p>
+          )}
+          <Button
+            type="button"
+            disabled={!!batchProblem || company.sourceIntakes.length >= sourceIntakeLimits.items}
+            onClick={() => void createAndUpload()}
+          >
+            지원 가능한 {validFiles.length}개 원본 순차 접수
+          </Button>
+        </fieldset>
+      )}
       {company.sourceIntakes.length === 0 && (
         <p className="text-sm text-muted-foreground">
           아직 저장된 복수파일 접수 기록이 없습니다. 기존 단일 업로드 자료를 새 작업 이력으로
