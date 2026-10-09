@@ -22,6 +22,7 @@ export function planReviewInputFor(
   plan: BusinessPlan,
   findingIndex: number,
 ): PlanReviewDecisionInput | null {
+  if (!Number.isInteger(findingIndex) || findingIndex < 0 || findingIndex > 199) return null;
   const finding = planReviewFindingSchema.safeParse(plan.review[findingIndex]);
   if (!finding.success) return null;
   return {
@@ -61,6 +62,7 @@ type Props = Pick<PanelProps, "company" | "mutate"> & {
   plan: BusinessPlan;
   blockedReason: string;
   onDirtyChange: (dirty: boolean) => void;
+  initialFindingIndex?: number;
 };
 type Form = { input: PlanReviewDecisionInput; baseline: string; nonce: string; binding: string };
 
@@ -70,14 +72,24 @@ export function PlanReviewDecisions({
   mutate,
   blockedReason,
   onDirtyChange,
+  initialFindingIndex,
 }: Props) {
-  const [selected, setSelected] = useState("");
-  const [form, setForm] = useState<Form | null>(null);
+  const binding = `${company.id}:${company.revision}:${plan.id}`;
+  // Opening a selected opinion initializes once; later props never replace a draft.
+  const [form, setForm] = useState<Form | null>(() => {
+    const input =
+      initialFindingIndex === undefined
+        ? null
+        : planReviewInputFor(company, plan, initialFindingIndex);
+    return input
+      ? { input, baseline: JSON.stringify(input), nonce: crypto.randomUUID(), binding }
+      : null;
+  });
+  const [selected, setSelected] = useState(() => (form ? String(form.input.findingIndex) : ""));
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
   const pending = useRef(false);
   const mounted = useRef(false);
-  const binding = `${company.id}:${company.revision}:${plan.id}`;
   const context = useRef(binding);
   useEffect(() => {
     mounted.current = true;

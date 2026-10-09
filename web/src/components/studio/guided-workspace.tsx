@@ -52,6 +52,7 @@ import {
 import { GuidedMaterialReadiness } from "./guided-material-readiness";
 import { GuidedBulkUpload } from "./guided-bulk-upload";
 import { PreparedPackagesPanel } from "./prepared-packages-panel";
+import { GuidedPlanReview, type GuidedReviewTarget } from "./guided-plan-review";
 import { GuidedPlanEvidence } from "./guided-plan-evidence";
 import { GuidedVentureConnection } from "./guided-venture-connection";
 import { GuidedApplicationHistory } from "./guided-application-history";
@@ -136,6 +137,8 @@ export function GuidedWorkspace({
   } | null>(null);
   const [visibleQuestionCount, setVisibleQuestionCount] = useState(3);
   const [deferred, setDeferred] = useState(false);
+  const [reviewTarget, setReviewTarget] = useState<GuidedReviewTarget | null>(null);
+  const [reviewDirty, setReviewDirty] = useState(false);
   const [sourceReview, setSourceReview] = useState<SourceDocument | null>(null);
   const [sourceReviewDirty, setSourceReviewDirty] = useState(false);
   const [packagePlanId, setPackagePlanId] = useState<string | null>(null);
@@ -154,6 +157,7 @@ export function GuidedWorkspace({
   const editingDirty =
     Object.values(questionLinks).some((link) => link.sectionKey || link.sourceIds.length) ||
     sourceReviewDirty ||
+    reviewDirty ||
     publicEvidenceDirty ||
     (descriptionTouched && description !== company.profile.technologySummary) ||
     editingSection !== null ||
@@ -212,7 +216,15 @@ export function GuidedWorkspace({
   const answerContextChanged = !!answerContext && answerContext.revision !== company.revision;
   const needsReview =
     latestPlan?.content.sections.filter((section) => section.needsConfirmation) ?? [];
-  const findings = latestPlan?.review.filter((finding) => finding.severity !== "info") ?? [];
+  const findingEntries =
+    latestPlan?.review
+      .map((finding, findingIndex) => ({ finding, findingIndex }))
+      .filter(({ finding }) => finding.severity !== "info") ?? [];
+  const findings = findingEntries.map(({ finding }) => finding);
+  function openReview(findingIndex?: number) {
+    if (locked || editingDirty || !latestPlan || existingRunUnknown) return;
+    setReviewTarget({ companyId: company.id, plan: structuredClone(latestPlan), findingIndex });
+  }
   const aiFindings =
     latestPlan?.content.actionItems.filter((item) => item.startsWith("[AI 검토 의견")) ?? [];
   const editingPlan = company.plans.find((plan) => plan.id === editingPlanId);
@@ -598,7 +610,8 @@ export function GuidedWorkspace({
               !!sourceReview ||
               !!packagePlanId ||
               supplementOpen ||
-              publicEvidenceOpen
+              publicEvidenceOpen ||
+              !!reviewTarget
             }
             onClick={() => goTo(item.id)}
           >
@@ -612,7 +625,21 @@ export function GuidedWorkspace({
           {error}
         </div>
       )}
-      {publicEvidenceOpen ? (
+      {reviewTarget ? (
+        <GuidedPlanReview
+          company={company}
+          target={reviewTarget}
+          busy={!!busy}
+          blocked={blocked || unsettled || existingRunUnknown}
+          dirty={reviewDirty}
+          mutate={mutate}
+          onDirtyChange={setReviewDirty}
+          onClose={() => {
+            setReviewTarget(null);
+            setReviewDirty(false);
+          }}
+        />
+      ) : publicEvidenceOpen ? (
         <PublicEvidencePanel
           company={company}
           blocked={blocked || unsettled || existingRunUnknown}
@@ -1180,6 +1207,29 @@ export function GuidedWorkspace({
                   )}
                 </div>
               )}
+              {findingEntries.length > 0 && (
+                <section className={styles.sheet} aria-label="의견별 검토 판단 바로가기">
+                  <h3 className={styles.subheading}>검토 의견에 판단 남기기</h3>
+                  <p className={styles.helper}>
+                    의견을 선택해 담당자 해결 판단이나 보류 이유를 기록하세요. 원고의 확인 필요
+                    표시는 유지됩니다.
+                  </p>
+                  <ul className={styles.reviewList}>
+                    {findingEntries.map(({ finding, findingIndex }) => (
+                      <li key={findingIndex}>
+                        <button
+                          type="button"
+                          className={styles.link}
+                          disabled={locked || editingDirty || existingRunUnknown}
+                          onClick={() => openReview(findingIndex)}
+                        >
+                          의견 {findingIndex + 1}: {finding.message}
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                </section>
+              )}
               {flow.guidedInputState === "changed" && (
                 <p className={styles.notice}>
                   작성 당시와 현재 자료가 다릅니다. 보완해 저장한 내용과 아직 반영하지 않은 내용을
@@ -1202,7 +1252,10 @@ export function GuidedWorkspace({
                 ) : findings.some(
                     (item) => item.severity === "error" || item.category === "confirmation",
                   ) ? (
-                  <PrimaryAction disabled={locked} onClick={() => onDetails("plan")}>
+                  <PrimaryAction
+                    disabled={locked || editingDirty || existingRunUnknown}
+                    onClick={() => openReview()}
+                  >
                     {"검토 의견 확인하기"}
                   </PrimaryAction>
                 ) : flow.planNeedsContextReview && latestPlan.mode === "manual" ? (
