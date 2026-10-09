@@ -33,7 +33,7 @@ export const ventureJourneyHistorySchema = z.array(ventureJourneyEntrySchema).ma
 export type VentureJourneyEntry = z.infer<typeof ventureJourneyEntrySchema>;
 export type VentureJourney = {
   entries: VentureJourneyEntry[];
-  phase: "connect" | "inspect" | "map" | "review" | "execute" | "verify" | "handoff";
+  phase: "connect" | "inspect" | "view" | "map" | "review" | "execute" | "verify" | "handoff";
   message: string;
 };
 
@@ -93,6 +93,18 @@ export function buildVentureJourney(input: {
       "verify",
       "마지막 입력·첨부 결과를 공식 화면에서 확인하세요. 같은 화면 기록으로 재실행하지 않습니다. 확인 후 현재 화면을 다시 연결하세요.",
     );
+  // Only describe captured fields; this is not an application or certification status.
+  if (input.snapshot.screen.fields.every((field) => field.readOnly || field.disabled)) {
+    if (input.snapshot.screen.truncated)
+      return result(
+        "inspect",
+        "현재 화면의 일부 항목만 읽었습니다. 입력 가능한 항목이 있는지 아직 확인할 수 없습니다. 공식 화면을 직접 확인하세요.",
+      );
+    return result(
+      "view",
+      "현재 읽은 화면에는 입력·첨부할 수 있는 항목이 없습니다. 화면 내용을 참고용으로 확인하세요. 이 화면에서는 항목 연결이나 입력 검토를 준비하지 않습니다.",
+    );
+  }
   if (
     !input.draft ||
     input.draft.companyRevision !== input.companyRevision ||

@@ -21,7 +21,7 @@ export const ventureOverviewSchema = z
     ]),
     sessionUpdatedAt: z.string().datetime().nullable(),
     screenObservedAt: z.string().datetime().nullable(),
-    phase: z.enum(["connect", "inspect", "map", "review", "execute", "verify", "handoff"]),
+    phase: z.enum(["connect", "inspect", "view", "map", "review", "execute", "verify", "handoff"]),
     previousInputNeedsCheck: z.boolean(),
     readAt: z.string().datetime(),
     automaticSubmissionAvailable: z.literal(false),
@@ -80,6 +80,7 @@ export function ventureOverviewAction(value: VentureOverview): {
   const labels = {
     connect: ["로그인 연결을 확인해 주세요", "벤처인 연결 확인"],
     inspect: ["공식 신청 화면을 확인해 주세요", "신청 화면 연결 준비"],
+    view: ["현재 읽은 화면에는 입력할 항목이 없습니다", "읽은 화면 확인하기"],
     map: ["입력할 항목과 자료를 연결해 주세요", "항목·첨부 연결 확인"],
     review: ["선택한 입력 내용을 점검해 주세요", "입력·첨부 점검"],
     execute: ["전송할 값과 파일을 검토해 주세요", "선택 입력 검토하기"],
@@ -91,8 +92,10 @@ export function ventureOverviewAction(value: VentureOverview): {
     title,
     label,
     description:
-      value.phase === "handoff"
-        ? "선택 항목의 화면 값·첨부 확인 기록입니다. 최종 제출·납부·접수 완료는 공식 사이트에서 별도로 확인해야 합니다."
-        : "기존 연결 화면에서 회사·항목·첨부와 전송 범위를 확인합니다. 이 요약은 입력 실행이나 제출 승인이 아닙니다.",
+      value.phase === "view"
+        ? "보관된 화면 내용을 참고용으로 확인합니다. 이 안내로 입력 검토나 새 신청을 시작하지 않으며, 확인 유형·제출·접수 결과를 판정하지 않습니다."
+        : value.phase === "handoff"
+          ? "선택 항목의 화면 값·첨부 확인 기록입니다. 최종 제출·납부·접수 완료는 공식 사이트에서 별도로 확인해야 합니다."
+          : "기존 연결 화면에서 회사·항목·첨부와 전송 범위를 확인합니다. 이 요약은 입력 실행이나 제출 승인이 아닙니다.",
   };
 }

@@ -62,6 +62,7 @@ export function resolveVentureGuidedNavigation(
       section = (
         {
           inspect: "company",
+          view: "company",
           map: "mapping",
           review: "review",
           execute: "execution",

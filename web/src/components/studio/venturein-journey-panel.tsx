@@ -48,6 +48,7 @@ export function VentureinJourneyPanel({
       </section>
     );
   }
+  const viewOnly = journey.phase === "view";
   const entries = [...journey.entries]
     .sort((one, two) => Date.parse(two.observedAt) - Date.parse(one.observedAt))
     .slice(0, 12);
@@ -58,39 +59,47 @@ export function VentureinJourneyPanel({
       label="신청 화면별 진행 상태"
       title="신청 화면별 진행 상태"
       badge={
-        <Badge variant="outline">{steps.find((step) => step.phase === journey.phase)?.label}</Badge>
+        <Badge variant="outline">
+          {viewOnly ? "입력 대상 없음" : steps.find((step) => step.phase === journey.phase)?.label}
+        </Badge>
       }
     >
-      <ol className="grid grid-cols-2 gap-2 text-xs sm:grid-cols-4 lg:grid-cols-7">
-        {steps.map((step, index) => (
-          <li
-            key={step.phase}
-            aria-current={journey.phase === step.phase ? "step" : undefined}
-            className={`rounded-lg border p-3 leading-5 ${journey.phase === step.phase ? "border-primary/30 bg-primary/5 font-semibold text-primary" : "text-muted-foreground"}`}
-          >
-            <span className="mr-1">{index + 1}.</span>
-            {step.label}
-            {journey.phase === step.phase && <span className="mt-1 block">현재 단계</span>}
-          </li>
-        ))}
-      </ol>
+      {!viewOnly && (
+        <ol className="grid grid-cols-2 gap-2 text-xs sm:grid-cols-4 lg:grid-cols-7">
+          {steps.map((step, index) => (
+            <li
+              key={step.phase}
+              aria-current={journey.phase === step.phase ? "step" : undefined}
+              className={`rounded-lg border p-3 leading-5 ${journey.phase === step.phase ? "border-primary/30 bg-primary/5 font-semibold text-primary" : "text-muted-foreground"}`}
+            >
+              <span className="mr-1">{index + 1}.</span>
+              {step.label}
+              {journey.phase === step.phase && <span className="mt-1 block">현재 단계</span>}
+            </li>
+          ))}
+        </ol>
+      )}
       <p role="status" className="text-sm leading-6">
         {journey.message}
       </p>
-      <Notice>
-        이번 선택 항목의 입력·첨부 결과를 공식 Edge 창에서 확인하세요. 다음 단계가 필요하면 공식
-        사이트에서 직접 이동한 뒤 ‘다음 화면 연결’을 누르세요. 이 버튼은 현재 열린 화면을 읽으며,
-        다음·저장·동의·제출 버튼을 누르지 않습니다.
-      </Notice>
-      <div className="space-y-2">
-        <Button type="button" variant="outline" disabled={!canReadNext} onClick={onReadCurrent}>
-          <RefreshCw />
-          다음 화면 연결
-        </Button>
-        {!canReadNext && (
-          <p className="text-xs leading-6 text-muted-foreground">{readNextBlockedReason}</p>
-        )}
-      </div>
+      {!viewOnly && (
+        <>
+          <Notice>
+            이번 선택 항목의 입력·첨부 결과를 공식 Edge 창에서 확인하세요. 다음 단계가 필요하면 공식
+            사이트에서 직접 이동한 뒤 ‘다음 화면 연결’을 누르세요. 이 버튼은 현재 열린 화면을
+            읽으며, 다음·저장·동의·제출 버튼을 누르지 않습니다.
+          </Notice>
+          <div className="space-y-2">
+            <Button type="button" variant="outline" disabled={!canReadNext} onClick={onReadCurrent}>
+              <RefreshCw />
+              다음 화면 연결
+            </Button>
+            {!canReadNext && (
+              <p className="text-xs leading-6 text-muted-foreground">{readNextBlockedReason}</p>
+            )}
+          </div>
+        </>
+      )}
       <details className="rounded-xl border p-4" open={entries.length > 0}>
         <summary className="cursor-pointer text-sm font-semibold">
           <History className="mr-2 inline size-4" />

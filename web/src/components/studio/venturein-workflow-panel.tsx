@@ -482,8 +482,8 @@ export function VentureinWorkflowPanel({
             />
           )}
           <Notice>
-            열린 Edge 창의 신청 화면을 읽고, 입력할 원고와 첨부할 원본을 이 PC에서 연결합니다.
-            저장한 연결은 제출 전 점검과 검토용 다운로드에 사용합니다.
+            공식 화면에서 읽은 항목을 확인합니다. 입력 가능한 항목이 있는 경우 원고와 첨부 원본을
+            이 PC에서 연결해 제출 전 점검과 검토용 다운로드에 사용할 수 있습니다.
           </Notice>
           <VentureinMyStatusPanel company={company} connection={connection} workflow={workflow}
             blocked={executionBlocked || dirty || !!busy || executionBusy || !!error || !!requestError} />
@@ -633,7 +633,7 @@ export function VentureinWorkflowPanel({
             {textFields.length === 0 ? (
               <p className="text-sm leading-6 text-muted-foreground">
                 {screen
-                  ? "현재 화면에서 연결할 입력 항목을 찾지 못했습니다. Edge에서 신청서 입력 단계로 이동한 뒤 다시 읽으세요."
+                  ? "현재 읽은 화면에는 연결 가능한 입력 항목이 없습니다. 조회용 화면은 참고용으로 확인할 수 있습니다."
                   : "공식 신청 화면을 먼저 확인하면 입력 항목이 표시됩니다."}
               </p>
             ) : (
@@ -755,7 +755,7 @@ export function VentureinWorkflowPanel({
             {fileFields.length === 0 ? (
               <p className="text-sm leading-6 text-muted-foreground">
                 {screen
-                  ? "현재 화면에서 파일 첨부 항목을 찾지 못했습니다. 첨부 단계에서 화면을 다시 읽으세요."
+                  ? "현재 읽은 화면에는 연결 가능한 첨부 항목이 없습니다. 이 화면에서 파일을 전송하지 않습니다."
                   : "공식 신청 화면의 첨부 항목을 먼저 확인하세요."}
               </p>
             ) : (

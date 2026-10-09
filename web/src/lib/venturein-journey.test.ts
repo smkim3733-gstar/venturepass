@@ -392,3 +392,82 @@ describe("완료 후 현재 원고 연결 재확인", () => {
     },
   );
 });
+
+describe("입력 대상 없는 현재 화면 안내", () => {
+  function readonlyInput() {
+    const input = fixture();
+    input.snapshot!.screen.fields = Array.from({ length: 21 }, (_, index) => ({
+      ...field("readonly-" + index, "textarea"),
+      readOnly: true,
+    }));
+    return input;
+  }
+
+  it.each(["missing", "stale", "ready", "completed"] as const)(
+    "읽기 전용 화면은 원고 연결 상태와 무관하게 조회를 안내하며 원래 자료를 보존한다: %s",
+    (state) => {
+      const input = readonlyInput();
+      if (state === "missing") input.draft = null;
+      if (state === "stale") input.companyRevision++;
+      if (state === "completed") input.execution = receipt();
+      const before = structuredClone(input);
+      const result = buildVentureJourney(input);
+      expect(result.phase).toBe("view");
+      expect(result.message).toContain("현재 읽은 화면");
+      expect(result.message).toContain("입력 검토를 준비하지 않습니다");
+      expect(result.entries[0].fieldCount).toBe(21);
+      expect(result.entries[0].execution).toEqual(input.execution);
+      expect(input).toEqual(before);
+    },
+  );
+
+  it.each(["disabled", "empty"] as const)(
+    "비활성 또는 빈 화면도 현재 관측 범위로만 안내한다: %s",
+    (state) => {
+      const input = readonlyInput();
+      input.snapshot!.screen.fields =
+        state === "empty" ? [] : [{ ...field("disabled"), disabled: true }];
+      expect(buildVentureJourney(input).phase).toBe("view");
+    },
+  );
+
+  it("잘린 화면에서 입력 대상이 없다고 단정하지 않는다", () => {
+    const input = readonlyInput();
+    input.snapshot!.screen.truncated = true;
+    const result = buildVentureJourney(input);
+    expect(result.phase).toBe("inspect");
+    expect(result.message).toContain("일부 항목만");
+    expect(result.message).not.toContain("입력·첨부할 수 있는 항목이 없습니다");
+  });
+
+  it.each(["input", "file"] as const)(
+    "편집 가능한 %s가 하나라도 있으면 기존 항목 연결을 유지한다",
+    (kind) => {
+      const input = readonlyInput();
+      input.snapshot!.screen.fields.push(field("editable", kind));
+      input.draft = null;
+      expect(buildVentureJourney(input).phase).toBe("map");
+    },
+  );
+
+  it.each(["running", "stopped", "completed"] as const)(
+    "읽기 전용이어도 미확인 실행 결과 확인이 우선한다: %s",
+    (status) => {
+      const input = readonlyInput();
+      input.execution = receipt({ status, code: "INPUT_RESULT_UNKNOWN" });
+      const result = buildVentureJourney(input);
+      expect(result.phase).toBe("verify");
+      expect(result.entries[0].execution).toEqual(input.execution);
+    },
+  );
+
+  it.each(["session", "account"] as const)(
+    "다른 연결의 읽기 전용 화면을 현재 관측으로 안내하지 않는다: %s",
+    (change) => {
+      const input = readonlyInput();
+      if (change === "session") input.snapshot!.sessionStartedAt = "2026-09-24T01:00:00.000Z";
+      else input.accountRevision++;
+      expect(buildVentureJourney(input).phase).toBe("inspect");
+    },
+  );
+});

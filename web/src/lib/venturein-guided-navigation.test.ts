@@ -77,6 +77,7 @@ function fixture() {
 it.each([
   ["connect", "login"],
   ["inspect", "company"],
+  ["view", "company"],
   ["map", "mapping"],
   ["review", "review"],
   ["execute", "execution"],

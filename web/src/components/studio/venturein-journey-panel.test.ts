@@ -107,3 +107,28 @@ describe("신청 화면 진행 이력 렌더링", () => {
     expect(html).toMatch(/<button\b[^>]*\sdisabled=""/);
   });
 });
+
+describe("입력 대상 없는 화면 표시", () => {
+  it.each([false, true])(
+    "상위 다음 연결 허용값 %s와 무관하게 입력 단계와 다음 버튼을 숨긴다",
+    (canReadNext) => {
+      const journey = {
+        ...fixture(),
+        phase: "view" as const,
+        message: "현재 읽은 화면에는 입력·첨부할 수 있는 항목이 없습니다.",
+      };
+      const before = structuredClone(journey);
+      const html = render(journey, canReadNext);
+      expect(html).toContain("입력 대상 없음");
+      expect(html).toContain("최근 읽은 화면 이력");
+      expect(html).toContain("가상 신청 화면");
+      expect(html).toContain("기관의 저장·접수·심사 완료를 증명하지 않습니다");
+      expect(html).not.toContain("다음 화면 연결");
+      expect(html).not.toContain("선택 입력 점검");
+      expect(html).not.toContain("실행 결과 확인 전에는");
+      expect(html).not.toContain("이번 선택 항목의 입력");
+      expect(html).not.toContain("<button");
+      expect(journey).toEqual(before);
+    },
+  );
+});
