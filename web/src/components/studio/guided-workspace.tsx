@@ -1031,6 +1031,42 @@ export function GuidedWorkspace({
                 "준비한 계획서를 확인해 주세요",
                 "요약을 먼저 살펴보고, 확인이 필요한 부분이나 다른 내용만 고쳐 주세요.",
               )}
+              <section className={styles.sheet} aria-label="현재 원고와 검토 상태">
+                <h3 className={styles.subheading}>현재 원고 v{latestPlan.version}</h3>
+                <p className={styles.helper}>
+                  {needsReview.length
+                    ? `항목 확인 필요 ${needsReview.length}개`
+                    : "표시된 항목에 확인 필요 표시 없음"}
+                  {findings.length ? ` · 검토 의견 ${findings.length}개` : ""}
+                </p>
+                <p className={styles.helper}>
+                  {flow.planReady
+                    ? "내부 검토 기록 있음 · 기관 제출 전"
+                    : "전체 검토 미완료 · 신청 준비 미완료"}
+                </p>
+                {flow.planNeedsContextReview && (
+                  <p className={styles.helper}>
+                    자료와 신청 방향의 현재 연결은 확인이 필요합니다. 저장한 수정본의 내용 검토와
+                    내려받기를 이어갈 수 있으며, 항목 확인만으로 전체 검토가 완료되지는 않습니다.
+                  </p>
+                )}
+                <p className={styles.helper}>
+                  이 버전의 본문·근거·남은 검토 의견을 Word에 담습니다. 이전 버전은 보관됩니다.
+                </p>
+                {locked || editingDirty || existingRunUnknown ? (
+                  <button type="button" className={styles.link} disabled>
+                    원고 v{latestPlan.version} Word 내려받기
+                  </button>
+                ) : (
+                  <a
+                    className={styles.link}
+                    href={`/api/studio/cases/${company.id}/export?planId=${latestPlan.id}&format=docx`}
+                    download
+                  >
+                    원고 v{latestPlan.version} Word 내려받기
+                  </a>
+                )}
+              </section>
               <section className={`${styles.sheet} ${styles.topic}`}>
                 <p className={styles.eyebrow}>
                   {latestPlan.mode === "ai"
@@ -1081,16 +1117,17 @@ export function GuidedWorkspace({
                   </PrimaryAction>
                 </section>
               )}
-              {!answerSelection && flow.guidedInputState !== "changed" && (
-                <button
-                  type="button"
-                  className={styles.link}
-                  disabled={locked || editingDirty}
-                  onClick={() => setSupplementOpen(true)}
-                >
-                  보완 자료로 수정안 만들기
-                </button>
-              )}
+              {!answerSelection &&
+                (flow.guidedInputState !== "changed" || latestPlan.mode === "manual") && (
+                  <button
+                    type="button"
+                    className={`${styles.link} mr-4 mb-3`}
+                    disabled={locked || editingDirty}
+                    onClick={() => setSupplementOpen(true)}
+                  >
+                    보완 자료로 수정안 만들기
+                  </button>
+                )}
               <button
                 type="button"
                 className={styles.link}
@@ -1145,8 +1182,8 @@ export function GuidedWorkspace({
               )}
               {flow.guidedInputState === "changed" && (
                 <p className={styles.notice}>
-                  새 자료가 아직 원고에 반영되지 않았습니다. 보완 자료로 필요한 항목의 수정안을
-                  만들거나, 전체 재작성이 필요하면 아래 추가 메뉴를 이용하세요.
+                  작성 당시와 현재 자료가 다릅니다. 보완해 저장한 내용과 아직 반영하지 않은 내용을
+                  함께 확인해 주세요. 필요한 항목만 고치거나 보완할 수 있습니다.
                 </p>
               )}
               <div className={styles.actions}>
@@ -1158,7 +1195,21 @@ export function GuidedWorkspace({
                 >
                   내용 고치기
                 </button>
-                {answerSelection ? null : flow.guidedInputState === "changed" &&
+                {answerSelection ? null : needsReview.length ? (
+                  <PrimaryAction disabled={locked} onClick={() => openSection(needsReview[0].key)}>
+                    {"확인이 필요한 부분 보기"}
+                  </PrimaryAction>
+                ) : findings.some(
+                    (item) => item.severity === "error" || item.category === "confirmation",
+                  ) ? (
+                  <PrimaryAction disabled={locked} onClick={() => onDetails("plan")}>
+                    {"검토 의견 확인하기"}
+                  </PrimaryAction>
+                ) : flow.planNeedsContextReview && latestPlan.mode === "manual" ? (
+                  <PrimaryAction disabled={locked} onClick={() => onDetails("analysis")}>
+                    {"자료·신청 방향 확인"}
+                  </PrimaryAction>
+                ) : flow.guidedInputState === "changed" &&
                   latestPlan.content.interviewQuestions.length > 0 ? (
                   <PrimaryAction
                     disabled={locked || editingDirty}
@@ -1177,15 +1228,9 @@ export function GuidedWorkspace({
                   <PrimaryAction disabled={locked} onClick={() => void reconcile()}>
                     {"최신 자료 연결 확인"}
                   </PrimaryAction>
-                ) : needsReview.length ? (
-                  <PrimaryAction disabled={locked} onClick={() => openSection(needsReview[0].key)}>
-                    {"확인이 필요한 부분 보기"}
-                  </PrimaryAction>
-                ) : findings.some(
-                    (item) => item.severity === "error" || item.category === "confirmation",
-                  ) ? (
-                  <PrimaryAction disabled={locked} onClick={() => onDetails("plan")}>
-                    {"검토 의견 확인하기"}
+                ) : flow.planNeedsContextReview ? (
+                  <PrimaryAction disabled={locked} onClick={() => onDetails("analysis")}>
+                    {"자료·신청 방향 확인"}
                   </PrimaryAction>
                 ) : latestPlan.confirmedAt && flow.planReady ? (
                   <PrimaryAction disabled={locked} onClick={() => setStep("application")}>

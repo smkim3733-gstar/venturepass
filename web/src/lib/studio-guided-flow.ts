@@ -25,6 +25,8 @@ export type GuidedFlow = {
   followup?: GuidedFollowupSummary;
   /** Current local review only. Never a submission permission or official result. */
   planReady: boolean;
+  /** Existing evidence freshness rules; never clears confirmation or authorizes a write. */
+  planNeedsContextReview: boolean;
   guidedInputState: "none" | "unverified" | "current" | "changed";
 };
 export type GuidedFlowOptions = {
@@ -139,7 +141,9 @@ export function deriveGuidedFlow(company: StudioCase, options: GuidedFlowOptions
       (finding) => finding.severity === "error" || finding.category === "confirmation",
     ),
   );
-  const finish = (flow: Omit<GuidedFlow, "planReady" | "guidedInputState">): GuidedFlow =>
+  const finish = (
+    flow: Omit<GuidedFlow, "planReady" | "planNeedsContextReview" | "guidedInputState">,
+  ): GuidedFlow =>
     options.busy
       ? {
           ...flow,
@@ -148,9 +152,16 @@ export function deriveGuidedFlow(company: StudioCase, options: GuidedFlowOptions
           action: null,
           followup,
           planReady,
+          planNeedsContextReview: outdated,
           guidedInputState: inputState,
         }
-      : { ...flow, planReady, guidedInputState: inputState, followup };
+      : {
+          ...flow,
+          planReady,
+          planNeedsContextReview: outdated,
+          guidedInputState: inputState,
+          followup,
+        };
   if (followup.state !== "none") {
     return finish({
       step: "application",

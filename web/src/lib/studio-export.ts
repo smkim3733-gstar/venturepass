@@ -21,7 +21,7 @@ export function exportPlanMarkdown(
     `작성일: ${plan.generatedAt}`,
     `작성 방식: ${plan.mode === "ai" ? "AI 작성" : plan.mode === "assisted" ? "입력자료 기반 작성 보조 (AI 미사용)" : "사용자 편집"}`,
     `작성 근거: 기업 자료 revision ${plan.sourceRevision}`,
-    `현재 자료와 일치: ${current ? "예" : "아니요 — 자료 또는 아이템 변경 후 재작성 필요"}`,
+    `현재 자료와 일치: ${current ? "예" : "미확인 — 변경 자료와 원고의 반영 범위 확인 필요"}`,
     `사용자 검토 확인: ${plan.confirmedAt && current ? plan.confirmedAt : "미확인"}`,
     "",
     "> 신청 준비용 작성본입니다. 기관에 접수되거나 심사 통과가 확인된 문서가 아닙니다. 현재 실적과 향후 계획을 구분하고 제출 전 사실 및 근거를 확인해 주세요.",

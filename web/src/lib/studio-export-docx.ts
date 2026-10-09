@@ -311,7 +311,7 @@ export async function exportPlanDocx(record: StudioCase, plan: BusinessPlan, cur
     ),
     paragraph(`작성 근거: 기업 자료 revision ${plan.sourceRevision}`, "Metadata"),
     paragraph(
-      `현재 자료와 일치: ${current ? "예" : "아니요 — 자료 또는 아이템 변경 후 재작성 필요"}`,
+      `현재 자료와 일치: ${current ? "예" : "미확인 — 변경 자료와 원고의 반영 범위 확인 필요"}`,
       "Metadata",
     ),
     paragraph(
