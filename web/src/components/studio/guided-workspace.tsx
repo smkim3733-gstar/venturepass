@@ -43,6 +43,7 @@ import { GuidedQuestionCard } from "./guided-question-card";
 import { GuidedSourceReview } from "./guided-source-review";
 import { useFileDropNavigationGuard } from "./guided-file-drop-zone";
 import { PublicEvidencePanel } from "./public-evidence-panel";
+import { publicEvidenceRecoveryKey } from "./public-evidence-recovery";
 import { GuidedMaterials } from "./guided-materials";
 import { GuidedEvidenceSelection } from "./guided-evidence-selection";
 import {
@@ -153,6 +154,28 @@ export function GuidedWorkspace({
   const [packagePlanId, setPackagePlanId] = useState<string | null>(null);
   const [packageUnsettled, setPackageUnsettled] = useState(false);
   const [publicEvidenceOpen, setPublicEvidenceOpen] = useState(false);
+  useEffect(() => {
+    let active = true;
+    const inspect = () => {
+      if (!active) return;
+      try {
+        if (window.localStorage.getItem(publicEvidenceRecoveryKey(company.id)) !== null)
+          setPublicEvidenceOpen(true);
+      } catch {
+        setPublicEvidenceOpen(true);
+      }
+    };
+    // Re-entry and another tab's pending save lead to the original recovery screen, never resend.
+    void Promise.resolve().then(inspect);
+    const changed = (event: StorageEvent) => {
+      if (event.key === publicEvidenceRecoveryKey(company.id) || event.key === null) inspect();
+    };
+    window.addEventListener("storage", changed);
+    return () => {
+      active = false;
+      window.removeEventListener("storage", changed);
+    };
+  }, [company.id]);
   const [publicEvidenceDirty, setPublicEvidenceDirty] = useState(false);
   const [publicEvidenceUnsettled, setPublicEvidenceUnsettled] = useState(false);
   const [supplementInitial, setSupplementInitial] = useState<

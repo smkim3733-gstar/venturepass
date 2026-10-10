@@ -5,11 +5,15 @@ import {
   emptyPublicEvidence,
   publicEvidenceDraftSchema,
   preparePublicEvidence,
-  publicEvidenceSaved,
   type PublicEvidenceDraft,
   type PublicEvidenceRequest,
 } from "@/lib/studio-public-evidence";
 import { jsonBody, studioFetch, useDirty } from "./shared";
+import {
+  PublicEvidenceJournal,
+  publicEvidenceBrowserLock,
+  type PublicEvidenceReceipt,
+} from "./public-evidence-recovery";
 import styles from "./guided-workspace.module.css";
 import { PublicResearchLinks } from "./public-research-links";
 import { publicResearchCandidateFields } from "@/lib/studio-public-research-result";
@@ -42,7 +46,8 @@ export function PublicEvidencePanel({
   const [draft, setDraft] = useState<PublicEvidenceDraft>({ ...emptyPublicEvidence });
   const [confirmed, setConfirmed] = useState(false),
     [working, setWorking] = useState(false);
-  const [pending, setPending] = useState<PublicEvidenceRequest | null>(null);
+  const [pending, setPending] = useState<PublicEvidenceReceipt | null>(null);
+  const [ready, setReady] = useState(false);
   const [saved, setSaved] = useState<PublicEvidenceRequest | null>(null);
   const [error, setError] = useState("");
   const flight = useRef(false),
@@ -54,9 +59,9 @@ export function PublicEvidencePanel({
   const dirty = !saved && JSON.stringify(draft) !== JSON.stringify(emptyPublicEvidence);
   useDirty(dirty, onDirtyChange);
   useEffect(() => {
-    onUnsettledChange(working || !!pending);
+    onUnsettledChange(working || !!pending || !ready);
     return () => onUnsettledChange(false);
-  }, [working, pending, onUnsettledChange]);
+  }, [working, pending, ready, onUnsettledChange]);
   useEffect(() => {
     mounted.current = true;
     return () => {
@@ -72,27 +77,87 @@ export function PublicEvidencePanel({
     window.addEventListener("beforeunload", unload);
     return () => window.removeEventListener("beforeunload", unload);
   }, [dirty, pending]);
+  function journal() {
+    return new PublicEvidenceJournal(
+      base.id,
+      window.localStorage,
+      publicEvidenceBrowserLock,
+      (command) =>
+        studioFetch<unknown>(
+          `/api/studio/cases/${base.id}`,
+          command ? { method: "PATCH", ...jsonBody(command) } : undefined,
+        ),
+    );
+  }
+  // Reading local identity never sends a save or assumes the server accepted it.
+  useEffect(() => {
+    let cancelled = false;
+    void Promise.resolve()
+      .then(() =>
+        new PublicEvidenceJournal(
+          base.id,
+          window.localStorage,
+          publicEvidenceBrowserLock,
+          async () => {
+            throw Error("저장 상태 확인을 선택해 주세요.");
+          },
+        ).read(),
+      )
+      .then((record) => {
+        if (!cancelled) {
+          setPending(record);
+          setReady(true);
+        }
+      })
+      .catch(() => {
+        if (!cancelled)
+          setError(
+            "이 브라우저의 이전 저장 요청을 읽지 못했습니다. 새 저장을 멈췄습니다. 복구 기록을 다시 확인해 주세요.",
+          );
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [base.id]);
+  async function readRecovery() {
+    if (flight.current) return;
+    flight.current = true;
+    setWorking(true);
+    try {
+      const record = await journal().read();
+      if (mounted.current) {
+        setPending(record);
+        setReady(true);
+        setError("");
+      }
+    } catch {
+      if (mounted.current) {
+        setReady(false);
+        setError(
+          "이전 저장 요청을 읽지 못했습니다. 브라우저 저장소를 사용할 수 있는지 확인한 뒤 다시 확인해 주세요.",
+        );
+      }
+    } finally {
+      flight.current = false;
+      if (mounted.current) setWorking(false);
+    }
+  }
   const changed = company.id !== base.id || company.revision !== base.revision;
   function field<K extends keyof PublicEvidenceDraft>(key: K, value: PublicEvidenceDraft[K]) {
     setDraft((d) => ({ ...d, [key]: value }));
     setConfirmed(false);
     setError("");
   }
-  function accept(raw: unknown, request: PublicEvidenceRequest) {
-    const c = publicEvidenceSaved(raw, request, currentCompany.current);
-    if (!c)
-      throw Error(
-        "같은 자료의 저장을 확인하지 못했습니다. 이 창에서 저장 상태를 다시 확인해 주세요.",
-      );
+  function accept(result: { company: StudioCase; request: PublicEvidenceRequest }) {
     if (!mounted.current) return;
-    onCompany(c);
-    setSaved(request);
+    onCompany(result.company);
+    setSaved(result.request);
     setPending(null);
     setError("");
     onDirtyChange(false);
   }
   async function save() {
-    if (flight.current || blocked || pending || saved || changed) return;
+    if (flight.current || !ready || blocked || pending || saved || changed) return;
     let request: PublicEvidenceRequest;
     try {
       request = preparePublicEvidence(
@@ -108,24 +173,37 @@ export function PublicEvidencePanel({
     }
     flight.current = true;
     setWorking(true);
-    setPending(request);
     setError("");
     onBusyChange("공개 근거 후보를 보관하고 있습니다");
     try {
-      const result = await studioFetch<unknown>(`/api/studio/cases/${base.id}`, {
-        method: "PATCH",
-        ...jsonBody(request.command),
-      });
-      accept(result, request);
+      accept(
+        await journal().save(
+          request,
+          () => currentCompany.current,
+          (record) => {
+            if (mounted.current) setPending(record);
+          },
+        ),
+      );
     } catch {
-      // Lost acknowledgements use the original ID and GET only, never a new source or revision.
+      // Also inspect a partial storage write; never send if persistence/read-back failed.
       try {
-        accept(await studioFetch<unknown>(`/api/studio/cases/${base.id}`), request);
-      } catch {
-        if (mounted.current)
+        const record = await journal().read();
+        if (mounted.current) {
+          setPending(record);
           setError(
-            "저장 결과가 미확인입니다. 입력을 유지했습니다. 저장 상태를 확인해 주세요. 자동으로 다시 저장하지 않습니다.",
+            record
+              ? "저장 결과가 미확인입니다. 원래 요청을 보존했습니다. 저장 상태를 확인해 주세요. 자동으로 다시 저장하지 않습니다."
+              : "복구 기록을 안전하게 보관하지 못했습니다. 입력을 유지했습니다. 다시 확인해 주세요.",
           );
+        }
+      } catch {
+        if (mounted.current) {
+          setReady(false);
+          setError(
+            "복구 기록을 읽지 못했습니다. 새 저장을 멈췄습니다. 복구 기록을 다시 확인해 주세요.",
+          );
+        }
       }
     } finally {
       flight.current = false;
@@ -134,12 +212,12 @@ export function PublicEvidencePanel({
     }
   }
   async function inspect() {
-    if (flight.current || !pending) return;
+    if (flight.current || !pending || !ready) return;
     flight.current = true;
     setWorking(true);
     setError("");
     try {
-      accept(await studioFetch<unknown>(`/api/studio/cases/${base.id}`), pending);
+      accept(await journal().recover(pending, () => currentCompany.current));
     } catch (e) {
       if (mounted.current) setError(e instanceof Error ? e.message : "저장 상태 미확인");
     } finally {
@@ -150,7 +228,7 @@ export function PublicEvidencePanel({
   function close() {
     // Keep the original request available until its exact saved source is acknowledged.
     // Closing an uncertain save would discard its identity and permit a duplicate submission.
-    if (flight.current || pending) return;
+    if (flight.current || pending || !ready) return;
     if (dirty && !window.confirm("입력 중인 내용은 이 창을 닫으면 사라집니다. 닫을까요?")) return;
     onDirtyChange(false);
     onClose();
@@ -181,7 +259,7 @@ export function PublicEvidencePanel({
         <button
           type="button"
           className={styles.link}
-          disabled={working || !!pending}
+          disabled={working || !!pending || !ready}
           aria-describedby={pending ? "public-evidence-pending" : undefined}
           onClick={close}
         >
@@ -198,11 +276,32 @@ export function PublicEvidencePanel({
         </p>
       )}
       {working && <p role="status">저장 상태 확인 중</p>}
+      {!ready && (
+        <button
+          type="button"
+          className={styles.link}
+          disabled={working}
+          onClick={() => void readRecovery()}
+        >
+          복구 기록 다시 확인
+        </button>
+      )}
       {pending && !working && (
         <p id="public-evidence-pending" role="status" className={styles.helper}>
-          저장 여부를 확인할 때까지 이 창과 입력을 유지합니다. 아래 ‘이 자료의 저장 상태 확인’을
-          눌러 주세요. 같은 자료를 다시 저장하지 않습니다.
+          이전 공개 근거 저장 요청이 미확인입니다. ‘이 자료의 저장 상태 확인’을 눌러 주세요.
+          새로고침 후에도 원래 요청을 이어 확인하며 같은 자료를 다시 저장하지 않습니다. 입력 본문은
+          브라우저에 보관하지 않으므로 새로고침 후에는 저장이 확인된 본문만 표시합니다.
         </p>
+      )}
+      {pending && (
+        <button
+          type="button"
+          className={styles.link}
+          disabled={working}
+          onClick={() => void inspect()}
+        >
+          이 자료의 저장 상태 확인
+        </button>
       )}
       {saved ? (
         <div className="my-4 space-y-3">
@@ -229,173 +328,179 @@ export function PublicEvidencePanel({
         </div>
       ) : (
         <>
-          <PublicResearchLinks
-            disabled={working || blocked || !!pending || changed}
-            canFill={!draft.title && !draft.url}
-            canFillCell={canFillPublicCellEvidence(draft)}
-            onCommentEvidence={(result, command, selection) => {
-              if (
-                flight.current ||
-                working ||
-                blocked ||
-                pending ||
-                saved ||
-                changed ||
-                !mounted.current
-              )
-                throw Error("현재 입력에 옮길 수 없습니다.");
-              const next = applyPublicCommentEvidence(
-                draft,
-                result,
-                command,
-                selection,
-                base,
-                currentCompany.current,
-              );
-              setDraft(next);
-              setError("");
-            }}
-            onCellEvidence={(result, command) => {
-              if (
-                flight.current ||
-                working ||
-                blocked ||
-                pending ||
-                saved ||
-                changed ||
-                !mounted.current
-              )
-                throw Error("현재 입력에 옮길 수 없습니다.");
-              const next = applyPublicCellEvidence(
-                draft,
-                result,
-                command,
-                base,
-                currentCompany.current,
-              );
-              setDraft(next);
-              setConfirmed(false);
-              setError("");
-            }}
-            onCandidate={(candidate) => {
-              if (working || blocked || pending || changed || draft.title || draft.url) return;
-              const fields = publicResearchCandidateFields(candidate);
-              setDraft((d) => (d.title || d.url ? d : { ...d, ...fields }));
-              setConfirmed(false);
-            }}
-          />
-          {changed && (
-            <p role="alert">
-              회사 자료가 바뀌어 저장을 멈췄습니다. 입력을 복사한 뒤 최신 자료에서 다시 확인해
-              주세요.
-            </p>
-          )}
-          <fieldset
-            disabled={working || blocked || !!pending || changed}
-            className="my-4 grid min-w-0 gap-4"
-          >
-            {textField("title", "공개 자료 제목")}
-            {textField("url", "원문 URL (HTTPS)", "url")}
-            {isPublicDiscoveryPage(draft.url) && (
-              <p role="alert">
-                검색 결과 주소 대신 개별 통계표·보고서의 원문 주소를 입력해 주세요.
-              </p>
-            )}
-            <label className={styles.label}>
-              원문 발췌
-              <textarea
-                className={inputClass}
-                rows={7}
-                value={draft.quote}
-                onChange={(e) => field("quote", e.target.value)}
+          {(!pending || dirty) && (
+            <>
+              <PublicResearchLinks
+                disabled={working || blocked || !!pending || changed || !ready}
+                canFill={!draft.title && !draft.url}
+                canFillCell={canFillPublicCellEvidence(draft)}
+                onCommentEvidence={(result, command, selection) => {
+                  if (
+                    flight.current ||
+                    working ||
+                    blocked ||
+                    pending ||
+                    saved ||
+                    changed ||
+                    !ready ||
+                    !mounted.current
+                  )
+                    throw Error("현재 입력에 옮길 수 없습니다.");
+                  const next = applyPublicCommentEvidence(
+                    draft,
+                    result,
+                    command,
+                    selection,
+                    base,
+                    currentCompany.current,
+                  );
+                  setDraft(next);
+                  setError("");
+                }}
+                onCellEvidence={(result, command) => {
+                  if (
+                    flight.current ||
+                    working ||
+                    blocked ||
+                    pending ||
+                    saved ||
+                    changed ||
+                    !ready ||
+                    !mounted.current
+                  )
+                    throw Error("현재 입력에 옮길 수 없습니다.");
+                  const next = applyPublicCellEvidence(
+                    draft,
+                    result,
+                    command,
+                    base,
+                    currentCompany.current,
+                  );
+                  setDraft(next);
+                  setConfirmed(false);
+                  setError("");
+                }}
+                onCandidate={(candidate) => {
+                  if (
+                    !ready ||
+                    working ||
+                    blocked ||
+                    pending ||
+                    changed ||
+                    draft.title ||
+                    draft.url
+                  )
+                    return;
+                  const fields = publicResearchCandidateFields(candidate);
+                  setDraft((d) => (d.title || d.url ? d : { ...d, ...fields }));
+                  setConfirmed(false);
+                }}
               />
-              <span className={styles.helper}>
-                원문을 그대로 붙여 넣어 주세요. 최대 50,000자이며 넘는 내용을 자동으로 자르지
-                않습니다.
-              </span>
-            </label>
-            {textField("readOn", "원문을 읽은 날짜 (담당자 기록)", "date")}
-            <label className={styles.label}>
-              보완할 항목
-              <select
-                aria-label="보완할 항목"
-                className={inputClass}
-                value={draft.sectionKey}
-                onChange={(e) =>
-                  field("sectionKey", e.target.value as PublicEvidenceDraft["sectionKey"])
-                }
+              {changed && (
+                <p role="alert">
+                  회사 자료가 바뀌어 저장을 멈췄습니다. 입력을 복사한 뒤 최신 자료에서 다시 확인해
+                  주세요.
+                </p>
+              )}
+              <fieldset
+                disabled={working || blocked || !!pending || changed || !ready}
+                className="my-4 grid min-w-0 gap-4"
               >
-                {sectionDefinitions.map((s) => (
-                  <option key={s.key} value={s.key}>
-                    {s.title}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <details className={styles.details}>
-              <summary>발행일·기준 기간·관련성 기록</summary>
-              <div className="mt-3 grid gap-4">
-                {textField("publisher", "발행처 (모르면 비워 두기)")}
-                {textField("publishedOn", "발행일 (원문 표기, 모르면 비워 두기)", "date")}
-                {textField("period", "자료의 기준 기간·대상 (모르면 비워 두기)")}
+                {textField("title", "공개 자료 제목")}
+                {textField("url", "원문 URL (HTTPS)", "url")}
+                {isPublicDiscoveryPage(draft.url) && (
+                  <p role="alert">
+                    검색 결과 주소 대신 개별 통계표·보고서의 원문 주소를 입력해 주세요.
+                  </p>
+                )}
                 <label className={styles.label}>
-                  이 항목과 관련된 이유
+                  원문 발췌
                   <textarea
                     className={inputClass}
-                    rows={3}
-                    value={draft.relevance}
-                    onChange={(e) => field("relevance", e.target.value)}
+                    rows={7}
+                    value={draft.quote}
+                    onChange={(e) => field("quote", e.target.value)}
                   />
+                  <span className={styles.helper}>
+                    원문을 그대로 붙여 넣어 주세요. 최대 50,000자이며 넘는 내용을 자동으로 자르지
+                    않습니다.
+                  </span>
                 </label>
+                {textField("readOn", "원문을 읽은 날짜 (담당자 기록)", "date")}
                 <label className={styles.label}>
-                  기존 자료와 다른 점·추가 확인 사항
-                  <textarea
+                  보완할 항목
+                  <select
+                    aria-label="보완할 항목"
                     className={inputClass}
-                    rows={3}
-                    value={draft.conflicts}
-                    onChange={(e) => field("conflicts", e.target.value)}
-                  />
+                    value={draft.sectionKey}
+                    onChange={(e) =>
+                      field("sectionKey", e.target.value as PublicEvidenceDraft["sectionKey"])
+                    }
+                  >
+                    {sectionDefinitions.map((s) => (
+                      <option key={s.key} value={s.key}>
+                        {s.title}
+                      </option>
+                    ))}
+                  </select>
                 </label>
-              </div>
-            </details>
-            <label className="flex items-start gap-2">
-              <input
-                type="checkbox"
-                checked={confirmed}
-                onChange={(e) => setConfirmed(e.target.checked)}
-              />
-              발췌와 출처를 확인했으며 후보 자료로 보관하겠습니다. 회사 사실 확인·AI 전송 동의는
-              별도입니다.
-            </label>
-            <button
-              type="button"
-              className={styles.primary}
-              disabled={!confirmed || !parsed.success}
-              onClick={() => void save()}
-            >
-              공개 근거 후보 보관
-            </button>
-            {!parsed.success && dirty && (
-              <p className={styles.helper}>
-                제목·공개 HTTPS 주소·발췌·읽은 날짜를 확인해 주세요. 관련 메모는 각각
-                3,000자까지입니다.
-              </p>
-            )}
-          </fieldset>
-          {pending && (
-            <button
-              type="button"
-              className={styles.link}
-              disabled={working}
-              onClick={() => void inspect()}
-            >
-              이 자료의 저장 상태 확인
-            </button>
+                <details className={styles.details}>
+                  <summary>발행일·기준 기간·관련성 기록</summary>
+                  <div className="mt-3 grid gap-4">
+                    {textField("publisher", "발행처 (모르면 비워 두기)")}
+                    {textField("publishedOn", "발행일 (원문 표기, 모르면 비워 두기)", "date")}
+                    {textField("period", "자료의 기준 기간·대상 (모르면 비워 두기)")}
+                    <label className={styles.label}>
+                      이 항목과 관련된 이유
+                      <textarea
+                        className={inputClass}
+                        rows={3}
+                        value={draft.relevance}
+                        onChange={(e) => field("relevance", e.target.value)}
+                      />
+                    </label>
+                    <label className={styles.label}>
+                      기존 자료와 다른 점·추가 확인 사항
+                      <textarea
+                        className={inputClass}
+                        rows={3}
+                        value={draft.conflicts}
+                        onChange={(e) => field("conflicts", e.target.value)}
+                      />
+                    </label>
+                  </div>
+                </details>
+                <label className="flex items-start gap-2">
+                  <input
+                    type="checkbox"
+                    checked={confirmed}
+                    onChange={(e) => setConfirmed(e.target.checked)}
+                  />
+                  발췌와 출처를 확인했으며 후보 자료로 보관하겠습니다. 회사 사실 확인·AI 전송 동의는
+                  별도입니다.
+                </label>
+                <button
+                  type="button"
+                  className={styles.primary}
+                  disabled={!confirmed || !parsed.success}
+                  onClick={() => void save()}
+                >
+                  공개 근거 후보 보관
+                </button>
+                {!parsed.success && dirty && (
+                  <p className={styles.helper}>
+                    제목·공개 HTTPS 주소·발췌·읽은 날짜를 확인해 주세요. 관련 메모는 각각
+                    3,000자까지입니다.
+                  </p>
+                )}
+              </fieldset>
+            </>
           )}
           <p className={styles.helper}>
             원문 주소는 자동 조회하지 않습니다. 공개 후보 조회와 원문 확인은 구분합니다. 자료 추가
             시 기존 분석·주제 선택과 원고 확인 상태가 해제됩니다. 원고 본문과 과거 실행은
-            보존합니다. 미저장 입력은 현재 창에서만 유지됩니다.
+            보존합니다. 미저장 입력은 현재 창에서만 유지됩니다. 저장을 누르면 본문 없이 원래 요청의
+            복구 식별 정보만 이 브라우저에 남깁니다.
           </p>
         </>
       )}
