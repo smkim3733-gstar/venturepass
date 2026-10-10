@@ -2,6 +2,10 @@
 
 import { useEffect, useId, useRef, useState } from "react";
 import { Plus, Save, X } from "lucide-react";
+import {
+  applicationLinkSaveAcknowledged,
+  isApplicationLinkMutation,
+} from "./application-link-response";
 import { ApplicationNumberPanel } from "./application-number-panel";
 import {
   applicationSubmissionAcknowledged,
@@ -439,12 +443,14 @@ function ApplicationHistoryEditor({ company, mutate, blockedReason, onDirtyChang
           ? applicationCycleSaveAcknowledged(saved, company, parsed.data)
           : isSubmissionMutation(parsed.data)
             ? await applicationSubmissionAcknowledged(saved, company, parsed.data)
-            : applicationSaveAcknowledged(
-                saved,
-                company.id,
-                company.revision,
-                form.clientRequestId,
-              ))
+            : isApplicationLinkMutation(parsed.data)
+              ? applicationLinkSaveAcknowledged(saved, company, parsed.data)
+              : applicationSaveAcknowledged(
+                  saved,
+                  company.id,
+                  company.revision,
+                  form.clientRequestId,
+                ))
       )
         setForm(null);
       else
