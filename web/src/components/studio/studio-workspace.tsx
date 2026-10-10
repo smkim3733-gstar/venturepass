@@ -44,6 +44,7 @@ import {
 import { summarizeCase } from "@/lib/studio-case-summary";
 import { cn } from "@/lib/utils";
 import { ProfileEditor } from "./profile-editor";
+import { guidedDescriptionAcknowledged } from "./guided-description-save";
 import { SourcesPanel, type SourceExtractionMode } from "./sources-panel";
 import { SourceIntakesPanel } from "./source-intakes-panel";
 import { SourceSuggestionsPanel } from "./source-suggestions-panel";
@@ -430,6 +431,13 @@ export function StudioWorkspace() {
       )
         throw new Error(
           "진행 단계의 저장 기록을 확인하지 못했습니다. 원래 선택과 발생일·근거 메모를 유지했습니다.",
+        );
+      if (
+        mutation.action === "profile" &&
+        !guidedDescriptionAcknowledged(next, company, mutation.profile)
+      )
+        throw new Error(
+          "기업정보의 저장 내용을 확인하지 못했습니다. 원래 입력과 회사 정보를 유지했습니다.",
         );
       accept(next);
       toast.success("저장했습니다.");
