@@ -62,6 +62,7 @@ import { applicationCycleSaveAcknowledged } from "./application-cycle-response";
 import { applicationSubmissionAcknowledged } from "./application-submission-response";
 import { applicationLinkSaveAcknowledged } from "./application-link-response";
 import { agencyRecordSaveAcknowledged } from "./agency-record-response";
+import { agencyTaskSaveAcknowledged } from "./agency-task-response";
 import { PlanEditor } from "./plan-editor";
 import { WorkflowPanel } from "./workflow-panel";
 import { readVentureOverview, type VentureOverview } from "@/lib/venturein-overview-types";
@@ -396,6 +397,13 @@ export function StudioWorkspace() {
       )
         throw new Error(
           "기관 원문 기록의 저장 결과를 확인하지 못했습니다. 원래 입력과 요청을 유지했습니다.",
+        );
+      if (
+        mutation.action === "create-agency-task" &&
+        !agencyTaskSaveAcknowledged(next, company, { ...mutation, revision: company.revision })
+      )
+        throw new Error(
+          "기관 요청 업무의 저장 결과를 확인하지 못했습니다. 원래 요청 버전의 업무와 기한을 확인해 주세요.",
         );
       accept(next);
       toast.success("저장했습니다.");

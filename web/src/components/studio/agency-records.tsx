@@ -19,6 +19,7 @@ import type { SourceDocument, StudioCase } from "@/lib/studio-schema";
 import { agencyTaskContext } from "@/lib/studio-agency-tasks";
 import { Notice, formatDate, selectClass, studioFetch, useDirty, type PanelProps } from "./shared";
 import { agencyRecordSaveAcknowledged } from "./agency-record-response";
+import { agencyTaskSaveAcknowledged } from "./agency-task-response";
 import { TaskOwnersSummary } from "./task-owners";
 import { TaskProcessingSummary } from "./task-processing";
 
@@ -709,7 +710,15 @@ export function AgencyRecords({ company, mutate, blockedReason, onDirtyChange }:
         requestVersionId,
       });
       if (!mounted.current || context.current !== binding) return;
-      if (!saved)
+      if (
+        !saved ||
+        !agencyTaskSaveAcknowledged(saved, company, {
+          action: "create-agency-task",
+          revision: company.revision,
+          requestRecordId,
+          requestVersionId,
+        })
+      )
         setError(
           "업무 저장 결과를 확인하지 못했습니다. 자동 재시도하지 않습니다. 최신 내용을 확인하거나 같은 요청 버전의 업무 추가를 다시 누르면 이미 만든 업무를 확인합니다.",
         );
