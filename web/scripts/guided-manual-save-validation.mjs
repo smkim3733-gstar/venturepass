@@ -16,6 +16,8 @@ const app = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const temporaryRoot = await realpath(path.resolve(app, "../../.venturepass-tools/build-temp"));
 const staging = await realpath(process.argv[2]);
 const serverMode = process.argv[3] ?? "start";
+const scenario = process.argv[4] ?? "section";
+assert.ok(["section", "overview"].includes(scenario));
 
 assert.ok(["start", "dev"].includes(serverMode));
 const relative = path.relative(temporaryRoot, staging);
@@ -34,7 +36,12 @@ for (const file of [
     sha(await readFile(path.join(app, file))),
     sha(await readFile(path.join(staging, file))),
   );
-const output = await mkdtemp(path.join(temporaryRoot, "venturepass-manual-save-ui-"));
+const output = await mkdtemp(
+  path.join(
+    temporaryRoot,
+    scenario === "overview" ? "venturepass-plan-overview-ui-" : "venturepass-manual-save-ui-",
+  ),
+);
 const guard = path.join(output, "network-guard.mjs");
 await writeFile(
   guard,
@@ -107,9 +114,13 @@ const name = company.profile.companyName,
   caseId = company.id;
 const basePlan = company.plans.at(-1);
 const text = "직접 고친 합성 본문입니다. 숫자는 27이며 실제 고객 자료가 아닙니다.";
+const overviewTitle = "직접 정리한 합성 사업계획서 제목";
+const overviewSummary =
+  "사용자가 수정한 합성 핵심 요약입니다.\n항목의 근거와 확인 필요 표시는 그대로 유지합니다.";
 let saved,
   readMode = "initial",
-  caseReads = 0;
+  caseReads = 0,
+  intakeReads = 0;
 const network = [],
   commands = [],
   unexpected = [],
@@ -279,7 +290,8 @@ try {
             return reply({ ...saved, id: "99999999-9999-4999-8999-999999999999" });
           if (readMode === "wrong") {
             const wrong = structuredClone(saved);
-            wrong.plans.at(-1).content.sections[0].content = "다른 수정 본문";
+            if (scenario === "overview") wrong.plans.at(-1).content.title = "다른 제목";
+            else wrong.plans.at(-1).content.sections[0].content = "다른 수정 본문";
             return reply(wrong);
           }
           if (readMode === "exact") {
@@ -287,6 +299,10 @@ try {
             return reply(company);
           }
           return reply(company);
+        }
+        if (scenario === "overview" && u.pathname === root + "/source-intakes") {
+          intakeReads++;
+          return reply({ company, activeItemIds: [] });
         }
         if (u.pathname === root + "/preparation-automation") {
           return reply({ company, active: false });
@@ -297,23 +313,31 @@ try {
       if (req.method() === "PATCH" && u.pathname === root) {
         const command = req.postDataJSON();
         commands.push(structuredClone(command));
-        assert.ok(commands.length <= 2, "Only explicit manual saves");
+        assert.ok(
+          commands.length <= (scenario === "overview" ? 1 : 2),
+          "Only explicit manual saves",
+        );
         assert.equal(command.action, "save-plan");
         const previous = company.plans.at(-1);
         assert.equal(command.planId, previous.id);
         assert.equal(command.revision, company.revision);
-        assert.deepEqual(command.content, {
-          ...previous.content,
-          sections: previous.content.sections.map((section, index) =>
-            index === 0
-              ? {
-                  ...section,
-                  content: text + (commands.length === 2 ? " 추가 수정" : ""),
-                  needsConfirmation: commands.length !== 2,
-                }
-              : section,
-          ),
-        });
+        assert.deepEqual(
+          command.content,
+          scenario === "overview"
+            ? { ...previous.content, title: overviewTitle, summary: overviewSummary }
+            : {
+                ...previous.content,
+                sections: previous.content.sections.map((section, index) =>
+                  index === 0
+                    ? {
+                        ...section,
+                        content: text + (commands.length === 2 ? " 추가 수정" : ""),
+                        needsConfirmation: commands.length !== 2,
+                      }
+                    : section,
+                ),
+              },
+        );
         saved = structuredClone(company);
         saved.revision++;
         saved.plans.push({
@@ -325,7 +349,14 @@ try {
           confirmedAt: null,
           content: command.content,
         });
-        if (commands.length === 1) return reply({ ...company, revision: company.revision + 1 });
+        if (commands.length === 1) {
+          if (scenario === "overview") {
+            const wrong = structuredClone(saved);
+            wrong.plans.at(-1).content.summary = "다른 핵심 요약";
+            return reply(wrong);
+          }
+          return reply({ ...company, revision: company.revision + 1 });
+        }
         company = structuredClone(saved);
         return reply(company);
       }
@@ -354,97 +385,215 @@ try {
 
   await page.goto(origin + "/studio", { waitUntil: "networkidle", timeout: 60000 });
   await page.getByRole("button").filter({ hasText: name }).first().click();
-  await page.getByRole("button", { name: "내용 고치기", exact: true }).click();
-  const input = page.locator("#guided-section");
-  await input.fill(text);
-  await page.getByRole("button", { name: "수정 반영하기", exact: true }).click();
-  // Wait for the request to finish, then prove the editor is still present.
-  await page.getByRole("button", { name: "AI 계획서", exact: false }).waitFor();
-  await page.waitForTimeout(300);
-  assert.equal(
-    await input.count(),
-    1,
-    "A response without the edited new plan must not close the editor",
-  );
-  assert.equal(await input.inputValue(), text);
-  const inspect = page.getByRole("button", { name: "수정본 저장 상태 확인", exact: true });
-  await inspect.waitFor();
-  assert.equal(
-    await page.getByRole("button", { name: "수정 취소", exact: true }).isDisabled(),
-    true,
-  );
-  assert.equal(
-    await page.getByRole("button", { name: "수정 반영하기", exact: true }).isDisabled(),
-    true,
-  );
-  assert.equal(
-    await page.getByRole("button", { name: "상세 도구", exact: true }).isDisabled(),
-    true,
-  );
-  assert.equal(await input.getAttribute("readonly"), "");
-  assert.equal(await page.getByText("저장했습니다.", { exact: true }).count(), 0);
-  assert.equal(commands.length, 1);
-  assert.equal(caseReads, 1, "No automatic GET or PATCH");
-  record(
-    "missing revised manuscript response preserves input and blocks leaving or resending without success notice",
-  );
-  for (const mode of ["foreign", "wrong"]) {
-    readMode = mode;
-    const before = caseReads;
+  await page.getByRole("button", { name: "내용 고치기", exact: true }).waitFor();
+  if (scenario === "overview") {
+    const open = page.getByRole("button", { name: "제목·요약 고치기", exact: true });
+    assert.equal(await open.count(), 1, "Guided title and summary editing must be reachable");
+    await open.click();
+    const titleInput = page.getByRole("textbox", { name: "사업계획서 제목", exact: true });
+    const summaryInput = page.getByRole("textbox", { name: "핵심 요약", exact: true });
+    assert.equal(await titleInput.inputValue(), basePlan.content.title);
+    assert.equal(await summaryInput.inputValue(), basePlan.content.summary);
+    assert.equal(await titleInput.getAttribute("maxlength"), "300");
+    assert.equal(await summaryInput.getAttribute("maxlength"), "6000");
+    assert.equal(
+      await page
+        .getByRole("checkbox", {
+          name: "이 항목의 사실·수치·근거를 직접 확인했습니다.",
+          exact: true,
+        })
+        .count(),
+      0,
+    );
+    await titleInput.fill(overviewTitle);
+    await summaryInput.fill(overviewSummary);
+    const cancel = page.getByRole("button", { name: "수정 취소", exact: true });
+    page.once("dialog", (dialog) => dialog.dismiss());
+    await cancel.click();
+    assert.equal(await titleInput.inputValue(), overviewTitle);
+    assert.equal(await summaryInput.inputValue(), overviewSummary);
+    record(
+      "title and summary are editable with contract limits; dismissing cancellation preserves both inputs",
+    );
+    await page.getByRole("button", { name: "자료 올리기", exact: false }).click();
+    await page.getByRole("button", { name: "AI 계획서", exact: false }).click();
+    assert.equal(await titleInput.inputValue(), overviewTitle);
+    assert.equal(await summaryInput.inputValue(), overviewSummary);
+    assert.equal(commands.length, 0);
+    page.once("dialog", (dialog) => dialog.accept());
+    await cancel.click();
+    await open.click();
+    assert.equal(await titleInput.inputValue(), basePlan.content.title);
+    assert.equal(await summaryInput.inputValue(), basePlan.content.summary);
+    assert.equal(commands.length, 0);
+    record(
+      "step navigation preserves inputs; explicit cancellation discards the local edit without saving",
+    );
+    await titleInput.fill(overviewTitle);
+    await summaryInput.fill(overviewSummary);
+    await page.setViewportSize({ width: 390, height: 844 });
+    await summaryInput.scrollIntoViewIfNeeded();
+    assert.equal(
+      await page.evaluate(() => document.documentElement.scrollWidth > innerWidth),
+      false,
+    );
+    await page.screenshot({
+      path: path.join(output, "plan-overview-edit-mobile.png"),
+      fullPage: true,
+    });
+    await page.getByRole("button", { name: "수정 반영하기", exact: true }).click();
+    const inspect = page.getByRole("button", { name: "수정본 저장 상태 확인", exact: true });
+    await inspect.waitFor();
+    assert.equal(await titleInput.inputValue(), overviewTitle);
+    assert.equal(await summaryInput.inputValue(), overviewSummary);
+    assert.equal(await titleInput.getAttribute("readonly"), "");
+    assert.equal(await summaryInput.getAttribute("readonly"), "");
+    for (const name of ["수정 취소", "수정 반영하기", "상세 도구"]) {
+      assert.equal(await page.getByRole("button", { name, exact: true }).isDisabled(), true);
+    }
+    assert.equal(
+      await page.getByRole("button", { name: "자료 올리기", exact: false }).isDisabled(),
+      true,
+    );
+    assert.equal(commands.length, 1);
+    assert.equal(caseReads, 1);
+    record(
+      "a saved version with another summary keeps the original input pending and prevents leaving or resending",
+    );
+    readMode = "wrong";
     await inspect.click();
     await inspect.click({ trial: true });
-    assert.equal(caseReads, before + 1);
+    assert.equal(await titleInput.inputValue(), overviewTitle);
+    assert.equal(await summaryInput.inputValue(), overviewSummary);
+    assert.equal(commands.length, 1);
+    assert.equal(caseReads, 2);
+    record("explicit recovery rejects another title without resending or losing either input");
+    readMode = "exact";
+    await inspect.click();
+    await open.waitFor();
+    assert.equal(await titleInput.count(), 0);
+    await page.getByRole("heading", { name: overviewTitle, exact: true }).waitFor();
+    await page.getByText(overviewSummary, { exact: true }).waitFor();
+    assert.deepEqual(company.plans.slice(0, -1), original.plans);
+    assert.deepEqual(company.plans.at(-1).content, {
+      ...basePlan.content,
+      title: overviewTitle,
+      summary: overviewSummary,
+    });
+    assert.equal(company.plans.at(-1).confirmedAt, null);
+    assert.equal(company.plans.at(-1).mode, "manual");
+    assert.equal(company.plans.at(-1).version, basePlan.version + 1);
+    assert.equal(
+      await page
+        .getByRole("link", { name: `원고 v${basePlan.version + 1} Word 내려받기`, exact: true })
+        .getAttribute("href"),
+      `/api/studio/cases/${caseId}/export?planId=${company.plans.at(-1).id}&format=docx`,
+    );
+    assert.equal(commands.length, 1);
+    assert.equal(caseReads, 3);
+    await open.click();
+    assert.equal(await titleInput.inputValue(), overviewTitle);
+    assert.equal(await summaryInput.inputValue(), overviewSummary);
+    await cancel.click();
+    record(
+      "exact version confirmation displays and reopens the edited overview, preserving prior plans, all sections and their confirmation flags",
+    );
+  } else {
+    await page.getByRole("button", { name: "내용 고치기", exact: true }).click();
+    const input = page.locator("#guided-section");
+    await input.fill(text);
+    await page.getByRole("button", { name: "수정 반영하기", exact: true }).click();
+    // Wait for the request to finish, then prove the editor is still present.
+    await page.getByRole("button", { name: "AI 계획서", exact: false }).waitFor();
+    await page.waitForTimeout(300);
+    assert.equal(
+      await input.count(),
+      1,
+      "A response without the edited new plan must not close the editor",
+    );
     assert.equal(await input.inputValue(), text);
+    const inspect = page.getByRole("button", { name: "수정본 저장 상태 확인", exact: true });
+    await inspect.waitFor();
+    assert.equal(
+      await page.getByRole("button", { name: "수정 취소", exact: true }).isDisabled(),
+      true,
+    );
     assert.equal(
       await page.getByRole("button", { name: "수정 반영하기", exact: true }).isDisabled(),
       true,
     );
+    assert.equal(
+      await page.getByRole("button", { name: "상세 도구", exact: true }).isDisabled(),
+      true,
+    );
+    assert.equal(await input.getAttribute("readonly"), "");
+    assert.equal(await page.getByText("저장했습니다.", { exact: true }).count(), 0);
     assert.equal(commands.length, 1);
-  }
-  record(
-    "explicit GET rejects another company and a new version with different text, keeping the original edit",
-  );
-  await page.setViewportSize({ width: 390, height: 844 });
-  await inspect.scrollIntoViewIfNeeded();
-  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
-  await page.screenshot({
-    path: path.join(output, "manual-save-recovery-mobile.png"),
-    fullPage: true,
-  });
-  readMode = "exact";
-  await inspect.click();
-  await page.getByRole("button", { name: "내용 고치기", exact: true }).waitFor();
-  assert.equal(await input.count(), 0);
-  assert.equal(commands.length, 1);
-  assert.equal(caseReads, 4);
-  assert.deepEqual(company.plans.slice(0, -1), original.plans);
-  assert.equal(company.plans.at(-1).content.sections[0].content, text);
-  assert.equal(company.plans.at(-1).content.sections[0].needsConfirmation, true);
-  assert.equal(company.plans.at(-1).confirmedAt, null);
-  assert.equal(
+    assert.equal(caseReads, 1, "No automatic GET or PATCH");
+    record(
+      "missing revised manuscript response preserves input and blocks leaving or resending without success notice",
+    );
+    for (const mode of ["foreign", "wrong"]) {
+      readMode = mode;
+      const before = caseReads;
+      await inspect.click();
+      await inspect.click({ trial: true });
+      assert.equal(caseReads, before + 1);
+      assert.equal(await input.inputValue(), text);
+      assert.equal(
+        await page.getByRole("button", { name: "수정 반영하기", exact: true }).isDisabled(),
+        true,
+      );
+      assert.equal(commands.length, 1);
+    }
+    record(
+      "explicit GET rejects another company and a new version with different text, keeping the original edit",
+    );
+    await page.setViewportSize({ width: 390, height: 844 });
+    await inspect.scrollIntoViewIfNeeded();
+    assert.equal(
+      await page.evaluate(() => document.documentElement.scrollWidth > innerWidth),
+      false,
+    );
+    await page.screenshot({
+      path: path.join(output, "manual-save-recovery-mobile.png"),
+      fullPage: true,
+    });
+    readMode = "exact";
+    await inspect.click();
+    await page.getByRole("button", { name: "내용 고치기", exact: true }).waitFor();
+    assert.equal(await input.count(), 0);
+    assert.equal(commands.length, 1);
+    assert.equal(caseReads, 4);
+    assert.deepEqual(company.plans.slice(0, -1), original.plans);
+    assert.equal(company.plans.at(-1).content.sections[0].content, text);
+    assert.equal(company.plans.at(-1).content.sections[0].needsConfirmation, true);
+    assert.equal(company.plans.at(-1).confirmedAt, null);
+    assert.equal(
+      await page
+        .getByRole("link", { name: `원고 v${basePlan.version + 1} Word 내려받기`, exact: true })
+        .getAttribute("href"),
+      `/api/studio/cases/${caseId}/export?planId=${company.plans.at(-1).id}&format=docx`,
+    );
+    record(
+      "exact matching new manual version releases recovery; old plans, unconfirmed status and exact download target remain",
+    );
+    await page.getByRole("button", { name: "내용 고치기", exact: true }).click();
+    await input.fill(text + " 추가 수정");
     await page
-      .getByRole("link", { name: `원고 v${basePlan.version + 1} Word 내려받기`, exact: true })
-      .getAttribute("href"),
-    `/api/studio/cases/${caseId}/export?planId=${company.plans.at(-1).id}&format=docx`,
-  );
-  record(
-    "exact matching new manual version releases recovery; old plans, unconfirmed status and exact download target remain",
-  );
-  await page.getByRole("button", { name: "내용 고치기", exact: true }).click();
-  await input.fill(text + " 추가 수정");
-  await page
-    .getByRole("checkbox", { name: "이 항목의 사실·수치·근거를 직접 확인했습니다.", exact: true })
-    .check();
-  await page.getByRole("button", { name: "수정 반영하기", exact: true }).click();
-  await page.getByRole("button", { name: "내용 고치기", exact: true }).waitFor();
-  assert.equal(commands.length, 2);
-  assert.equal(caseReads, 4);
-  assert.deepEqual(company.plans.slice(0, -2), original.plans);
-  assert.equal(company.plans.at(-1).content.sections[0].needsConfirmation, false);
-  assert.equal(company.plans.at(-1).confirmedAt, null);
-  record(
-    "a separate explicitly saved edit accepts its exact PATCH response; per-section confirmation never confirms the whole plan",
-  );
+      .getByRole("checkbox", { name: "이 항목의 사실·수치·근거를 직접 확인했습니다.", exact: true })
+      .check();
+    await page.getByRole("button", { name: "수정 반영하기", exact: true }).click();
+    await page.getByRole("button", { name: "내용 고치기", exact: true }).waitFor();
+    assert.equal(commands.length, 2);
+    assert.equal(caseReads, 4);
+    assert.deepEqual(company.plans.slice(0, -2), original.plans);
+    assert.equal(company.plans.at(-1).content.sections[0].needsConfirmation, false);
+    assert.equal(company.plans.at(-1).confirmedAt, null);
+    record(
+      "a separate explicitly saved edit accepts its exact PATCH response; per-section confirmation never confirms the whole plan",
+    );
+  }
   assert.deepEqual(errors, []);
   assert.deepEqual(unexpected, []);
   assert.ok(!logs.join("").includes("FORBIDDEN_SERVER_FETCH"));
@@ -458,10 +607,14 @@ try {
         checks,
         syntheticPatches: commands.length,
         syntheticCompanyGets: caseReads,
+        syntheticIntakeGets: intakeReads,
         automaticRetry: 0,
         continuousJourneys: 1,
+        scenario,
         startingState:
-          "actual guided app with synthetic plan; wrong PATCH response, explicit GET recovery and separate explicit save; no actual storage or request receipt attribution",
+          scenario === "overview"
+            ? "guided title/summary edit, cancel/navigation, mismatched response and explicit exact GET; synthetic in-memory storage only"
+            : "actual guided app with synthetic plan; wrong PATCH response, explicit GET recovery and separate explicit save; no actual storage or request receipt attribution",
         errors,
         unexpected,
         actualBusinessApi: 0,

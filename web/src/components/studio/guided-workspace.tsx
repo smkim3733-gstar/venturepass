@@ -133,9 +133,12 @@ export function GuidedWorkspace({
   const [reason, setReason] = useState("");
   const [editingSection, setEditingSection] = useState<string | null>(null);
   const [editingPlanId, setEditingPlanId] = useState<string | null>(null);
+  const [editingOverview, setEditingOverview] = useState(false);
+  const [overviewTitle, setOverviewTitle] = useState("");
+  const [overviewSummary, setOverviewSummary] = useState("");
   const [sectionText, setSectionText] = useState("");
   const [sectionVerified, setSectionVerified] = useState(false);
-  const [sectionSavePending, setSectionSavePending] = useState<ManualPlanSave | null>(null);
+  const [manualSavePending, setManualSavePending] = useState<ManualPlanSave | null>(null);
   const [questionAnswers, setQuestionAnswers] = useState<Record<string, string>>({});
   const [answering, setAnswering] = useState(false);
   const [questionLinks, setQuestionLinks] = useState<Record<string, GuidedQuestionLink>>({});
@@ -196,6 +199,7 @@ export function GuidedWorkspace({
     publicEvidenceDirty ||
     (descriptionTouched && description !== company.profile.technologySummary) ||
     editingSection !== null ||
+    editingOverview ||
     Object.values(questionAnswers).some((value) => value.trim()) ||
     reason.trim().length > 0;
   useDirty(editingDirty, setDirty);
@@ -206,7 +210,7 @@ export function GuidedWorkspace({
         supplementUnsettled ||
         publicEvidenceUnsettled ||
         intakeUnsettled ||
-        sectionSavePending !== null,
+        manualSavePending !== null,
     );
     return () => onUnsettledChange(false);
   }, [
@@ -215,7 +219,7 @@ export function GuidedWorkspace({
     supplementUnsettled,
     publicEvidenceUnsettled,
     intakeUnsettled,
-    sectionSavePending,
+    manualSavePending,
     onUnsettledChange,
   ]);
   useEffect(() => {
@@ -237,7 +241,7 @@ export function GuidedWorkspace({
       active = false;
     };
   }, [company.id, company.revision]);
-  const locked = !!busy || blocked || unsettled || sectionSavePending !== null;
+  const locked = !!busy || blocked || unsettled || manualSavePending !== null;
   const latestPlan = [...company.plans].sort((a, b) => b.version - a.version)[0];
   const lastRun = (company.guidedPreparationRuns ?? []).at(-1);
   const retainedDraft = lastRun?.repair?.initialPlanId === latestPlan?.id && !!latestPlan;
@@ -608,33 +612,43 @@ export function GuidedWorkspace({
       setAnswerSaved(saved);
     }
   }
-  function finishSectionSave(next: StudioCase) {
+  function finishManualSave(next: StudioCase) {
     onCompany(next);
-    setSectionSavePending(null);
+    setManualSavePending(null);
     setEditingSection(null);
+    setEditingOverview(false);
     setEditingPlanId(null);
     setSectionVerified(false);
     setError("");
   }
-  async function saveSection() {
-    if (!latestPlan || !section || editingPlanChanged || locked || inFlight.current) return;
+  async function saveManualEdit() {
+    if (
+      !latestPlan ||
+      (!editingOverview && !section) ||
+      editingPlanChanged ||
+      locked ||
+      inFlight.current
+    )
+      return;
     const pending: ManualPlanSave = {
       company: structuredClone(company),
       mutation: {
         action: "save-plan",
         planId: latestPlan.id,
-        content: {
-          ...latestPlan.content,
-          sections: latestPlan.content.sections.map((item) =>
-            item.key === section.key
-              ? { ...item, content: sectionText, needsConfirmation: !sectionVerified }
-              : item,
-          ),
-        },
+        content: editingOverview
+          ? { ...latestPlan.content, title: overviewTitle, summary: overviewSummary }
+          : {
+              ...latestPlan.content,
+              sections: latestPlan.content.sections.map((item) =>
+                item.key === section?.key
+                  ? { ...item, content: sectionText, needsConfirmation: !sectionVerified }
+                  : item,
+              ),
+            },
       },
     };
     inFlight.current = true;
-    setSectionSavePending(pending);
+    setManualSavePending(pending);
     setError("");
     onBusyChange("수정본을 보관하고 있습니다");
     try {
@@ -645,7 +659,7 @@ export function GuidedWorkspace({
         ...jsonBody({ ...pending.mutation, revision: pending.company.revision }),
       });
       const next = manualPlanSaveSnapshot(raw, pending);
-      if (mounted.current) finishSectionSave(next);
+      if (mounted.current) finishManualSave(next);
     } catch {
       if (mounted.current)
         setError(
@@ -656,9 +670,9 @@ export function GuidedWorkspace({
       if (mounted.current) onBusyChange("");
     }
   }
-  async function inspectSectionSave() {
-    if (!sectionSavePending || inFlight.current || busy) return;
-    const pending = sectionSavePending;
+  async function inspectManualSave() {
+    if (!manualSavePending || inFlight.current || busy) return;
+    const pending = manualSavePending;
     inFlight.current = true;
     setError("");
     onBusyChange("수정본 저장 상태를 확인하고 있습니다");
@@ -666,7 +680,7 @@ export function GuidedWorkspace({
       const raw = await studioFetch<unknown>(`/api/studio/cases/${pending.company.id}`);
       const next = manualPlanSaveSnapshot(raw, pending);
       if (next.revision < company.revision) throw new Error("오래된 저장 상태");
-      if (mounted.current) finishSectionSave(next);
+      if (mounted.current) finishManualSave(next);
     } catch {
       if (mounted.current)
         setError(
@@ -682,7 +696,16 @@ export function GuidedWorkspace({
     const next = await mutateOnce({ action: "confirm-plan", planId: latestPlan.id });
     if (next) setStep("application");
   }
+  function openOverview() {
+    if (!latestPlan || locked || editingDirty) return;
+    setEditingSection(null);
+    setEditingPlanId(latestPlan.id);
+    setOverviewTitle(latestPlan.content.title);
+    setOverviewSummary(latestPlan.content.summary);
+    setEditingOverview(true);
+  }
   function openSection(key: string) {
+    if (locked || editingOverview) return;
     const target = latestPlan?.content.sections.find((item) => item.key === key);
     if (!target) return;
     setEditingSection(key);
@@ -943,42 +966,77 @@ export function GuidedWorkspace({
         </>
       ) : step === "plan" ? (
         <>
-          {editingSection && editingPlan && section ? (
+          {editingPlan && (editingOverview || (editingSection && section)) ? (
             <>
               {title("바꿀 부분만 고쳐 주세요", "수정본은 새로 보관하고 이전 작성본은 유지합니다.")}
               <section className={styles.sheet}>
-                <label className={styles.label} htmlFor="guided-section">
-                  {section.title}
-                </label>
-                <textarea
-                  id="guided-section"
-                  className={styles.textarea}
-                  value={sectionText}
-                  readOnly={locked}
-                  onChange={(event) => {
-                    setSectionText(event.target.value);
-                    setSectionVerified(false);
-                  }}
-                  maxLength={18000}
-                  rows={12}
-                />
-                <details className={styles.details}>
-                  <summary>이 항목의 근거 보기</summary>
-                  <EvidenceList company={company} evidence={section.evidence} />
-                </details>
-                <label className="mt-5 flex items-start gap-3 text-sm leading-7">
-                  <input
-                    type="checkbox"
-                    className="mt-2 size-4 shrink-0"
-                    checked={sectionVerified}
-                    disabled={locked}
-                    onChange={(event) => setSectionVerified(event.target.checked)}
-                  />
-                  이 항목의 사실·수치·근거를 직접 확인했습니다.
-                </label>
-                <p className={styles.helper}>
-                  확인이 끝나지 않았다면 체크하지 않고 수정 내용을 보관할 수 있습니다.
-                </p>
+                {editingOverview ? (
+                  <>
+                    <label className={styles.label} htmlFor="guided-plan-title">
+                      사업계획서 제목
+                    </label>
+                    <input
+                      id="guided-plan-title"
+                      className={styles.textarea}
+                      style={{ minHeight: 48 }}
+                      value={overviewTitle}
+                      readOnly={locked}
+                      onChange={(event) => setOverviewTitle(event.target.value)}
+                      maxLength={300}
+                    />
+                    <label className={`${styles.label} mt-5`} htmlFor="guided-plan-summary">
+                      핵심 요약
+                    </label>
+                    <textarea
+                      id="guided-plan-summary"
+                      className={styles.textarea}
+                      value={overviewSummary}
+                      readOnly={locked}
+                      onChange={(event) => setOverviewSummary(event.target.value)}
+                      maxLength={6000}
+                      rows={10}
+                    />
+                    <p className={styles.helper}>
+                      제목과 요약만 고칩니다. 항목의 본문·근거·확인 필요 표시는 유지하며, 전체
+                      검토가 끝난 것으로 처리하지 않습니다.
+                    </p>
+                  </>
+                ) : section ? (
+                  <>
+                    <label className={styles.label} htmlFor="guided-section">
+                      {section.title}
+                    </label>
+                    <textarea
+                      id="guided-section"
+                      className={styles.textarea}
+                      value={sectionText}
+                      readOnly={locked}
+                      onChange={(event) => {
+                        setSectionText(event.target.value);
+                        setSectionVerified(false);
+                      }}
+                      maxLength={18000}
+                      rows={12}
+                    />
+                    <details className={styles.details}>
+                      <summary>이 항목의 근거 보기</summary>
+                      <EvidenceList company={company} evidence={section.evidence} />
+                    </details>
+                    <label className="mt-5 flex items-start gap-3 text-sm leading-7">
+                      <input
+                        type="checkbox"
+                        className="mt-2 size-4 shrink-0"
+                        checked={sectionVerified}
+                        disabled={locked}
+                        onChange={(event) => setSectionVerified(event.target.checked)}
+                      />
+                      이 항목의 사실·수치·근거를 직접 확인했습니다.
+                    </label>
+                    <p className={styles.helper}>
+                      확인이 끝나지 않았다면 체크하지 않고 수정 내용을 보관할 수 있습니다.
+                    </p>
+                  </>
+                ) : null}
               </section>
               <div className={styles.actions}>
                 <button
@@ -988,11 +1046,16 @@ export function GuidedWorkspace({
                   onClick={() => {
                     if (locked) return;
                     if (
-                      sectionText !== section.content &&
+                      (editingOverview
+                        ? overviewTitle !== editingPlan.content.title ||
+                          overviewSummary !== editingPlan.content.summary
+                        : sectionText !== section?.content) &&
                       !window.confirm("수정 중인 내용을 취소할까요?")
                     )
                       return;
                     setEditingSection(null);
+                    setEditingOverview(false);
+                    setEditingPlanId(null);
                   }}
                 >
                   수정 취소
@@ -1000,13 +1063,13 @@ export function GuidedWorkspace({
                 {
                   <PrimaryAction
                     disabled={locked || editingPlanChanged}
-                    onClick={() => void saveSection()}
+                    onClick={() => void saveManualEdit()}
                   >
                     {"수정 반영하기"}
                   </PrimaryAction>
                 }
               </div>
-              {sectionSavePending && (
+              {manualSavePending && (
                 <div className={styles.notice} role="status">
                   <strong>수정본을 확인할 때까지 입력을 보관합니다</strong>
                   <p>
@@ -1017,7 +1080,7 @@ export function GuidedWorkspace({
                     type="button"
                     className={styles.primary}
                     disabled={!!busy}
-                    onClick={() => void inspectSectionSave()}
+                    onClick={() => void inspectManualSave()}
                   >
                     수정본 저장 상태 확인
                   </button>
@@ -1241,6 +1304,14 @@ export function GuidedWorkspace({
                 </p>
                 <h3 className={styles.topicTitle}>{latestPlan.content.title}</h3>
                 <p className={styles.body}>{latestPlan.content.summary}</p>
+                <button
+                  type="button"
+                  className={styles.link}
+                  disabled={locked || editingDirty}
+                  onClick={openOverview}
+                >
+                  제목·요약 고치기
+                </button>
                 <details className={styles.details}>
                   <summary>전체 사업계획서 읽기</summary>
                   {latestPlan.content.sections.map((item) => (
@@ -1692,6 +1763,7 @@ export function GuidedWorkspace({
           )}
           {!answering &&
             !editingSection &&
+            !editingOverview &&
             !existingRunUnknown &&
             (questions.length > 0 || answerContext) && (
               <div className={styles.support}>
