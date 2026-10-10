@@ -1,7 +1,7 @@
 "use client";
 
 import { useId, useState } from "react";
-import type { StudioCase } from "@/lib/studio-schema";
+import type { BusinessPlan, StudioCase } from "@/lib/studio-schema";
 import { GuidedPlanEvidence } from "./guided-plan-evidence";
 import { formatDate, selectClass } from "./shared";
 import styles from "./guided-workspace.module.css";
@@ -128,27 +128,7 @@ export function GuidedStoredPlan({
           <p className={styles.body}>{section.content}</p>
         </section>
       ))}
-      {(
-        [
-          ["남은 확인 사항", plan.content.actionItems],
-          ["실사 준비 질문", plan.content.interviewQuestions],
-        ] as const
-      ).map(([label, items]) => (
-        <section key={label}>
-          <h4 className={styles.subheading}>{label}</h4>
-          {items.length ? (
-            <ul className="list-disc space-y-2 pl-5">
-              {items.map((item, index) => (
-                <li className="whitespace-pre-wrap" key={index}>
-                  {item}
-                </li>
-              ))}
-            </ul>
-          ) : (
-            <p className={styles.helper}>저장된 항목 없음</p>
-          )}
-        </section>
-      ))}
+      <GuidedPlanChecklists plan={plan} />
       <section>
         <h4 className={styles.subheading}>저장된 검토 의견</h4>
         {plan.review.length ? (
@@ -173,5 +153,38 @@ export function GuidedStoredPlan({
       </section>
       <GuidedPlanEvidence company={company} plan={plan} />
     </article>
+  );
+}
+
+/** Display saved notes verbatim without changing confirmation or active question state. */
+export function GuidedPlanChecklists({ plan }: { plan: BusinessPlan }) {
+  return (
+    <div className="mt-6 min-w-0 space-y-5 [overflow-wrap:anywhere]">
+      <p className={styles.helper}>
+        이 원고에 저장된 확인 사항과 실사 준비 질문입니다. 현재 회사에 적용되는지는 직접 확인해
+        주세요.
+      </p>
+      {(
+        [
+          ["남은 확인 사항", plan.content.actionItems],
+          ["실사 준비 질문", plan.content.interviewQuestions],
+        ] as const
+      ).map(([label, items]) => (
+        <section key={label} aria-label={label}>
+          <h4 className={styles.subheading}>{label}</h4>
+          {items.length ? (
+            <ul className="list-disc space-y-2 pl-5">
+              {items.map((item, index) => (
+                <li className="whitespace-pre-wrap" key={index}>
+                  {item}
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className={styles.helper}>저장된 항목 없음</p>
+          )}
+        </section>
+      ))}
+    </div>
   );
 }

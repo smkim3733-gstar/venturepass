@@ -76,7 +76,7 @@ import {
   type GuidedReviewTarget,
 } from "./guided-plan-review";
 import { PlanComparison } from "./plan-comparison";
-import { GuidedPlanHistory } from "./guided-plan-history";
+import { GuidedPlanChecklists, GuidedPlanHistory } from "./guided-plan-history";
 import { GuidedPlanEvidence } from "./guided-plan-evidence";
 import { GuidedVentureConnection } from "./guided-venture-connection";
 import { GuidedApplicationHistory } from "./guided-application-history";
@@ -1569,6 +1569,7 @@ export function GuidedWorkspace({
                         </button>
                       </article>
                     ))}
+                    <GuidedPlanChecklists plan={latestPlan} />
                   </details>
                 </section>
                 {company.plans.length > 1 && (
