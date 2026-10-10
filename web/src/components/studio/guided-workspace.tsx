@@ -40,7 +40,11 @@ import {
   type GuidedPreparationApproval,
   type GuidedPreparationRequest,
 } from "@/lib/studio-guided-preparation-types";
-import { candidateSelectionAcknowledged, candidateSelectionRequest } from "./candidate-selection";
+import {
+  candidateSelectionRequest,
+  candidateSelectionSaveResponse,
+  type CandidateSelectionSave,
+} from "./candidate-selection";
 import { guidedPreparationResponse, guidedRequestRejected } from "./guided-preparation-ui";
 import { EvidenceList } from "./evidence";
 import { GuidedRepairSummary } from "./guided-repair-summary";
@@ -146,6 +150,7 @@ export function GuidedWorkspace({
   const [checkedInactive, setCheckedInactive] = useState(false);
   const [candidateId, setCandidateId] = useState<string | null>(null);
   const [reason, setReason] = useState("");
+  const [candidatePending, setCandidatePending] = useState<CandidateSelectionSave | null>(null);
   const [editingSection, setEditingSection] = useState<string | null>(null);
   const [editingPlanId, setEditingPlanId] = useState<string | null>(null);
   const [editingOverview, setEditingOverview] = useState(false);
@@ -208,6 +213,7 @@ export function GuidedWorkspace({
   const mounted = useRef(true);
   const pendingRequest = useRef<GuidedPreparationRequest | null>(null);
   const editingDirty =
+    !!candidatePending ||
     !!descriptionPending ||
     !!answerPending ||
     !!confirmationPending ||
@@ -235,7 +241,8 @@ export function GuidedWorkspace({
         manualSaveBlocked ||
         !!confirmationPending ||
         !!answerPending ||
-        !!descriptionPending,
+        !!descriptionPending ||
+        !!candidatePending,
     );
     return () => onUnsettledChange(false);
   }, [
@@ -249,6 +256,7 @@ export function GuidedWorkspace({
     confirmationPending,
     answerPending,
     descriptionPending,
+    candidatePending,
     onUnsettledChange,
   ]);
   useEffect(() => {
@@ -278,7 +286,8 @@ export function GuidedWorkspace({
     manualSaveBlocked ||
     !!confirmationPending ||
     !!answerPending ||
-    !!descriptionPending;
+    !!descriptionPending ||
+    !!candidatePending;
   const latestPlan = [...company.plans].sort((a, b) => b.version - a.version)[0];
   const lastRun = (company.guidedPreparationRuns ?? []).at(-1);
   const retainedDraft = lastRun?.repair?.initialPlanId === latestPlan?.id && !!latestPlan;
@@ -527,15 +536,6 @@ export function GuidedWorkspace({
     }
   }
 
-  async function mutateOnce(mutation: StudioMutation) {
-    if (inFlight.current || locked) return null;
-    inFlight.current = true;
-    try {
-      return await mutate(mutation);
-    } finally {
-      inFlight.current = false;
-    }
-  }
   async function saveDescription() {
     if (!description.trim() || locked || inFlight.current) return;
     const request = structuredClone({
@@ -600,17 +600,43 @@ export function GuidedWorkspace({
       setError("선택할 주제와 이유를 확인해 주세요.");
       return;
     }
-    const next = await mutateOnce(request);
-    if (!mounted.current) return;
-    if (!candidateSelectionAcknowledged(next, company, request) || !next) {
-      setError(
-        "신청 방향의 저장 결과를 확인하지 못했습니다. 상세 도구에서 최신 선택 기록을 확인해 주세요.",
+    const pending = structuredClone({ company, mutation: request });
+    setCandidatePending(pending);
+    await readOrSaveCandidate(pending, true);
+  }
+  async function readOrSaveCandidate(pending: CandidateSelectionSave, save: boolean) {
+    if (inFlight.current || busy) return;
+    inFlight.current = true;
+    onBusyChange(
+      save ? "신청 방향을 보관하고 있습니다" : "신청 방향 저장 상태를 확인하고 있습니다",
+    );
+    setError("");
+    let next: StudioCase | null = null;
+    try {
+      const response = await studioFetch<unknown>(
+        `/api/studio/cases/${pending.company.id}`,
+        save ? { method: "PATCH", ...jsonBody(pending.mutation) } : undefined,
       );
-      return;
+      if (!mounted.current) return;
+      next = candidateSelectionSaveResponse(response, currentCompany.current, pending);
+      if (!next) throw new Error("Unconfirmed candidate selection");
+      onCompany(next);
+      setCandidatePending(null);
+      setReason("");
+    } catch {
+      if (mounted.current)
+        setError(
+          "신청 방향의 저장 결과를 확인하지 못했습니다. 선택과 이유를 유지했습니다. 신청 방향 저장 상태를 확인해 주세요.",
+        );
+    } finally {
+      inFlight.current = false;
+      if (mounted.current) onBusyChange("");
     }
-    setReason("");
+    // Recovery is read-only. The existing writing button is a separate explicit action.
+    if (!save || !next || !mounted.current) return;
     const run = (next.guidedPreparationRuns ?? []).at(-1);
-    if (run?.status === "awaiting_choice")
+    const originalRun = pending.company.guidedPreparationRuns?.at(-1);
+    if (run?.status === "awaiting_choice" && run.id === originalRun?.id)
       await runPreparation(
         {
           action: "continue",
@@ -622,6 +648,7 @@ export function GuidedWorkspace({
       );
     else await preparePreview(next);
   }
+
   function openAnswers() {
     if (locked || inFlight.current) return;
     setAnswerSaved(null);
@@ -1811,6 +1838,21 @@ export function GuidedWorkspace({
                     </ul>
                   </details>
                 </section>
+                {candidatePending && (
+                  <section className={styles.notice} aria-label="신청 방향 저장 확인">
+                    <p>
+                      선택과 이유를 유지했습니다. 저장 상태를 확인한 뒤 작성 버튼을 눌러 이어가세요.
+                    </p>
+                    <button
+                      type="button"
+                      className={styles.primary}
+                      disabled={!!busy}
+                      onClick={() => void readOrSaveCandidate(candidatePending, false)}
+                    >
+                      신청 방향 저장 상태 확인
+                    </button>
+                  </section>
+                )}
                 {!selection && (
                   <div className="mt-5">
                     <label className={styles.label} htmlFor="guided-choice-reason">
@@ -1818,6 +1860,7 @@ export function GuidedWorkspace({
                     </label>
                     <textarea
                       id="guided-choice-reason"
+                      readOnly={locked}
                       className={styles.textarea}
                       maxLength={2000}
                       value={reason}

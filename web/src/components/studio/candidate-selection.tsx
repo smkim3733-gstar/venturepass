@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import type { StudioCase } from "@/lib/studio-schema";
+import { caseSchema, type StudioCase } from "@/lib/studio-schema";
 import {
   candidateSelectionLimits,
   candidateSelectionMutationSchema,
@@ -68,6 +68,29 @@ type EditorProps = Pick<PanelProps, "company" | "mutate"> & {
   candidateId: string;
   onClose: () => void;
 };
+
+export type CandidateSelectionSave = {
+  company: StudioCase;
+  mutation: NonNullable<ReturnType<typeof candidateSelectionRequest>>;
+};
+
+// Validate an unknown PATCH/GET result before the guided workspace accepts it.
+export function candidateSelectionSaveResponse(
+  response: unknown,
+  current: Pick<StudioCase, "id" | "revision">,
+  pending: CandidateSelectionSave,
+): StudioCase | null {
+  const parsed = caseSchema.safeParse(response);
+  if (
+    !parsed.success ||
+    current.id !== pending.company.id ||
+    parsed.data.revision < current.revision ||
+    currentCandidateSelection(parsed.data)?.clientRequestId !== pending.mutation.clientRequestId ||
+    !candidateSelectionAcknowledged(parsed.data, pending.company, pending.mutation)
+  )
+    return null;
+  return parsed.data;
+}
 
 export function CandidateSelectionEditor(props: EditorProps) {
   return (

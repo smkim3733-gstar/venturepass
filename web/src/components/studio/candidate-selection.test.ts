@@ -14,6 +14,7 @@ import {
   CandidateSelectionHistory,
   candidateSelectionAcknowledged,
   candidateSelectionRequest,
+  candidateSelectionSaveResponse,
 } from "./candidate-selection";
 import { AnalysisPanel } from "./analysis-panel";
 import { PlanEditor } from "./plan-editor";
@@ -363,4 +364,47 @@ describe("new manuscript generation requires current choice reason", () => {
     expect(output.html).toContain("보존된 본문");
     expect(output.generate).not.toHaveBeenCalled();
   });
+});
+
+describe("guided candidate save response boundary", () => {
+  const pending = () => ({
+    company: company(),
+    mutation: candidateSelectionRequest(company(), candidate.id, selection().reason, nonce)!,
+  });
+  it("accepts only the original exact receipt without changing the request", () => {
+    const request = pending();
+    const before = structuredClone(request);
+    expect(candidateSelectionSaveResponse(saved(), company(), request)).toEqual(saved());
+    expect(request).toEqual(before);
+  });
+  it.each([null, {}, { id: companyId, revision: 3 }])(
+    "rejects malformed unknown responses: %j",
+    (response) => {
+      expect(candidateSelectionSaveResponse(response, company(), pending())).toBeNull();
+    },
+  );
+  it("rejects a response after the current company changed", () => {
+    expect(candidateSelectionSaveResponse(saved(), company({ id: nonce }), pending())).toBeNull();
+  });
+  it("does not regress the current revision", () => {
+    expect(candidateSelectionSaveResponse(saved(), company({ revision: 4 }), pending())).toBeNull();
+  });
+  it("requires the original request ID even when candidate and reason match", () => {
+    const response = saved({ candidateSelections: [selection({ clientRequestId: recordId })] });
+    expect(candidateSelectionSaveResponse(response, company(), pending())).toBeNull();
+  });
+});
+
+it("rejects a different latest request reusing the original record ID", () => {
+  const pending = {
+    company: company(),
+    mutation: candidateSelectionRequest(company(), candidate.id, selection().reason, nonce)!,
+  };
+  const response = saved({
+    candidateSelections: [
+      selection(),
+      selection({ clientRequestId: recordId, reason: "다른 요청의 이유" }),
+    ],
+  });
+  expect(candidateSelectionSaveResponse(response, company(), pending)).toBeNull();
 });
