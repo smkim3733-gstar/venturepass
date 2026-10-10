@@ -17,7 +17,7 @@ const temporaryRoot = await realpath(path.resolve(app, "../../.venturepass-tools
 const staging = await realpath(process.argv[2]);
 const serverMode = process.argv[3] ?? "start";
 const scenario = process.argv[4] ?? "section";
-assert.ok(["section", "overview", "reentry"].includes(scenario));
+assert.ok(["section", "overview", "reentry", "resume"].includes(scenario));
 
 assert.ok(["start", "dev"].includes(serverMode));
 const relative = path.relative(temporaryRoot, staging);
@@ -41,11 +41,13 @@ for (const file of [
 const output = await mkdtemp(
   path.join(
     temporaryRoot,
-    scenario === "reentry"
-      ? "venturepass-manual-reentry-ui-"
-      : scenario === "overview"
-        ? "venturepass-plan-overview-ui-"
-        : "venturepass-manual-save-ui-",
+    scenario === "resume"
+      ? "venturepass-manual-resume-ui-"
+      : scenario === "reentry"
+        ? "venturepass-manual-reentry-ui-"
+        : scenario === "overview"
+          ? "venturepass-plan-overview-ui-"
+          : "venturepass-manual-save-ui-",
   ),
 );
 const guard = path.join(output, "network-guard.mjs");
@@ -123,6 +125,7 @@ const text = "직접 고친 합성 본문입니다. 숫자는 27이며 실제 �
 const overviewTitle = "직접 정리한 합성 사업계획서 제목";
 const overviewSummary =
   "사용자가 수정한 합성 핵심 요약입니다.\n항목의 근거와 확인 필요 표시는 그대로 유지합니다.";
+let resumeReceiptText, otherTab;
 let saved,
   readMode = "initial",
   caseReads = 0,
@@ -292,6 +295,15 @@ try {
           });
         if (u.pathname === root) {
           caseReads++;
+          if (scenario === "resume" && readMode === "stale") return reply(original);
+          if (scenario === "resume" && readMode === "race") {
+            await otherTab.evaluate(({ key, value }) => localStorage.setItem(key, value), {
+              key: "venturepass:manual-plan:v1:" + caseId,
+              value: resumeReceiptText,
+            });
+            readMode = "initial";
+            return reply(company);
+          }
           if (readMode === "foreign")
             return reply({ ...saved, id: "99999999-9999-4999-8999-999999999999" });
           if (readMode === "wrong") {
@@ -319,6 +331,49 @@ try {
       if (req.method() === "PATCH" && u.pathname === root) {
         const command = req.postDataJSON();
         commands.push(structuredClone(command));
+        if (scenario === "resume") {
+          const count = commands.length;
+          assert.ok(count <= 4, "Four different explicit edits only");
+          const previous = company.plans.at(-1);
+          assert.equal(command.action, "save-plan");
+          assert.equal(command.planId, previous.id);
+          assert.equal(command.revision, company.revision);
+          const expected =
+            count === 1 || count === 4
+              ? {
+                  ...previous.content,
+                  title: overviewTitle + (count === 4 ? " 이어쓰기" : ""),
+                  summary: overviewSummary + (count === 4 ? " 이어쓰기" : ""),
+                }
+              : {
+                  ...previous.content,
+                  sections: previous.content.sections.map((section, index) =>
+                    index === 0
+                      ? {
+                          ...section,
+                          content: text + (count === 3 ? " 다른 창 추가" : ""),
+                          needsConfirmation: true,
+                        }
+                      : section,
+                  ),
+                };
+          assert.deepEqual(command.content, expected);
+          saved = structuredClone(company);
+          saved.revision++;
+          saved.plans.push({
+            ...structuredClone(previous),
+            id: crypto.randomUUID(),
+            version: previous.version + 1,
+            generatedAt: new Date().toISOString(),
+            mode: "manual",
+            confirmedAt: null,
+            content: command.content,
+          });
+          if (count === 1 || count === 3)
+            return reply({ ...company, revision: company.revision + 1 });
+          company = structuredClone(saved);
+          return reply(company);
+        }
         assert.ok(
           commands.length <= (scenario !== "section" ? 1 : 2),
           "Only explicit manual saves",
@@ -392,7 +447,168 @@ try {
   await page.goto(origin + "/studio", { waitUntil: "networkidle", timeout: 60000 });
   await page.getByRole("button").filter({ hasText: name }).first().click();
   await page.getByRole("button", { name: "내용 고치기", exact: true }).waitFor();
-  if (scenario === "reentry") {
+  if (scenario === "resume") {
+    const key = "venturepass:manual-plan:v1:" + caseId;
+    const btn = (tab, name) => tab.getByRole("button", { name, exact: true });
+    const input = page.locator("#guided-section");
+    const verified = () =>
+      page.getByRole("checkbox", {
+        name: "이 항목의 사실·수치·근거를 직접 확인했습니다.",
+        exact: true,
+      });
+    const resume = () => btn(page, "최신 원고에서 입력 이어쓰기");
+    const inspect = () => btn(page, "수정본 저장 상태 확인");
+    async function openOther() {
+      otherTab = await context.newPage();
+      otherTab.on("pageerror", (e) => errors.push(e.message));
+      await otherTab.goto(origin + "/studio", { waitUntil: "networkidle" });
+      await otherTab.getByRole("button").filter({ hasText: name }).first().click();
+      await btn(otherTab, "내용 고치기").waitFor();
+    }
+    await btn(page, "내용 고치기").click();
+    await input.fill(text);
+    await verified().check();
+    await openOther();
+    await btn(otherTab, "제목·요약 고치기").click();
+    await otherTab.getByLabel("사업계획서 제목", { exact: true }).fill(overviewTitle);
+    await otherTab.getByLabel("핵심 요약", { exact: true }).fill(overviewSummary);
+    await btn(otherTab, "수정 반영하기").click();
+    await btn(otherTab, "수정본 저장 상태 확인").click({ trial: true });
+    resumeReceiptText = await otherTab.evaluate((key) => localStorage.getItem(key), key);
+    assert.ok(resumeReceiptText);
+    await inspect().click({ trial: true });
+    readMode = "exact";
+    await inspect().click();
+    await resume().waitFor();
+    await resume().click({ trial: true });
+    assert.equal(await input.inputValue(), text);
+    assert.equal(await btn(page, "수정 반영하기").isDisabled(), true);
+    assert.equal(commands.length, 1);
+    record(
+      "another tab's saved title/summary is confirmed while this tab's section input stays retained and unsaved",
+    );
+
+    readMode = "stale";
+    const beforeStale = caseReads;
+    await resume().click();
+    await page.getByText("최신 원고를 확인하지 못했습니다.", { exact: false }).waitFor();
+    await resume().click({ trial: true });
+    assert.equal(caseReads, beforeStale + 1);
+    assert.equal(await input.inputValue(), text);
+    assert.equal(await btn(page, "수정 반영하기").isDisabled(), true);
+    await page.evaluate((key) => {
+      const get = Storage.prototype.getItem;
+      window.restoreResumeRead = () => {
+        Storage.prototype.getItem = get;
+      };
+      Storage.prototype.getItem = function (k) {
+        if (k === key) throw Error("synthetic read failure");
+        return get.call(this, k);
+      };
+    }, key);
+    const beforeReadFailure = caseReads;
+    await resume().click();
+    await btn(page, "수정본 복구 기록 다시 확인").waitFor();
+    assert.equal(caseReads, beforeReadFailure);
+    assert.equal(commands.length, 1);
+    await page.evaluate(() => window.restoreResumeRead());
+    await btn(page, "수정본 복구 기록 다시 확인").click();
+    await resume().click({ trial: true });
+    record(
+      "stale GET and browser read failure preserve the original edit base and never send a save",
+    );
+
+    readMode = "race";
+    await resume().click();
+    await inspect().waitFor();
+    await inspect().click({ trial: true });
+    assert.equal(await page.evaluate((key) => localStorage.getItem(key), key), resumeReceiptText);
+    assert.equal(await input.inputValue(), text);
+    assert.equal(await btn(page, "수정 반영하기").isDisabled(), true);
+    readMode = "exact";
+    await inspect().click();
+    await resume().click({ trial: true });
+    assert.equal(commands.length, 1);
+    record(
+      "a synthetic identity arriving during GET blocks rebasing and remains intact until its separate exact confirmation",
+    );
+
+    readMode = "initial";
+    await resume().click();
+    await btn(page, "수정 반영하기").click({ trial: true });
+    assert.equal(await resume().count(), 0);
+    assert.equal(await input.inputValue(), text);
+    assert.equal(await verified().isChecked(), false);
+    assert.equal(commands.length, 1);
+    assert.equal(await page.evaluate((key) => localStorage.getItem(key), key), null);
+    await page.setViewportSize({ width: 390, height: 844 });
+    await input.scrollIntoViewIfNeeded();
+    assert.equal(
+      await page.evaluate(() => document.documentElement.scrollWidth > innerWidth),
+      false,
+    );
+    await page.screenshot({ path: path.join(output, "manual-resume-mobile.png"), fullPage: true });
+    await btn(page, "수정 반영하기").click();
+    await btn(page, "내용 고치기").waitFor();
+    assert.equal(commands.length, 2);
+    assert.equal(company.plans.at(-1).content.title, overviewTitle);
+    assert.equal(company.plans.at(-1).content.summary, overviewSummary);
+    assert.equal(company.plans.at(-1).content.sections[0].content, text);
+    assert.equal(company.plans.at(-1).content.sections[0].needsConfirmation, true);
+    assert.equal(company.plans.at(-1).confirmedAt, null);
+    record(
+      "explicit section continuation clears fact confirmation, preserves the latest overview and saves only after the user's separate click",
+    );
+
+    await otherTab.close();
+    await page.setViewportSize({ width: 1280, height: 1000 });
+    await btn(page, "제목·요약 고치기").click();
+    await page.getByLabel("사업계획서 제목", { exact: true }).fill(overviewTitle + " 이어쓰기");
+    await page.getByLabel("핵심 요약", { exact: true }).fill(overviewSummary + " 이어쓰기");
+    await openOther();
+    await btn(otherTab, "내용 고치기").click();
+    await otherTab.locator("#guided-section").fill(text + " 다른 창 추가");
+    await btn(otherTab, "수정 반영하기").click();
+    await btn(otherTab, "수정본 저장 상태 확인").click({ trial: true });
+    readMode = "exact";
+    await inspect().click();
+    await resume().click({ trial: true });
+    const beforeOverviewResume = caseReads;
+    readMode = "initial";
+    await resume().click();
+    await btn(page, "수정 반영하기").click({ trial: true });
+    assert.equal(caseReads, beforeOverviewResume + 1);
+    assert.equal(commands.length, 3);
+    assert.equal(
+      await page.getByLabel("사업계획서 제목", { exact: true }).inputValue(),
+      overviewTitle + " 이어쓰기",
+    );
+    assert.equal(
+      await page.getByLabel("핵심 요약", { exact: true }).inputValue(),
+      overviewSummary + " 이어쓰기",
+    );
+    const before = structuredClone(company.plans);
+    await btn(page, "수정 반영하기").click();
+    await btn(page, "내용 고치기").waitFor();
+    assert.equal(commands.length, 4);
+    assert.deepEqual(company.plans.slice(0, -1), before);
+    assert.deepEqual(company.plans.at(-1).content.sections, before.at(-1).content.sections);
+    assert.equal(company.plans.at(-1).confirmedAt, null);
+    assert.equal(
+      await page
+        .getByRole("link", {
+          name: "원고 v" + company.plans.at(-1).version + " Word 내려받기",
+          exact: true,
+        })
+        .getAttribute("href"),
+      "/api/studio/cases/" + caseId + "/export?planId=" + company.plans.at(-1).id + "&format=docx",
+    );
+    await otherTab.close();
+    assert.deepEqual(company.plans.slice(0, original.plans.length), original.plans);
+    record(
+      "overview continuation preserves both retained fields and the other tab's latest sections, previous versions and exact Word target",
+    );
+  } else if (scenario === "reentry") {
     const key = `venturepass:manual-plan:v1:${caseId}`;
     await page.getByRole("button", { name: "제목·요약 고치기", exact: true }).click();
     await page.getByRole("textbox", { name: "사업계획서 제목", exact: true }).fill(overviewTitle);
@@ -828,11 +1044,13 @@ try {
         continuousJourneys: 1,
         scenario,
         startingState:
-          scenario === "reentry"
-            ? "actual reload and tab re-entry, storage failure, mismatches and exact GET; identity-only journal, in-memory synthetic server"
-            : scenario !== "section"
-              ? "guided title/summary edit, cancel/navigation, mismatched response and explicit exact GET; synthetic in-memory storage only"
-              : "actual guided app with synthetic plan; wrong PATCH response, explicit GET recovery and separate explicit save; no actual storage or request receipt attribution",
+          scenario === "resume"
+            ? "two actual tabs, retained section/overview edits, explicit latest GET and separate manual saves; in-memory synthetic responses only"
+            : scenario === "reentry"
+              ? "actual reload and tab re-entry, storage failure, mismatches and exact GET; identity-only journal, in-memory synthetic server"
+              : scenario !== "section"
+                ? "guided title/summary edit, cancel/navigation, mismatched response and explicit exact GET; synthetic in-memory storage only"
+                : "actual guided app with synthetic plan; wrong PATCH response, explicit GET recovery and separate explicit save; no actual storage or request receipt attribution",
         errors,
         unexpected,
         actualBusinessApi: 0,

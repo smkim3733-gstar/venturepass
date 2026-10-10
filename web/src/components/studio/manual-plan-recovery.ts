@@ -39,6 +39,11 @@ export class ManualPlanRecoveryError extends Error {
     super(messages[reason]);
   }
 }
+export function manualPlanResumeMessage(error: unknown) {
+  return error instanceof ManualPlanRecoveryError && error.reason !== "unconfirmed"
+    ? messages[error.reason]
+    : "최신 원고를 확인하지 못했습니다. 입력과 편집 기준은 그대로 유지했습니다. 잠시 후 이어쓰기를 다시 선택해 주세요.";
+}
 export function manualPlanRecoveryMessage(error: unknown) {
   return error instanceof ManualPlanRecoveryError ? messages[error.reason] : messages.unconfirmed;
 }
@@ -171,6 +176,50 @@ export class ManualPlanJournal {
         current,
         original,
       );
+    });
+  }
+  /** Explicitly refresh an edit base; never create, remove or replay a save receipt. */
+  resume(raw: StudioCase, planId: string, sectionKey: string | null, current: Current) {
+    const base = caseSchema.parse(structuredClone(raw));
+    return this.lock(this.key, async () => {
+      const unchanged = () => {
+        const now = current();
+        return now.id === this.caseId && now.revision === base.revision;
+      };
+      if (base.id !== this.caseId || !unchanged() || this.pending()) fail();
+      const next = caseSchema.parse(await this.transport());
+      if (next.id !== base.id || next.revision < base.revision) fail();
+      // A new version can supply new content/evidence, but must retain every known plan.
+      for (const original of base.plans) {
+        const matches = next.plans.filter((p) => p.id === original.id);
+        if (matches.length !== 1 || !equal(matches[0], original)) fail();
+      }
+      if (
+        new Set(next.plans.map((p) => p.id)).size !== next.plans.length ||
+        new Set(next.plans.map((p) => p.version)).size !== next.plans.length
+      )
+        fail();
+      const originals = base.plans.filter((p) => p.id === planId);
+      const latest = [...next.plans].sort((a, b) => b.version - a.version)[0];
+      if (
+        originals.length !== 1 ||
+        !latest ||
+        latest.version <= originals[0].version ||
+        latest.candidateId !== originals[0].candidateId
+      )
+        fail();
+      if (sectionKey !== null) {
+        const oldSections = originals[0].content.sections.filter((s) => s.key === sectionKey);
+        const newSections = latest.content.sections.filter((s) => s.key === sectionKey);
+        if (
+          oldSections.length !== 1 ||
+          newSections.length !== 1 ||
+          oldSections[0].title !== newSections[0].title
+        )
+          fail();
+      }
+      if (!unchanged() || this.pending()) fail();
+      return next;
     });
   }
   recover(raw: ManualPlanReceipt, current: Current) {

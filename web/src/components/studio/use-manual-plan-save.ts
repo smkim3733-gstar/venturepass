@@ -9,6 +9,7 @@ import {
   manualPlanBrowserStorage,
   manualPlanRecoveryKey,
   manualPlanRecoveryMessage,
+  manualPlanResumeMessage,
   type ManualPlanReceipt,
 } from "./manual-plan-recovery";
 
@@ -139,7 +140,37 @@ export function useManualPlanSave(
       }
     }
   }
+  async function resume(
+    planId: string,
+    sectionKey: string | null,
+    apply: (next: StudioCase) => void,
+  ) {
+    if (flight.current || !ready || pending) return;
+    flight.current = true;
+    setWorking(true);
+    setError("");
+    callbacks.current.onBusyChange("이어 쓸 최신 원고를 확인하고 있습니다");
+    try {
+      const next = await journal(company.id).resume(
+        current.current,
+        planId,
+        sectionKey,
+        () => current.current,
+      );
+      if (mounted.current) apply(next);
+    } catch (error) {
+      if (mounted.current) setError(manualPlanResumeMessage(error));
+    } finally {
+      flight.current = false;
+      if (mounted.current) {
+        setWorking(false);
+        callbacks.current.onBusyChange("");
+      }
+      // The existing local-read effect picks up any newly arrived identity. No GET retry.
+    }
+  }
   return {
+    resume,
     pending,
     ready,
     working,

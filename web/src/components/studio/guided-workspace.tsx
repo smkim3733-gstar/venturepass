@@ -629,6 +629,17 @@ export function GuidedWorkspace({
     setSectionVerified(false);
     setError("");
   }
+  async function resumeManualEdit() {
+    if (!editingPlanId || !editingPlanChanged || locked || inFlight.current) return;
+    await manualSave.resume(editingPlanId, editingOverview ? null : editingSection, (next) => {
+      const latest = [...next.plans].sort((a, b) => b.version - a.version)[0];
+      onCompany(next);
+      setEditingPlanId(latest.id);
+      setSectionVerified(false);
+      setError("");
+      // Retain only the currently edited fields. saveManualEdit merges them into this latest plan.
+    });
+  }
   async function saveManualEdit() {
     if (
       !latestPlan ||
@@ -1085,10 +1096,21 @@ export function GuidedWorkspace({
                   }
                 </div>
                 {editingPlanChanged && (
-                  <p role="alert" className={styles.error}>
-                    새 작성본이 생겼습니다. 입력 중인 내용은 이 화면에 보존했고 새 원고에 덮어쓰지
-                    않았습니다. 필요한 내용을 복사한 뒤 수정 취소를 눌러 최신 원고를 확인해 주세요.
-                  </p>
+                  <section className={styles.sheet}>
+                    <p role="alert" className={styles.helper}>
+                      새 작성본이 생겼습니다. 입력은 그대로 보존했습니다. 이어쓰기를 선택하면 최신
+                      원고를 확인한 뒤 지금 고치는 부분만 옮깁니다. 자동으로 저장하지 않습니다.
+                      항목의 사실·수치·근거는 다시 확인해 주세요.
+                    </p>
+                    <button
+                      type="button"
+                      className={styles.link}
+                      disabled={locked}
+                      onClick={() => void resumeManualEdit()}
+                    >
+                      최신 원고에서 입력 이어쓰기
+                    </button>
+                  </section>
                 )}
               </>
             ) : answering && shownQuestions.length ? (

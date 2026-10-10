@@ -352,3 +352,166 @@ describe("수정본의 최소 식별 복구 기록", () => {
     expect(manualPlanRecoveryMessage(new ManualPlanRecoveryError("storage"))).toContain("브라우저");
   });
 });
+
+describe("보존 입력의 최신 원고 이어쓰기", () => {
+  function resumable() {
+    const f = setup();
+    const base = structuredClone(f.next);
+    const response = structuredClone(base);
+    const transport = vi.fn<Transport>(async () => response);
+    return { ...f, base, response, transport, journal: f.create(transport), current: () => base };
+  }
+  it.each([null, "problem"])(
+    "%s 편집은 최신 GET만 반환하고 브라우저 기록과 전송 명령을 만들지 않는다",
+    async (key) => {
+      const f = resumable();
+      const before = structuredClone(f.base);
+      expect(await f.journal.resume(f.base, planId, key, f.current)).toEqual(f.response);
+      expect(f.transport).toHaveBeenCalledExactlyOnceWith();
+      expect(f.base).toEqual(before);
+      expect(f.storage.setItem).not.toHaveBeenCalled();
+      expect(f.storage.removeItem).not.toHaveBeenCalled();
+    },
+  );
+  it("조회에서 더 최신 버전의 본문·근거·확인 상태를 보존해 반환한다", async () => {
+    const f = resumable();
+    f.response.revision++;
+    const plan = structuredClone(f.response.plans.at(-1)!);
+    plan.id = "44444444-4444-4444-8444-444444444444";
+    plan.version++;
+    plan.content.summary = "최신 요약";
+    plan.content.sections[0].content = "다른 창에서 고친 최신 본문";
+    plan.content.sections[0].needsConfirmation = false;
+    f.response.plans.push(plan);
+    expect(await f.journal.resume(f.base, planId, "problem", f.current)).toEqual(f.response);
+  });
+  it.each([
+    [
+      "다른 회사",
+      (c: StudioCase) => {
+        c.id = savedId;
+      },
+    ],
+    [
+      "오래된 revision",
+      (c: StudioCase) => {
+        c.revision--;
+      },
+    ],
+    [
+      "기존 원고 누락",
+      (c: StudioCase) => {
+        c.plans.shift();
+      },
+    ],
+    [
+      "기존 원고 변경",
+      (c: StudioCase) => {
+        c.plans[0].content.title = "changed";
+      },
+    ],
+    [
+      "중복 버전",
+      (c: StudioCase) => {
+        c.plans.push({ ...c.plans[1], id: "44444444-4444-4444-8444-444444444444" });
+      },
+    ],
+    [
+      "중복 ID",
+      (c: StudioCase) => {
+        c.plans.push({ ...c.plans[1], version: 5 });
+      },
+    ],
+  ] as const)("%s 조회를 거절한다", async (_label, change) => {
+    const f = resumable();
+    change(f.response);
+    await expect(f.journal.resume(f.base, planId, null, f.current)).rejects.toThrow();
+    expect(f.storage.setItem).not.toHaveBeenCalled();
+    expect(f.storage.removeItem).not.toHaveBeenCalled();
+  });
+  it.each(["missing", "duplicate", "title", "candidate"] as const)(
+    "새 원고의 %s 항목/주제 불일치를 거절한다",
+    async (mode) => {
+      const f = resumable();
+      const plan = structuredClone(f.response.plans[1]);
+      plan.id = "44444444-4444-4444-8444-444444444444";
+      plan.version++;
+      if (mode === "missing") plan.content.sections[0].key = "different";
+      if (mode === "duplicate")
+        plan.content.sections.push(structuredClone(plan.content.sections[0]));
+      if (mode === "title") plan.content.sections[0].title = "다른 항목";
+      if (mode === "candidate") plan.candidateId = "other";
+      f.response.plans.push(plan);
+      f.response.revision++;
+      await expect(f.journal.resume(f.base, planId, "problem", f.current)).rejects.toThrow();
+    },
+  );
+  it("이전 원고 ID가 없거나 새 버전이 없으면 기준을 바꾸지 않는다", async () => {
+    const f = resumable();
+    await expect(
+      f.journal.resume(f.base, "44444444-4444-4444-8444-444444444444", null, f.current),
+    ).rejects.toThrow();
+    await expect(f.journal.resume(f.base, savedId, null, f.current)).rejects.toThrow();
+  });
+  it("미확인 기록이 있으면 조회 전 거절하고 원래 기록을 보존한다", async () => {
+    const u = await unknown();
+    const read = vi.fn<Transport>(async () => u.next);
+    await expect(
+      u.create(read).resume(u.pending.company, planId, null, u.current),
+    ).rejects.toThrow();
+    expect(read).not.toHaveBeenCalled();
+    expect(await u.create().read()).toEqual(u.receipt);
+  });
+  it("조회 도중 새 기록이 생기면 정상 응답도 거절하고 새 기록을 지우지 않는다", async () => {
+    const f = resumable();
+    const u = await unknown();
+    f.transport.mockImplementation(async () => {
+      f.values.set(manualPlanRecoveryKey(id), JSON.stringify(u.receipt));
+      return f.response;
+    });
+    await expect(f.journal.resume(f.base, planId, null, f.current)).rejects.toThrow();
+    expect(await f.journal.read()).toEqual(u.receipt);
+    expect(f.storage.removeItem).not.toHaveBeenCalled();
+  });
+  it("브라우저 읽기 실패는 GET도 전송하지 않는다", async () => {
+    const f = resumable();
+    f.storage.getItem.mockImplementation(() => {
+      throw Error("denied");
+    });
+    await expect(f.journal.resume(f.base, planId, null, f.current)).rejects.toMatchObject({
+      reason: "storage",
+    });
+    expect(f.transport).not.toHaveBeenCalled();
+  });
+  it("현재 회사/revision 변경은 조회 전후 거절한다", async () => {
+    const f = resumable();
+    let current = { id: savedId, revision: f.base.revision };
+    await expect(f.journal.resume(f.base, planId, null, () => current)).rejects.toThrow();
+    expect(f.transport).not.toHaveBeenCalled();
+    current = { id, revision: f.base.revision };
+    f.transport.mockImplementation(async () => {
+      current.revision++;
+      return f.response;
+    });
+    await expect(f.journal.resume(f.base, planId, null, () => current)).rejects.toThrow();
+  });
+  it("잠금 실패는 조회하지 않으며 HTTP 실패를 자동 재시도하지 않는다", async () => {
+    const f = resumable();
+    const lock: ConstructorParameters<typeof ManualPlanJournal>[2] = async () => {
+      throw new ManualPlanRecoveryError("busy");
+    };
+    await expect(
+      new ManualPlanJournal(id, f.storage, lock, f.transport).resume(
+        f.base,
+        planId,
+        null,
+        f.current,
+      ),
+    ).rejects.toMatchObject({ reason: "busy" });
+    expect(f.transport).not.toHaveBeenCalled();
+    f.transport.mockRejectedValue(Error("HTTP failure"));
+    await expect(f.journal.resume(f.base, planId, null, f.current)).rejects.toThrow();
+    expect(f.transport).toHaveBeenCalledOnce();
+    expect(f.values.size).toBe(0);
+  });
+});
