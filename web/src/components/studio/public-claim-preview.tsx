@@ -35,6 +35,8 @@ export function PublicClaimPreview({
     return () => {
       pending.current?.abort();
       pending.current = null;
+      // The canceled request no longer owns pending, so its finally cannot release busy.
+      setBusy(false);
     };
   }, [company, blocked]);
   const record = (company.claimReviews ?? []).find((r) => r.id === recordId);
