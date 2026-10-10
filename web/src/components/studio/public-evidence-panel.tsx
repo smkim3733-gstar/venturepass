@@ -14,6 +14,7 @@ import {
   publicEvidenceBrowserLock,
   publicEvidenceBrowserStorage,
   publicEvidenceRecoveryMessage,
+  publicEvidenceRecoveryKey,
   type PublicEvidenceReceipt,
 } from "./public-evidence-recovery";
 import styles from "./guided-workspace.module.css";
@@ -52,6 +53,9 @@ export function PublicEvidencePanel({
   const [ready, setReady] = useState(false);
   const [saved, setSaved] = useState<PublicEvidenceRequest | null>(null);
   const [error, setError] = useState("");
+  const [recoveryReadError, setRecoveryReadError] = useState("");
+  const [notice, setNotice] = useState("");
+  const [submittedId, setSubmittedId] = useState<string | null>(null);
   const flight = useRef(false),
     mounted = useRef(true),
     currentCompany = useRef(company);
@@ -91,33 +95,61 @@ export function PublicEvidencePanel({
         ),
     );
   }
-  // Reading local identity never sends a save or assumes the server accepted it.
+  // Observe only identities, never event payloads or source contents. A removed or
+  // replaced record cannot acknowledge or replace the request already held here.
   useEffect(() => {
-    let cancelled = false;
-    void Promise.resolve()
-      .then(() =>
-        new PublicEvidenceJournal(
-          base.id,
-          publicEvidenceBrowserStorage(),
-          publicEvidenceBrowserLock,
-          async () => {
-            throw Error("저장 상태 확인을 선택해 주세요.");
-          },
-        ).read(),
-      )
-      .then((record) => {
-        if (!cancelled) {
-          setPending(record);
-          setReady(true);
-        }
-      })
-      .catch((error) => {
-        if (!cancelled) setError(publicEvidenceRecoveryMessage(error, "storage"));
-      });
+    if (working) return;
+    let cancelled = false,
+      generation = 0;
+    const read = () => {
+      const started = ++generation;
+      setReady(false);
+      void Promise.resolve()
+        .then(() =>
+          new PublicEvidenceJournal(
+            base.id,
+            publicEvidenceBrowserStorage(),
+            publicEvidenceBrowserLock,
+            async () => {
+              throw Error("Explicit recovery required");
+            },
+          ).read(),
+        )
+        .then((record) => {
+          if (!cancelled && started === generation) {
+            setPending((original) => original ?? record);
+            setReady(true);
+            setRecoveryReadError("");
+          }
+        })
+        .catch((error) => {
+          if (!cancelled && started === generation) {
+            setReady(false);
+            setRecoveryReadError(publicEvidenceRecoveryMessage(error, "storage"));
+          }
+        });
+    };
+    const changed = (event: StorageEvent) => {
+      if (event.key !== null && event.key !== publicEvidenceRecoveryKey(base.id)) return;
+      // Read current local storage again; delayed event.newValue is not authoritative.
+      try {
+        if (event.storageArea !== publicEvidenceBrowserStorage()) return;
+        read();
+      } catch (error) {
+        setReady(false);
+        setRecoveryReadError(publicEvidenceRecoveryMessage(error, "storage"));
+      }
+    };
+    window.addEventListener("storage", changed);
+    // Re-read after every operation too, covering events delivered while it held the lock.
+    void Promise.resolve().then(() => {
+      if (!cancelled) read();
+    });
     return () => {
       cancelled = true;
+      window.removeEventListener("storage", changed);
     };
-  }, [base.id]);
+  }, [base.id, working]);
   async function readRecovery() {
     if (flight.current) return;
     flight.current = true;
@@ -125,7 +157,7 @@ export function PublicEvidencePanel({
     try {
       const record = await journal().read();
       if (mounted.current) {
-        setPending(record);
+        setPending((original) => original ?? record);
         setReady(true);
         setError("");
       }
@@ -145,13 +177,23 @@ export function PublicEvidencePanel({
     setConfirmed(false);
     setError("");
   }
-  function accept(result: { company: StudioCase; request: PublicEvidenceRequest }) {
+  function accept(
+    result: { company: StudioCase; request: PublicEvidenceRequest },
+    preserveCurrent = false,
+  ) {
     if (!mounted.current) return;
     onCompany(result.company);
-    setSaved(result.request);
+    if (preserveCurrent) {
+      setNotice(
+        "다른 창의 공개 근거 저장을 확인했습니다. 이 창의 입력과 이전에 선택한 자료는 그대로 유지합니다.",
+      );
+    } else {
+      setSaved(result.request);
+      setNotice("");
+      onDirtyChange(false);
+    }
     setPending(null);
     setError("");
-    onDirtyChange(false);
   }
   async function save() {
     if (flight.current || !ready || blocked || pending || saved || changed) return;
@@ -171,6 +213,8 @@ export function PublicEvidencePanel({
     flight.current = true;
     setWorking(true);
     setError("");
+    setSubmittedId(request.command.source.id);
+    setNotice("");
     onBusyChange("공개 근거 후보를 보관하고 있습니다");
     try {
       accept(
@@ -187,7 +231,7 @@ export function PublicEvidencePanel({
       try {
         const record = await journal().read();
         if (mounted.current) {
-          setPending(record);
+          setPending((original) => original ?? record);
           setError(publicEvidenceRecoveryMessage(error, record ? "unconfirmed" : "storage"));
         }
       } catch (readError) {
@@ -208,7 +252,10 @@ export function PublicEvidencePanel({
     setWorking(true);
     setError("");
     try {
-      accept(await journal().recover(pending, () => currentCompany.current));
+      accept(
+        await journal().recover(pending, () => currentCompany.current),
+        pending.sourceId !== submittedId && (dirty || !!saved),
+      );
     } catch (e) {
       if (mounted.current) setError(publicEvidenceRecoveryMessage(e));
     } finally {
@@ -261,9 +308,19 @@ export function PublicEvidencePanel({
         직접 읽은 공개 자료의 발췌와 출처를 이 PC에 보관합니다. 시장·산업 정보가 우리 회사의 실적을
         증명하는 것은 아닙니다. 원고 수정과 AI 전송은 별도로 확인합니다.
       </p>
-      {error && (
+      {(recoveryReadError || error) && (
         <p role="alert" className={styles.error}>
-          {error}
+          {recoveryReadError || error}
+        </p>
+      )}
+      {notice && (
+        <p role="status" className={styles.helper}>
+          {notice}
+        </p>
+      )}
+      {pending && pending.sourceId !== submittedId && (dirty || !!saved) && (
+        <p role="status" className={styles.helper}>
+          다른 창의 저장 요청을 먼저 확인해 주세요. 이 창의 입력과 이전에 선택한 자료는 유지합니다.
         </p>
       )}
       {working && <p role="status">저장 상태 확인 중</p>}
@@ -288,7 +345,7 @@ export function PublicEvidencePanel({
         <button
           type="button"
           className={styles.link}
-          disabled={working}
+          disabled={working || !ready}
           onClick={() => void inspect()}
         >
           이 자료의 저장 상태 확인
@@ -307,7 +364,11 @@ export function PublicEvidencePanel({
             <button
               type="button"
               className={styles.link}
-              onClick={() => onSupplement(saved.command.source.id, saved.sectionKey)}
+              disabled={working || !!pending || !ready}
+              onClick={() => {
+                if (flight.current || pending || !ready) return;
+                onSupplement(saved.command.source.id, saved.sectionKey);
+              }}
             >
               이 근거로 원고 보완 준비
             </button>
