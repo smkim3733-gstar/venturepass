@@ -56,6 +56,7 @@ import { DiagnosisPanel } from "./diagnosis-panel";
 import { PreparationPanel } from "./preparation-panel";
 import { PreparationAutomationPanel } from "./preparation-automation-panel";
 import { AnalysisPanel } from "./analysis-panel";
+import { candidateSelectionAcknowledged } from "./candidate-selection";
 import { PlanEditor } from "./plan-editor";
 import { WorkflowPanel } from "./workflow-panel";
 import { readVentureOverview, type VentureOverview } from "@/lib/venturein-overview-types";
@@ -338,6 +339,14 @@ export function StudioWorkspace() {
         ...jsonBody({ ...mutation, revision: company.revision }),
       });
       const next = studioMutationResponse(raw, company);
+      // Keep the original editor/request until the current selection receipt matches.
+      if (
+        mutation.action === "select-candidate" &&
+        !candidateSelectionAcknowledged(next, company, { ...mutation, revision: company.revision })
+      )
+        throw new Error(
+          "신청 방향의 저장 기록을 확인하지 못했습니다. 원래 선택 이유와 요청을 유지했습니다.",
+        );
       accept(next);
       toast.success("저장했습니다.");
       return next;

@@ -408,3 +408,14 @@ it("rejects a different latest request reusing the original record ID", () => {
   });
   expect(candidateSelectionSaveResponse(response, company(), pending)).toBeNull();
 });
+
+it("rejects a different latest request in the shared detailed selection acknowledgement", () => {
+  const request = candidateSelectionRequest(company(), candidate.id, selection().reason, nonce)!;
+  const response = saved({
+    candidateSelections: [
+      selection(),
+      selection({ clientRequestId: recordId, reason: "다른 최신 요청" }),
+    ],
+  });
+  expect(candidateSelectionAcknowledged(response, company(), request)).toBe(false);
+});

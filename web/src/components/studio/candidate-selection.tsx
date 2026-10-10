@@ -52,6 +52,7 @@ export function candidateSelectionAcknowledged(
   const target = company.analysis?.candidates.filter((item) => item.id === request.candidateId);
   if (!parsed.success || target?.length !== 1) return false;
   const record = parsed.data;
+  const current = currentCandidateSelection(response);
   return (
     record.candidateId === request.candidateId &&
     record.previousCandidateId === request.expectedSelectedCandidateId &&
@@ -60,7 +61,8 @@ export function candidateSelectionAcknowledged(
     record.analysisMode === company.analysis?.mode &&
     record.reason === request.reason &&
     selectionSnapshotMatches(record.candidate, target[0]) &&
-    currentCandidateSelection(response)?.id === record.id
+    current?.id === record.id &&
+    current.clientRequestId === request.clientRequestId
   );
 }
 
@@ -85,7 +87,6 @@ export function candidateSelectionSaveResponse(
     !parsed.success ||
     current.id !== pending.company.id ||
     parsed.data.revision < current.revision ||
-    currentCandidateSelection(parsed.data)?.clientRequestId !== pending.mutation.clientRequestId ||
     !candidateSelectionAcknowledged(parsed.data, pending.company, pending.mutation)
   )
     return null;
