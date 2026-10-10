@@ -162,6 +162,7 @@ export function GuidedWorkspace({
   const [reviewDirty, setReviewDirty] = useState(false);
   const [sourceReview, setSourceReview] = useState<SourceDocument | null>(null);
   const [sourceReviewDirty, setSourceReviewDirty] = useState(false);
+  const [sourceReviewUnsettled, setSourceReviewUnsettled] = useState(false);
   const [intakeOpen, setIntakeOpen] = useState(false);
   const [intakeDirty, setIntakeDirty] = useState(false);
   const [intakeUnsettled, setIntakeUnsettled] = useState(false);
@@ -222,6 +223,7 @@ export function GuidedWorkspace({
         supplementUnsettled ||
         publicEvidenceUnsettled ||
         intakeUnsettled ||
+        sourceReviewUnsettled ||
         manualSaveBlocked ||
         !!confirmationPending,
     );
@@ -232,6 +234,7 @@ export function GuidedWorkspace({
     supplementUnsettled,
     publicEvidenceUnsettled,
     intakeUnsettled,
+    sourceReviewUnsettled,
     manualSaveBlocked,
     confirmationPending,
     onUnsettledChange,
@@ -255,7 +258,13 @@ export function GuidedWorkspace({
       active = false;
     };
   }, [company.id, company.revision]);
-  const locked = !!busy || blocked || unsettled || manualSaveBlocked || !!confirmationPending;
+  const locked =
+    !!busy ||
+    blocked ||
+    unsettled ||
+    sourceReviewUnsettled ||
+    manualSaveBlocked ||
+    !!confirmationPending;
   const latestPlan = [...company.plans].sort((a, b) => b.version - a.version)[0];
   const lastRun = (company.guidedPreparationRuns ?? []).at(-1);
   const retainedDraft = lastRun?.repair?.initialPlanId === latestPlan?.id && !!latestPlan;
@@ -894,7 +903,8 @@ export function GuidedWorkspace({
                 : ""
             }
             onBusyChange={onBusyChange}
-            mutate={mutate}
+            onCompany={onCompany}
+            onUnsettledChange={setSourceReviewUnsettled}
             onClose={() => {
               setSourceReview(null);
               setSourceReviewDirty(false);

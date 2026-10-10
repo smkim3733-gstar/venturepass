@@ -14,6 +14,7 @@ import {
   guidedSourceReviewMutation,
   guidedSourceReviewReducer,
   guidedSourceReviewSaved,
+  guidedSourceReviewResponse,
   type GuidedSourceReviewBinding,
   type GuidedSourceReviewDraft,
 } from "./guided-source-review";
@@ -109,7 +110,8 @@ function saved(ocr = false): StudioCase {
 function render(change: Partial<ComponentProps<typeof GuidedSourceReview>> = {}) {
   const callbacks = {
     onBusyChange: vi.fn(),
-    mutate: vi.fn(),
+    onCompany: vi.fn(),
+    onUnsettledChange: vi.fn(),
     onClose: vi.fn(),
     onDirtyChange: vi.fn(),
   };
@@ -500,5 +502,37 @@ describe("저장 성공 응답을 확인한 뒤에만 교정 화면 종료", () 
     const value = saved(true);
     change(value);
     expect(guidedSourceReviewSaved(value, binding(), draft(true))).toBe(false);
+  });
+});
+
+describe("교정 저장 응답 수락 경계", () => {
+  it.each([false, true])("정확한 직접/OCR 응답만 현재 회사에 수락한다 (%s)", (ocr) => {
+    expect(guidedSourceReviewResponse(saved(ocr), company(), binding(), draft(ocr))).toEqual(
+      saved(ocr),
+    );
+  });
+  it.each([null, {}, { revision: 4, sources: [] }])(
+    "형식이 잘못된 응답은 상세 오류를 던지지 않는다 (%#)",
+    (response) => {
+      expect(guidedSourceReviewResponse(response, company(), binding(), draft())).toBeNull();
+    },
+  );
+  it("응답 도착 전에 회사가 바뀌면 이전 회사 결과를 수락하지 않는다", () => {
+    const current = company();
+    current.id = foreignId;
+    expect(guidedSourceReviewResponse(saved(), current, binding(), draft())).toBeNull();
+  });
+  it("이미 본 더 최신 revision을 오래된 저장 응답으로 되돌리지 않는다", () => {
+    const current = company();
+    current.revision = 5;
+    expect(guidedSourceReviewResponse(saved(), current, binding(), draft())).toBeNull();
+  });
+  it("다른 교정 본문이 들어 있는 정상 형식 응답도 수락하지 않는다", () => {
+    const response = saved();
+    response.sources[0].text = "다른 교정";
+    expect(guidedSourceReviewResponse(response, company(), binding(), draft())).toBeNull();
+  });
+  it("OCR 응답도 원래 저장 영수증 대조를 건너뛰지 않는다", () => {
+    expect(guidedSourceReviewResponse(saved(), company(), binding(), draft(true))).toBeNull();
   });
 });

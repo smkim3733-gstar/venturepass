@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect, useId, useReducer, useRef, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useReducer, useRef, useState } from "react";
 import type { LocalOcrPreview } from "@/lib/studio-local-ocr-types";
-import type { SourceDocument, StudioCase } from "@/lib/studio-schema";
+import { caseSchema, type SourceDocument, type StudioCase } from "@/lib/studio-schema";
 import {
   ocrReviewSaveBlockedReason,
   supportsLocalOcr,
@@ -153,13 +153,31 @@ export function guidedSourceReviewSaved(
   return true;
 }
 
+export function guidedSourceReviewResponse(
+  response: unknown,
+  current: StudioCase,
+  binding: GuidedSourceReviewBinding,
+  draft: GuidedSourceReviewDraft,
+): StudioCase | null {
+  const parsed = caseSchema.safeParse(response);
+  if (
+    current.id !== binding.caseId ||
+    !parsed.success ||
+    parsed.data.revision < current.revision ||
+    !guidedSourceReviewSaved(parsed.data, binding, draft)
+  )
+    return null;
+  return parsed.data;
+}
+
 export function GuidedSourceReview({
   company,
   source,
   busy,
   blockedReason,
   onBusyChange,
-  mutate,
+  onCompany,
+  onUnsettledChange,
   onClose,
   onDirtyChange,
 }: {
@@ -168,7 +186,8 @@ export function GuidedSourceReview({
   busy: boolean;
   blockedReason: string;
   onBusyChange: (message: string) => void;
-  mutate: (mutation: StudioMutation) => Promise<StudioCase | null>;
+  onCompany: (company: StudioCase) => void;
+  onUnsettledChange: (pending: boolean) => void;
   onClose: () => void;
   onDirtyChange: (value: boolean) => void;
 }) {
@@ -183,7 +202,12 @@ export function GuidedSourceReview({
     preview: null,
     clientRequestId: null,
   });
-  const [operation, setOperation] = useState<"reading" | "saving" | null>(null);
+  const [operation, setOperation] = useState<"reading" | "saving" | "checking" | null>(null);
+  const [pending, setPending] = useState(false);
+  const currentCompany = useRef(company);
+  useLayoutEffect(() => {
+    currentCompany.current = company;
+  }, [company]);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState("");
   const inFlight = useRef(false);
@@ -191,17 +215,25 @@ export function GuidedSourceReview({
   const fieldId = useId();
   const bindingReason = guidedSourceReviewBindingReason(company, source, binding);
   const lockedReason = blockedReason || bindingReason;
-  const locked = busy || operation !== null;
+  const locked = busy || operation !== null || pending;
   const dirty =
     !saved &&
     (draft.text !== binding.source.text ||
       draft.reviewed ||
       draft.preview !== null ||
-      operation !== null);
-  const saveReason = ocrReviewSaveBlockedReason(draft.text, draft.reviewed, lockedReason, locked);
+      operation !== null ||
+      pending);
+  const saveReason =
+    pending && operation !== "saving"
+      ? "저장 결과가 미확인입니다. 본문 저장 상태를 확인해 주세요."
+      : ocrReviewSaveBlockedReason(draft.text, draft.reviewed, lockedReason, locked);
   const canRead = supportsLocalOcr(binding.source) && !draft.preview;
   const originalUrl = `/api/studio/cases/${binding.caseId}/sources/${binding.source.id}`;
   useDirty(dirty, onDirtyChange);
+  useEffect(() => {
+    onUnsettledChange(pending);
+    return () => onUnsettledChange(false);
+  }, [pending, onUnsettledChange]);
   useEffect(() => {
     mounted.current = true;
     return () => {
@@ -249,8 +281,21 @@ export function GuidedSourceReview({
     }
   }
 
+  function acceptResponse(response: unknown) {
+    const result = guidedSourceReviewResponse(response, currentCompany.current, binding, draft);
+    if (!result) return false;
+    setPending(false);
+    setSaved(true);
+    onDirtyChange(false);
+    onCompany(result);
+    return true;
+  }
+
+  const unknownMessage =
+    "저장 결과를 확인하지 못했습니다. 교정 본문과 확인 상태를 유지했습니다. ‘본문 저장 상태 확인’으로 확인해 주세요. 다시 저장하지 않습니다.";
+
   async function save() {
-    if (inFlight.current) return;
+    if (inFlight.current || pending) return;
     let mutation: StudioMutation;
     try {
       mutation = guidedSourceReviewMutation(company, source, binding, draft, blockedReason, locked);
@@ -259,27 +304,45 @@ export function GuidedSourceReview({
       return;
     }
     inFlight.current = true;
+    setPending(true);
     setOperation("saving");
     setError("");
     onBusyChange("확인한 본문을 보관하고 있습니다");
     let completed = false;
     try {
-      const result = await mutate(mutation);
+      const response = await studioFetch<unknown>(`/api/studio/cases/${binding.caseId}`, {
+        method: "PATCH",
+        ...jsonBody({ ...mutation, revision: binding.revision }),
+      });
       if (!mounted.current) return;
-      if (!guidedSourceReviewSaved(result, binding, draft)) {
-        setError(
-          "저장 결과를 확인하지 못했습니다. 교정 본문과 확인 상태를 유지했습니다. 최신 저장 상태를 확인해 주세요.",
-        );
-        return;
+      completed = acceptResponse(response);
+      if (!completed) setError(unknownMessage);
+    } catch {
+      if (mounted.current) setError(unknownMessage);
+    } finally {
+      inFlight.current = false;
+      if (mounted.current) {
+        setOperation(null);
+        onBusyChange("");
       }
-      setSaved(true);
-      onDirtyChange(false);
-      completed = true;
-    } catch (caught) {
-      if (mounted.current)
-        setError(
-          `${caught instanceof Error ? caught.message : "본문을 저장하지 못했습니다."} 교정 본문과 원본은 유지했습니다.`,
-        );
+    }
+    if (completed && mounted.current) onClose();
+  }
+
+  async function inspect() {
+    if (inFlight.current || busy || operation !== null || !pending) return;
+    inFlight.current = true;
+    setOperation("checking");
+    setError("");
+    onBusyChange("본문 저장 상태를 확인하고 있습니다");
+    let completed = false;
+    try {
+      const response = await studioFetch<unknown>(`/api/studio/cases/${binding.caseId}`);
+      if (!mounted.current) return;
+      completed = acceptResponse(response);
+      if (!completed) setError(unknownMessage);
+    } catch {
+      if (mounted.current) setError(unknownMessage);
     } finally {
       inFlight.current = false;
       if (mounted.current) {
@@ -350,6 +413,19 @@ export function GuidedSourceReview({
         <p role="alert" className={`${styles.error} mt-4`}>
           {error}
         </p>
+      )}
+      {pending && (
+        <div className={styles.notice} role="status">
+          <p>본문 저장이 아직 확인되지 않았습니다. 원래 입력을 유지하고 결과만 확인합니다.</p>
+          <button
+            type="button"
+            className={styles.link}
+            disabled={busy || operation !== null}
+            onClick={() => void inspect()}
+          >
+            본문 저장 상태 확인
+          </button>
+        </div>
       )}
       {draft.preview && (
         <div className={styles.notice}>
