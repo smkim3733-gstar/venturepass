@@ -1,5 +1,6 @@
 "use client";
-import { manualPlanSaveSnapshot, type ManualPlanSave } from "./manual-plan-save";
+import type { ManualPlanSave } from "./manual-plan-save";
+import { useManualPlanSave } from "./use-manual-plan-save";
 import { guidedDescriptionAcknowledged } from "./guided-description-save";
 import { PlanSupplementPanel } from "./plan-supplement-panel";
 import {
@@ -138,7 +139,6 @@ export function GuidedWorkspace({
   const [overviewSummary, setOverviewSummary] = useState("");
   const [sectionText, setSectionText] = useState("");
   const [sectionVerified, setSectionVerified] = useState(false);
-  const [manualSavePending, setManualSavePending] = useState<ManualPlanSave | null>(null);
   const [questionAnswers, setQuestionAnswers] = useState<Record<string, string>>({});
   const [answering, setAnswering] = useState(false);
   const [questionLinks, setQuestionLinks] = useState<Record<string, GuidedQuestionLink>>({});
@@ -203,6 +203,8 @@ export function GuidedWorkspace({
     Object.values(questionAnswers).some((value) => value.trim()) ||
     reason.trim().length > 0;
   useDirty(editingDirty, setDirty);
+  const manualSave = useManualPlanSave(company, onBusyChange, finishManualSave);
+  const manualSaveBlocked = !manualSave.ready || manualSave.working || !!manualSave.pending;
   useEffect(() => {
     onUnsettledChange(
       unsettled ||
@@ -210,7 +212,7 @@ export function GuidedWorkspace({
         supplementUnsettled ||
         publicEvidenceUnsettled ||
         intakeUnsettled ||
-        manualSavePending !== null,
+        manualSaveBlocked,
     );
     return () => onUnsettledChange(false);
   }, [
@@ -219,7 +221,7 @@ export function GuidedWorkspace({
     supplementUnsettled,
     publicEvidenceUnsettled,
     intakeUnsettled,
-    manualSavePending,
+    manualSaveBlocked,
     onUnsettledChange,
   ]);
   useEffect(() => {
@@ -241,7 +243,7 @@ export function GuidedWorkspace({
       active = false;
     };
   }, [company.id, company.revision]);
-  const locked = !!busy || blocked || unsettled || manualSavePending !== null;
+  const locked = !!busy || blocked || unsettled || manualSaveBlocked;
   const latestPlan = [...company.plans].sort((a, b) => b.version - a.version)[0];
   const lastRun = (company.guidedPreparationRuns ?? []).at(-1);
   const retainedDraft = lastRun?.repair?.initialPlanId === latestPlan?.id && !!latestPlan;
@@ -612,9 +614,15 @@ export function GuidedWorkspace({
       setAnswerSaved(saved);
     }
   }
-  function finishManualSave(next: StudioCase) {
+  function finishManualSave(next: StudioCase, ownEdit: boolean) {
     onCompany(next);
-    setManualSavePending(null);
+    setStep("plan");
+    if (!ownEdit && editingPlanId) {
+      setError(
+        "다른 창의 수정본을 확인했습니다. 이 창에서 입력한 내용은 그대로 유지했습니다. 최신 원고를 확인한 뒤 이어서 수정해 주세요.",
+      );
+      return;
+    }
     setEditingSection(null);
     setEditingOverview(false);
     setEditingPlanId(null);
@@ -647,49 +655,8 @@ export function GuidedWorkspace({
             },
       },
     };
-    inFlight.current = true;
-    setManualSavePending(pending);
     setError("");
-    onBusyChange("수정본을 보관하고 있습니다");
-    try {
-      // Use the existing save-plan command. Accept it only after the exact version check;
-      // a generic company response must not close the editor or display a success toast.
-      const raw = await studioFetch<unknown>(`/api/studio/cases/${pending.company.id}`, {
-        method: "PATCH",
-        ...jsonBody({ ...pending.mutation, revision: pending.company.revision }),
-      });
-      const next = manualPlanSaveSnapshot(raw, pending);
-      if (mounted.current) finishManualSave(next);
-    } catch {
-      if (mounted.current)
-        setError(
-          "수정본의 저장 결과를 아직 확인하지 못했습니다. 입력을 유지했습니다. 다시 저장하지 않고 저장 상태를 확인해 주세요.",
-        );
-    } finally {
-      inFlight.current = false;
-      if (mounted.current) onBusyChange("");
-    }
-  }
-  async function inspectManualSave() {
-    if (!manualSavePending || inFlight.current || busy) return;
-    const pending = manualSavePending;
-    inFlight.current = true;
-    setError("");
-    onBusyChange("수정본 저장 상태를 확인하고 있습니다");
-    try {
-      const raw = await studioFetch<unknown>(`/api/studio/cases/${pending.company.id}`);
-      const next = manualPlanSaveSnapshot(raw, pending);
-      if (next.revision < company.revision) throw new Error("오래된 저장 상태");
-      if (mounted.current) finishManualSave(next);
-    } catch {
-      if (mounted.current)
-        setError(
-          "수정본의 저장 결과를 아직 확인하지 못했습니다. 입력을 유지했습니다. 저장 상태를 다시 확인해 주세요.",
-        );
-    } finally {
-      inFlight.current = false;
-      if (mounted.current) onBusyChange("");
-    }
+    await manualSave.save(pending);
   }
   async function confirmPlan() {
     if (!latestPlan || locked || inFlight.current) return;
@@ -744,1142 +711,1178 @@ export function GuidedWorkspace({
           {error}
         </div>
       )}
-      {reviewTarget ? (
-        <GuidedPlanReview
-          company={company}
-          target={reviewTarget}
-          busy={!!busy}
-          blocked={blocked || unsettled || existingRunUnknown}
-          dirty={reviewDirty}
-          mutate={mutate}
-          onDirtyChange={setReviewDirty}
-          onClose={() => {
-            setReviewTarget(null);
-            setReviewDirty(false);
-          }}
-        />
-      ) : publicEvidenceOpen ? (
-        <PublicEvidencePanel
-          company={company}
-          blocked={blocked || unsettled || existingRunUnknown}
-          onCompany={onCompany}
-          onBusyChange={onBusyChange}
-          onDirtyChange={setPublicEvidenceDirty}
-          onUnsettledChange={setPublicEvidenceUnsettled}
-          onClose={() => setPublicEvidenceOpen(false)}
-          onSupplement={(sourceId, sectionKey) => {
-            setPublicEvidenceOpen(false);
-            setSupplementInitial({ sourceId, sectionKey });
-            setSupplementOpen(true);
-          }}
-        />
-      ) : supplementOpen ? (
-        <PlanSupplementPanel
-          company={company}
-          onCompany={onCompany}
-          onBusyChange={onBusyChange}
-          onUnsettledChange={setSupplementUnsettled}
-          initialSelection={supplementInitial}
-          onClose={() => {
-            setSupplementOpen(false);
-            setSupplementInitial(undefined);
-          }}
-        />
-      ) : packagePlanId ? (
-        <PreparedPackagesPanel
-          company={company}
-          plan={company.plans.find((item) => item.id === packagePlanId)}
-          dirty={editingDirty}
-          blocked={blocked || unsettled || existingRunUnknown}
-          onBusyChange={onBusyChange}
-          onUnsettledChange={setPackageUnsettled}
-          onClose={() => setPackagePlanId(null)}
-        />
-      ) : sourceReview ? (
-        <GuidedSourceReview
-          key={`${company.id}:${sourceReview.id}`}
-          company={company}
-          source={company.sources.find((item) => item.id === sourceReview.id) ?? sourceReview}
-          busy={!!busy}
-          blockedReason={
-            blocked || unsettled || existingRunUnknown
-              ? "진행 중인 준비 상태를 확인한 뒤 저장해 주세요."
-              : ""
-          }
-          onBusyChange={onBusyChange}
-          mutate={mutate}
-          onClose={() => {
-            setSourceReview(null);
-            setSourceReviewDirty(false);
-          }}
-          onDirtyChange={setSourceReviewDirty}
-        />
-      ) : busy && !bulkUploading && !intakeOpen ? (
-        <div role="status" className={styles.sheet}>
-          <LoaderCircle aria-hidden="true" className="mb-3 size-5 animate-spin" />
-          <h2 className={styles.subheading}>{busy}</h2>
-          <p className={styles.helper}>완료되면 다음 내용을 보여 드립니다.</p>
-        </div>
-      ) : unsettled || existingRunUnknown ? (
-        <>
-          {title(
-            "먼저 저장된 결과를 확인할게요",
-            "결과가 불명확한 작업을 자동으로 반복하지 않습니다. 이전 자료와 작성본은 보존됩니다.",
+      {(manualSave.pending || manualSave.error) && (
+        <section className={styles.notice} aria-label="수정본 저장 확인">
+          {manualSave.error && (
+            <p role="alert" className={styles.error}>
+              {manualSave.error}
+            </p>
           )}
-          <button
-            type="button"
-            className={styles.primary}
-            onClick={() => void reconcile()}
-            disabled={!!busy}
-          >
-            저장 상태 확인
-            <ArrowRight aria-hidden="true" />
-          </button>
-          {checkedInactive && !unsettled && existingRunUnknown && (
-            <div className={styles.support}>
-              <button type="button" className={styles.link} onClick={() => void preparePreview()}>
-                이전 요청을 확인하고 다시 준비
+          {manualSave.pending && (
+            <>
+              <strong>미확인 수정본의 저장 상태를 확인해 주세요</strong>
+              <p>
+                원래 원고와 수정 내용이 일치하는 새 버전만 확인합니다. 자동으로 다시 저장하지
+                않습니다. 제목·요약·본문은 브라우저에 보관하지 않으므로 새로고침 후에는 저장이
+                확인된 원고만 보여 드립니다.
+              </p>
+              <button
+                type="button"
+                className={styles.primary}
+                disabled={!!busy || manualSave.working || !manualSave.ready}
+                onClick={() => void manualSave.inspect()}
+              >
+                수정본 저장 상태 확인
               </button>
-            </div>
-          )}
-        </>
-      ) : step === "materials" ? (
-        <>
-          {describing ? (
-            <>
-              {title(
-                "어떤 사업을 하고 계신가요?",
-                "회사 설명부터 시작할 수 있습니다. 없는 실적은 적지 않아도 됩니다.",
-              )}
-              <section className={styles.sheet}>
-                <label className={styles.label} htmlFor="guided-description">
-                  현재 제공하는 서비스·기술과 고객
-                </label>
-                <textarea
-                  id="guided-description"
-                  className={styles.textarea}
-                  value={description}
-                  onChange={(event) => {
-                    setDescription(event.target.value);
-                    setDescriptionTouched(true);
-                  }}
-                  maxLength={10000}
-                  placeholder="예: 어떤 고객의 문제를 어떤 방법으로 해결하고 있나요?"
-                />
-              </section>
-              <div className={styles.actions}>
-                <button type="button" className={styles.link} onClick={() => setDescribing(false)}>
-                  자료 올리기로 돌아가기
-                </button>
-                {
-                  <PrimaryAction
-                    disabled={locked || !description.trim()}
-                    onClick={() => void saveDescription()}
-                  >
-                    {"이 설명으로 시작하기"}
-                  </PrimaryAction>
-                }
-              </div>
             </>
-          ) : (
-            <>
-              <div hidden={intakeOpen} className="space-y-6">
+          )}
+          {!manualSave.ready && (
+            <button
+              type="button"
+              className={styles.link}
+              disabled={!!busy || manualSave.working}
+              onClick={manualSave.reread}
+            >
+              수정본 복구 기록 다시 확인
+            </button>
+          )}
+        </section>
+      )}
+      {/* Keep child drafts mounted while an unrelated pending save blocks their screen. */}
+      <div
+        hidden={!!(manualSave.pending || (!manualSave.ready && manualSave.error)) && !editingPlanId}
+      >
+        {reviewTarget ? (
+          <GuidedPlanReview
+            company={company}
+            target={reviewTarget}
+            busy={!!busy}
+            blocked={blocked || unsettled || existingRunUnknown}
+            dirty={reviewDirty}
+            mutate={mutate}
+            onDirtyChange={setReviewDirty}
+            onClose={() => {
+              setReviewTarget(null);
+              setReviewDirty(false);
+            }}
+          />
+        ) : publicEvidenceOpen ? (
+          <PublicEvidencePanel
+            company={company}
+            blocked={blocked || unsettled || existingRunUnknown}
+            onCompany={onCompany}
+            onBusyChange={onBusyChange}
+            onDirtyChange={setPublicEvidenceDirty}
+            onUnsettledChange={setPublicEvidenceUnsettled}
+            onClose={() => setPublicEvidenceOpen(false)}
+            onSupplement={(sourceId, sectionKey) => {
+              setPublicEvidenceOpen(false);
+              setSupplementInitial({ sourceId, sectionKey });
+              setSupplementOpen(true);
+            }}
+          />
+        ) : supplementOpen ? (
+          <PlanSupplementPanel
+            company={company}
+            onCompany={onCompany}
+            onBusyChange={onBusyChange}
+            onUnsettledChange={setSupplementUnsettled}
+            initialSelection={supplementInitial}
+            onClose={() => {
+              setSupplementOpen(false);
+              setSupplementInitial(undefined);
+            }}
+          />
+        ) : packagePlanId ? (
+          <PreparedPackagesPanel
+            company={company}
+            plan={company.plans.find((item) => item.id === packagePlanId)}
+            dirty={editingDirty}
+            blocked={blocked || unsettled || existingRunUnknown}
+            onBusyChange={onBusyChange}
+            onUnsettledChange={setPackageUnsettled}
+            onClose={() => setPackagePlanId(null)}
+          />
+        ) : sourceReview ? (
+          <GuidedSourceReview
+            key={`${company.id}:${sourceReview.id}`}
+            company={company}
+            source={company.sources.find((item) => item.id === sourceReview.id) ?? sourceReview}
+            busy={!!busy}
+            blockedReason={
+              blocked || unsettled || existingRunUnknown
+                ? "진행 중인 준비 상태를 확인한 뒤 저장해 주세요."
+                : ""
+            }
+            onBusyChange={onBusyChange}
+            mutate={mutate}
+            onClose={() => {
+              setSourceReview(null);
+              setSourceReviewDirty(false);
+            }}
+            onDirtyChange={setSourceReviewDirty}
+          />
+        ) : busy && !bulkUploading && !intakeOpen ? (
+          <div role="status" className={styles.sheet}>
+            <LoaderCircle aria-hidden="true" className="mb-3 size-5 animate-spin" />
+            <h2 className={styles.subheading}>{busy}</h2>
+            <p className={styles.helper}>완료되면 다음 내용을 보여 드립니다.</p>
+          </div>
+        ) : unsettled || existingRunUnknown ? (
+          <>
+            {title(
+              "먼저 저장된 결과를 확인할게요",
+              "결과가 불명확한 작업을 자동으로 반복하지 않습니다. 이전 자료와 작성본은 보존됩니다.",
+            )}
+            <button
+              type="button"
+              className={styles.primary}
+              onClick={() => void reconcile()}
+              disabled={!!busy}
+            >
+              저장 상태 확인
+              <ArrowRight aria-hidden="true" />
+            </button>
+            {checkedInactive && !unsettled && existingRunUnknown && (
+              <div className={styles.support}>
+                <button type="button" className={styles.link} onClick={() => void preparePreview()}>
+                  이전 요청을 확인하고 다시 준비
+                </button>
+              </div>
+            )}
+          </>
+        ) : step === "materials" ? (
+          <>
+            {describing ? (
+              <>
                 {title(
-                  company.sources.length
-                    ? "필요한 자료만 추가해 주세요"
-                    : "자료 첨부는 선택 사항입니다",
-                  "자료가 없어도 회사 설명으로 시작할 수 있습니다. 자료는 나중에 추가할 수 있습니다.",
+                  "어떤 사업을 하고 계신가요?",
+                  "회사 설명부터 시작할 수 있습니다. 없는 실적은 적지 않아도 됩니다.",
                 )}
-                <GuidedBulkUpload
-                  company={company}
-                  locked={locked}
-                  onCompany={onCompany}
-                  onBusyChange={(message) => {
-                    setBulkUploading(!!message);
-                    onBusyChange(message);
-                  }}
-                  onReviewSources={() => setIntakeOpen(true)}
-                />
-                <GuidedMaterialReadiness
-                  company={company}
-                  locked={locked}
-                  onReviewSources={() => setIntakeOpen(true)}
-                  onSelectSources={() => void preparePreview()}
-                />
-                <GuidedMaterials
-                  company={company}
-                  locked={locked}
-                  onReview={setSourceReview}
-                  onReviewIntakes={() => setIntakeOpen(true)}
-                />
-                <div className={styles.support}>
+                <section className={styles.sheet}>
+                  <label className={styles.label} htmlFor="guided-description">
+                    현재 제공하는 서비스·기술과 고객
+                  </label>
+                  <textarea
+                    id="guided-description"
+                    className={styles.textarea}
+                    value={description}
+                    onChange={(event) => {
+                      setDescription(event.target.value);
+                      setDescriptionTouched(true);
+                    }}
+                    maxLength={10000}
+                    placeholder="예: 어떤 고객의 문제를 어떤 방법으로 해결하고 있나요?"
+                  />
+                </section>
+                <div className={styles.actions}>
                   <button
                     type="button"
                     className={styles.link}
-                    disabled={locked}
-                    onClick={() => setDescribing(true)}
+                    onClick={() => setDescribing(false)}
                   >
-                    {hasDescription ? "회사 설명 고치기" : "자료 없이 회사 설명부터 시작"}
+                    자료 올리기로 돌아가기
                   </button>
-                  {company.sources.length > 0 && detailLink("자료 내용 확인·정리", "sources")}
-                  <button
-                    type="button"
-                    className={styles.link}
-                    disabled={locked || editingDirty}
-                    onClick={() => setPublicEvidenceOpen(true)}
-                  >
-                    공개 근거 보완
-                  </button>
-                </div>
-                <p className={styles.helper}>
-                  이 PC에 보관합니다. 외부 AI로 보낼 자료는 별도로 확인받습니다.
-                </p>
-
-                {(hasSourceText || hasDescription) && (
-                  <div className={styles.actions}>
-                    <PrimaryAction disabled={locked} onClick={() => goTo("plan")}>
-                      {company.sources.length
-                        ? "자료 확인 후 다음 단계"
-                        : "회사 설명으로 다음 단계"}
+                  {
+                    <PrimaryAction
+                      disabled={locked || !description.trim()}
+                      onClick={() => void saveDescription()}
+                    >
+                      {"이 설명으로 시작하기"}
                     </PrimaryAction>
-                  </div>
-                )}
-              </div>
-              {intakeOpen && (
-                <SourceIntakesPanel
-                  company={company}
-                  busy={!!busy}
-                  blockedReason={
-                    blocked || unsettled || existingRunUnknown
-                      ? "진행 중인 준비 상태를 확인한 뒤 저장해 주세요."
-                      : ""
                   }
-                  onCompany={onCompany}
-                  onBusyChange={onBusyChange}
-                  onDirtyChange={setIntakeDirty}
-                  onUnsettledChange={setIntakeUnsettled}
-                  onBack={() => setIntakeOpen(false)}
-                />
-              )}
-            </>
-          )}
-        </>
-      ) : step === "plan" ? (
-        <>
-          {editingPlan && (editingOverview || (editingSection && section)) ? (
-            <>
-              {title("바꿀 부분만 고쳐 주세요", "수정본은 새로 보관하고 이전 작성본은 유지합니다.")}
-              <section className={styles.sheet}>
-                {editingOverview ? (
-                  <>
-                    <label className={styles.label} htmlFor="guided-plan-title">
-                      사업계획서 제목
-                    </label>
-                    <input
-                      id="guided-plan-title"
-                      className={styles.textarea}
-                      style={{ minHeight: 48 }}
-                      value={overviewTitle}
-                      readOnly={locked}
-                      onChange={(event) => setOverviewTitle(event.target.value)}
-                      maxLength={300}
-                    />
-                    <label className={`${styles.label} mt-5`} htmlFor="guided-plan-summary">
-                      핵심 요약
-                    </label>
-                    <textarea
-                      id="guided-plan-summary"
-                      className={styles.textarea}
-                      value={overviewSummary}
-                      readOnly={locked}
-                      onChange={(event) => setOverviewSummary(event.target.value)}
-                      maxLength={6000}
-                      rows={10}
-                    />
-                    <p className={styles.helper}>
-                      제목과 요약만 고칩니다. 항목의 본문·근거·확인 필요 표시는 유지하며, 전체
-                      검토가 끝난 것으로 처리하지 않습니다.
-                    </p>
-                  </>
-                ) : section ? (
-                  <>
-                    <label className={styles.label} htmlFor="guided-section">
-                      {section.title}
-                    </label>
-                    <textarea
-                      id="guided-section"
-                      className={styles.textarea}
-                      value={sectionText}
-                      readOnly={locked}
-                      onChange={(event) => {
-                        setSectionText(event.target.value);
-                        setSectionVerified(false);
-                      }}
-                      maxLength={18000}
-                      rows={12}
-                    />
-                    <details className={styles.details}>
-                      <summary>이 항목의 근거 보기</summary>
-                      <EvidenceList company={company} evidence={section.evidence} />
-                    </details>
-                    <label className="mt-5 flex items-start gap-3 text-sm leading-7">
-                      <input
-                        type="checkbox"
-                        className="mt-2 size-4 shrink-0"
-                        checked={sectionVerified}
-                        disabled={locked}
-                        onChange={(event) => setSectionVerified(event.target.checked)}
-                      />
-                      이 항목의 사실·수치·근거를 직접 확인했습니다.
-                    </label>
-                    <p className={styles.helper}>
-                      확인이 끝나지 않았다면 체크하지 않고 수정 내용을 보관할 수 있습니다.
-                    </p>
-                  </>
-                ) : null}
-              </section>
-              <div className={styles.actions}>
-                <button
-                  type="button"
-                  className={styles.link}
-                  disabled={locked}
-                  onClick={() => {
-                    if (locked) return;
-                    if (
-                      (editingOverview
-                        ? overviewTitle !== editingPlan.content.title ||
-                          overviewSummary !== editingPlan.content.summary
-                        : sectionText !== section?.content) &&
-                      !window.confirm("수정 중인 내용을 취소할까요?")
-                    )
-                      return;
-                    setEditingSection(null);
-                    setEditingOverview(false);
-                    setEditingPlanId(null);
-                  }}
-                >
-                  수정 취소
-                </button>
-                {
-                  <PrimaryAction
-                    disabled={locked || editingPlanChanged}
-                    onClick={() => void saveManualEdit()}
-                  >
-                    {"수정 반영하기"}
-                  </PrimaryAction>
-                }
-              </div>
-              {manualSavePending && (
-                <div className={styles.notice} role="status">
-                  <strong>수정본을 확인할 때까지 입력을 보관합니다</strong>
-                  <p>
-                    원래 원고와 수정 내용이 일치하는 새 버전을 확인하면 원고로 돌아갑니다. 확인
-                    전에는 다시 저장하거나 화면을 닫지 않습니다.
-                  </p>
-                  <button
-                    type="button"
-                    className={styles.primary}
-                    disabled={!!busy}
-                    onClick={() => void inspectManualSave()}
-                  >
-                    수정본 저장 상태 확인
-                  </button>
                 </div>
-              )}
-              {editingPlanChanged && (
-                <p role="alert" className={styles.error}>
-                  새 작성본이 생겼습니다. 입력 중인 내용은 이 화면에 보존했고 새 원고에 덮어쓰지
-                  않았습니다. 필요한 내용을 복사한 뒤 수정 취소를 눌러 최신 원고를 확인해 주세요.
-                </p>
-              )}
-            </>
-          ) : answering && shownQuestions.length ? (
-            <>
-              {title(
-                "아는 내용만 알려 주세요",
-                "처음에는 세 가지를 보여 드립니다. 필요한 질문을 더 열어 이어서 답할 수 있어요.",
-              )}
-              <section className={styles.sheet}>
-                {shownQuestions.map((question, index) => (
-                  <div key={question.id} className={index ? styles.answer : undefined}>
-                    <label htmlFor={`guided-answer-${index}`} className={styles.label}>
-                      {question.question}
-                    </label>
-                    <GuidedQuestionCard
-                      question={question}
-                      company={company}
-                      link={questionLinks[question.id]}
-                      disabled={locked || answerContextChanged}
-                      onLink={(link) =>
-                        setQuestionLinks((current) => ({ ...current, [question.id]: link }))
-                      }
-                    />
-                    <textarea
-                      id={`guided-answer-${index}`}
-                      className={styles.textarea}
-                      maxLength={5000}
-                      placeholder="아는 내용이나 짧은 메모를 남겨 주세요. 모르는 내용은 비워 두어도 됩니다."
-                      value={questionAnswers[question.id] ?? ""}
-                      onChange={(event) =>
-                        setQuestionAnswers((current) => ({
-                          ...current,
-                          [question.id]: event.target.value,
-                        }))
-                      }
-                    />
+              </>
+            ) : (
+              <>
+                <div hidden={intakeOpen} className="space-y-6">
+                  {title(
+                    company.sources.length
+                      ? "필요한 자료만 추가해 주세요"
+                      : "자료 첨부는 선택 사항입니다",
+                    "자료가 없어도 회사 설명으로 시작할 수 있습니다. 자료는 나중에 추가할 수 있습니다.",
+                  )}
+                  <GuidedBulkUpload
+                    company={company}
+                    locked={locked}
+                    onCompany={onCompany}
+                    onBusyChange={(message) => {
+                      setBulkUploading(!!message);
+                      onBusyChange(message);
+                    }}
+                    onReviewSources={() => setIntakeOpen(true)}
+                  />
+                  <GuidedMaterialReadiness
+                    company={company}
+                    locked={locked}
+                    onReviewSources={() => setIntakeOpen(true)}
+                    onSelectSources={() => void preparePreview()}
+                  />
+                  <GuidedMaterials
+                    company={company}
+                    locked={locked}
+                    onReview={setSourceReview}
+                    onReviewIntakes={() => setIntakeOpen(true)}
+                  />
+                  <div className={styles.support}>
+                    <button
+                      type="button"
+                      className={styles.link}
+                      disabled={locked}
+                      onClick={() => setDescribing(true)}
+                    >
+                      {hasDescription ? "회사 설명 고치기" : "자료 없이 회사 설명부터 시작"}
+                    </button>
+                    {company.sources.length > 0 && detailLink("자료 내용 확인·정리", "sources")}
+                    <button
+                      type="button"
+                      className={styles.link}
+                      disabled={locked || editingDirty}
+                      onClick={() => setPublicEvidenceOpen(true)}
+                    >
+                      공개 근거 보완
+                    </button>
                   </div>
-                ))}
-              </section>
-              {(answerContext?.questions.length ?? questions.length) > shownQuestions.length && (
-                <button
-                  type="button"
-                  className={styles.link}
-                  disabled={locked}
-                  onClick={() => setVisibleQuestionCount((count) => count + 3)}
-                >
-                  남은 질문{" "}
-                  {(answerContext?.questions.length ?? questions.length) - shownQuestions.length}개
-                  더 보기
-                </button>
-              )}
-              {answerContextChanged && (
-                <div className={styles.notice} role="status">
-                  <strong>자료가 바뀌어 입력한 답변을 보관하고 있어요</strong>
-                  <button
-                    type="button"
-                    className={styles.link}
-                    disabled={locked}
-                    onClick={() =>
-                      setAnswerContext((current) =>
-                        current
-                          ? { ...current, revision: company.revision }
-                          : { revision: company.revision, questions },
-                      )
-                    }
-                  >
-                    이전 질문·입력을 유지하고 현재 자료에 연결
-                  </button>
-
-                  <p>
-                    현재 질문과 다시 대조한 뒤 저장해 주세요. 입력 내용은 자동으로 지우지 않습니다.
+                  <p className={styles.helper}>
+                    이 PC에 보관합니다. 외부 AI로 보낼 자료는 별도로 확인받습니다.
                   </p>
+
+                  {(hasSourceText || hasDescription) && (
+                    <div className={styles.actions}>
+                      <PrimaryAction disabled={locked} onClick={() => goTo("plan")}>
+                        {company.sources.length
+                          ? "자료 확인 후 다음 단계"
+                          : "회사 설명으로 다음 단계"}
+                      </PrimaryAction>
+                    </div>
+                  )}
+                </div>
+                {intakeOpen && (
+                  <SourceIntakesPanel
+                    company={company}
+                    busy={!!busy}
+                    blockedReason={
+                      blocked || unsettled || existingRunUnknown
+                        ? "진행 중인 준비 상태를 확인한 뒤 저장해 주세요."
+                        : ""
+                    }
+                    onCompany={onCompany}
+                    onBusyChange={onBusyChange}
+                    onDirtyChange={setIntakeDirty}
+                    onUnsettledChange={setIntakeUnsettled}
+                    onBack={() => setIntakeOpen(false)}
+                  />
+                )}
+              </>
+            )}
+          </>
+        ) : step === "plan" ? (
+          <>
+            {editingPlan && (editingOverview || (editingSection && section)) ? (
+              <>
+                {title(
+                  "바꿀 부분만 고쳐 주세요",
+                  "수정본은 새로 보관하고 이전 작성본은 유지합니다.",
+                )}
+                <section className={styles.sheet}>
+                  {editingOverview ? (
+                    <>
+                      <label className={styles.label} htmlFor="guided-plan-title">
+                        사업계획서 제목
+                      </label>
+                      <input
+                        id="guided-plan-title"
+                        className={styles.textarea}
+                        style={{ minHeight: 48 }}
+                        value={overviewTitle}
+                        readOnly={locked}
+                        onChange={(event) => setOverviewTitle(event.target.value)}
+                        maxLength={300}
+                      />
+                      <label className={`${styles.label} mt-5`} htmlFor="guided-plan-summary">
+                        핵심 요약
+                      </label>
+                      <textarea
+                        id="guided-plan-summary"
+                        className={styles.textarea}
+                        value={overviewSummary}
+                        readOnly={locked}
+                        onChange={(event) => setOverviewSummary(event.target.value)}
+                        maxLength={6000}
+                        rows={10}
+                      />
+                      <p className={styles.helper}>
+                        제목과 요약만 고칩니다. 항목의 본문·근거·확인 필요 표시는 유지하며, 전체
+                        검토가 끝난 것으로 처리하지 않습니다.
+                      </p>
+                    </>
+                  ) : section ? (
+                    <>
+                      <label className={styles.label} htmlFor="guided-section">
+                        {section.title}
+                      </label>
+                      <textarea
+                        id="guided-section"
+                        className={styles.textarea}
+                        value={sectionText}
+                        readOnly={locked}
+                        onChange={(event) => {
+                          setSectionText(event.target.value);
+                          setSectionVerified(false);
+                        }}
+                        maxLength={18000}
+                        rows={12}
+                      />
+                      <details className={styles.details}>
+                        <summary>이 항목의 근거 보기</summary>
+                        <EvidenceList company={company} evidence={section.evidence} />
+                      </details>
+                      <label className="mt-5 flex items-start gap-3 text-sm leading-7">
+                        <input
+                          type="checkbox"
+                          className="mt-2 size-4 shrink-0"
+                          checked={sectionVerified}
+                          disabled={locked}
+                          onChange={(event) => setSectionVerified(event.target.checked)}
+                        />
+                        이 항목의 사실·수치·근거를 직접 확인했습니다.
+                      </label>
+                      <p className={styles.helper}>
+                        확인이 끝나지 않았다면 체크하지 않고 수정 내용을 보관할 수 있습니다.
+                      </p>
+                    </>
+                  ) : null}
+                </section>
+                <div className={styles.actions}>
                   <button
                     type="button"
                     className={styles.link}
                     disabled={locked}
                     onClick={() => {
+                      if (locked) return;
                       if (
-                        (Object.values(questionAnswers).some((value) => value.trim()) ||
-                          Object.values(questionLinks).some(
-                            (link) => link.sectionKey || link.sourceIds.length,
-                          )) &&
-                        !window.confirm(
-                          "입력한 답변을 지우고 현재 질문을 다시 볼까요? 필요한 내용은 먼저 복사해 주세요.",
-                        )
+                        (editingOverview
+                          ? overviewTitle !== editingPlan.content.title ||
+                            overviewSummary !== editingPlan.content.summary
+                          : sectionText !== section?.content) &&
+                        !window.confirm("수정 중인 내용을 취소할까요?")
                       )
                         return;
-                      setQuestionAnswers({});
-                      setQuestionLinks({});
-                      setAnswerContext({ revision: company.revision, questions });
-                      setVisibleQuestionCount(3);
+                      setEditingSection(null);
+                      setEditingOverview(false);
+                      setEditingPlanId(null);
                     }}
                   >
-                    입력 취소하고 현재 질문 보기
+                    수정 취소
                   </button>
+                  {
+                    <PrimaryAction
+                      disabled={locked || editingPlanChanged}
+                      onClick={() => void saveManualEdit()}
+                    >
+                      {"수정 반영하기"}
+                    </PrimaryAction>
+                  }
                 </div>
-              )}
-              <button
-                type="button"
-                className={styles.link}
-                disabled={locked}
-                onClick={() => setStep("materials")}
-              >
-                파일을 추가하고 돌아오기
-              </button>
-              <p className={styles.helper}>
-                답변은 사용자 진술 자료로 보관합니다. 원고 변경이나 AI 전송은 별도이며, 파일을
-                추가해도 입력한 답변은 이 화면에 유지됩니다.
-              </p>
-              {deferred && (
-                <p className={styles.notice}>
-                  답변이 필요한 항목을 남겨 두었습니다. 자료가 준비되면 이어서 답할 수 있습니다.
-                </p>
-              )}
-              <div className={styles.actions}>
+                {editingPlanChanged && (
+                  <p role="alert" className={styles.error}>
+                    새 작성본이 생겼습니다. 입력 중인 내용은 이 화면에 보존했고 새 원고에 덮어쓰지
+                    않았습니다. 필요한 내용을 복사한 뒤 수정 취소를 눌러 최신 원고를 확인해 주세요.
+                  </p>
+                )}
+              </>
+            ) : answering && shownQuestions.length ? (
+              <>
+                {title(
+                  "아는 내용만 알려 주세요",
+                  "처음에는 세 가지를 보여 드립니다. 필요한 질문을 더 열어 이어서 답할 수 있어요.",
+                )}
+                <section className={styles.sheet}>
+                  {shownQuestions.map((question, index) => (
+                    <div key={question.id} className={index ? styles.answer : undefined}>
+                      <label htmlFor={`guided-answer-${index}`} className={styles.label}>
+                        {question.question}
+                      </label>
+                      <GuidedQuestionCard
+                        question={question}
+                        company={company}
+                        link={questionLinks[question.id]}
+                        disabled={locked || answerContextChanged}
+                        onLink={(link) =>
+                          setQuestionLinks((current) => ({ ...current, [question.id]: link }))
+                        }
+                      />
+                      <textarea
+                        id={`guided-answer-${index}`}
+                        className={styles.textarea}
+                        maxLength={5000}
+                        placeholder="아는 내용이나 짧은 메모를 남겨 주세요. 모르는 내용은 비워 두어도 됩니다."
+                        value={questionAnswers[question.id] ?? ""}
+                        onChange={(event) =>
+                          setQuestionAnswers((current) => ({
+                            ...current,
+                            [question.id]: event.target.value,
+                          }))
+                        }
+                      />
+                    </div>
+                  ))}
+                </section>
+                {(answerContext?.questions.length ?? questions.length) > shownQuestions.length && (
+                  <button
+                    type="button"
+                    className={styles.link}
+                    disabled={locked}
+                    onClick={() => setVisibleQuestionCount((count) => count + 3)}
+                  >
+                    남은 질문{" "}
+                    {(answerContext?.questions.length ?? questions.length) - shownQuestions.length}
+                    개 더 보기
+                  </button>
+                )}
+                {answerContextChanged && (
+                  <div className={styles.notice} role="status">
+                    <strong>자료가 바뀌어 입력한 답변을 보관하고 있어요</strong>
+                    <button
+                      type="button"
+                      className={styles.link}
+                      disabled={locked}
+                      onClick={() =>
+                        setAnswerContext((current) =>
+                          current
+                            ? { ...current, revision: company.revision }
+                            : { revision: company.revision, questions },
+                        )
+                      }
+                    >
+                      이전 질문·입력을 유지하고 현재 자료에 연결
+                    </button>
+
+                    <p>
+                      현재 질문과 다시 대조한 뒤 저장해 주세요. 입력 내용은 자동으로 지우지
+                      않습니다.
+                    </p>
+                    <button
+                      type="button"
+                      className={styles.link}
+                      disabled={locked}
+                      onClick={() => {
+                        if (
+                          (Object.values(questionAnswers).some((value) => value.trim()) ||
+                            Object.values(questionLinks).some(
+                              (link) => link.sectionKey || link.sourceIds.length,
+                            )) &&
+                          !window.confirm(
+                            "입력한 답변을 지우고 현재 질문을 다시 볼까요? 필요한 내용은 먼저 복사해 주세요.",
+                          )
+                        )
+                          return;
+                        setQuestionAnswers({});
+                        setQuestionLinks({});
+                        setAnswerContext({ revision: company.revision, questions });
+                        setVisibleQuestionCount(3);
+                      }}
+                    >
+                      입력 취소하고 현재 질문 보기
+                    </button>
+                  </div>
+                )}
                 <button
                   type="button"
                   className={styles.link}
-                  onClick={() => {
-                    setDeferred(true);
-                    setAnswering(false);
-                  }}
+                  disabled={locked}
+                  onClick={() => setStep("materials")}
                 >
-                  지금은 없어요 · 나중에 답하기
+                  파일을 추가하고 돌아오기
                 </button>
-                {
-                  <PrimaryAction
-                    disabled={
-                      locked ||
-                      answerContextChanged ||
-                      (!Object.values(questionAnswers).some((answer) => answer.trim()) &&
-                        !Object.values(questionLinks).some((link) => link.sourceIds.length))
-                    }
-                    onClick={() => void saveAnswers()}
-                  >
-                    {"답변 보관하기"}
-                  </PrimaryAction>
-                }
-              </div>
-            </>
-          ) : lastRun?.status === "failed" && !retainedDraft ? (
-            <>
-              {title(
-                "AI 준비가 중간에 멈췄어요",
-                "이전 자료와 원고는 보관했습니다. 저장 상태와 보낼 자료를 확인한 뒤 다시 준비할 수 있습니다.",
-              )}
-              <section className={styles.sheet}>
-                <h3 className={styles.subheading}>자동으로 다시 보내지 않았습니다</h3>
                 <p className={styles.helper}>
-                  다시 준비할 때는 이전 요청의 처리 가능성과 현재 전송 범위를 확인받습니다.
+                  답변은 사용자 진술 자료로 보관합니다. 원고 변경이나 AI 전송은 별도이며, 파일을
+                  추가해도 입력한 답변은 이 화면에 유지됩니다.
                 </p>
-              </section>
-              <div className={styles.actions}>
-                {detailLink("이전 원고 확인", "plan")}
-                {
-                  <PrimaryAction disabled={locked} onClick={() => void preparePreview()}>
-                    {"확인 후 다시 준비"}
-                  </PrimaryAction>
-                }
-              </div>
-            </>
-          ) : showPlan && latestPlan ? (
-            <>
-              {title(
-                "준비한 계획서를 확인해 주세요",
-                "요약을 먼저 살펴보고, 확인이 필요한 부분이나 다른 내용만 고쳐 주세요.",
-              )}
-              <section className={styles.sheet} aria-label="현재 원고와 검토 상태">
-                <h3 className={styles.subheading}>현재 원고 v{latestPlan.version}</h3>
-                <p className={styles.helper}>
-                  {needsReview.length
-                    ? `항목 확인 필요 ${needsReview.length}개`
-                    : "표시된 항목에 확인 필요 표시 없음"}
-                  {findings.length ? ` · 검토 의견 ${findings.length}개` : ""}
-                </p>
-                <p className={styles.helper}>
-                  {flow.planReady
-                    ? "내부 검토 기록 있음 · 기관 제출 전"
-                    : "전체 검토 미완료 · 신청 준비 미완료"}
-                </p>
-                {flow.planNeedsContextReview && (
-                  <p className={styles.helper}>
-                    자료와 신청 방향의 현재 연결은 확인이 필요합니다. 저장한 수정본의 내용 검토와
-                    내려받기를 이어갈 수 있으며, 항목 확인만으로 전체 검토가 완료되지는 않습니다.
+                {deferred && (
+                  <p className={styles.notice}>
+                    답변이 필요한 항목을 남겨 두었습니다. 자료가 준비되면 이어서 답할 수 있습니다.
                   </p>
                 )}
-                <p className={styles.helper}>
-                  이 버전의 본문·근거·남은 검토 의견을 Word에 담습니다. 이전 버전은 보관됩니다.
-                </p>
-                {locked || editingDirty || existingRunUnknown ? (
-                  <button type="button" className={styles.link} disabled>
-                    원고 v{latestPlan.version} Word 내려받기
-                  </button>
-                ) : (
-                  <a
+                <div className={styles.actions}>
+                  <button
+                    type="button"
                     className={styles.link}
-                    href={`/api/studio/cases/${company.id}/export?planId=${latestPlan.id}&format=docx`}
-                    download
+                    onClick={() => {
+                      setDeferred(true);
+                      setAnswering(false);
+                    }}
                   >
-                    원고 v{latestPlan.version} Word 내려받기
-                  </a>
+                    지금은 없어요 · 나중에 답하기
+                  </button>
+                  {
+                    <PrimaryAction
+                      disabled={
+                        locked ||
+                        answerContextChanged ||
+                        (!Object.values(questionAnswers).some((answer) => answer.trim()) &&
+                          !Object.values(questionLinks).some((link) => link.sourceIds.length))
+                      }
+                      onClick={() => void saveAnswers()}
+                    >
+                      {"답변 보관하기"}
+                    </PrimaryAction>
+                  }
+                </div>
+              </>
+            ) : lastRun?.status === "failed" && !retainedDraft ? (
+              <>
+                {title(
+                  "AI 준비가 중간에 멈췄어요",
+                  "이전 자료와 원고는 보관했습니다. 저장 상태와 보낼 자료를 확인한 뒤 다시 준비할 수 있습니다.",
                 )}
-              </section>
-              <section className={`${styles.sheet} ${styles.topic}`}>
-                <p className={styles.eyebrow}>
-                  {latestPlan.mode === "ai"
-                    ? "AI 작성 · 사용자 검토 필요"
-                    : latestPlan.mode === "assisted"
-                      ? "자료 기반 정리본 · AI 작성 아님"
-                      : "수정해 보관한 계획서"}
-                </p>
-                <h3 className={styles.topicTitle}>{latestPlan.content.title}</h3>
-                <p className={styles.body}>{latestPlan.content.summary}</p>
+                <section className={styles.sheet}>
+                  <h3 className={styles.subheading}>자동으로 다시 보내지 않았습니다</h3>
+                  <p className={styles.helper}>
+                    다시 준비할 때는 이전 요청의 처리 가능성과 현재 전송 범위를 확인받습니다.
+                  </p>
+                </section>
+                <div className={styles.actions}>
+                  {detailLink("이전 원고 확인", "plan")}
+                  {
+                    <PrimaryAction disabled={locked} onClick={() => void preparePreview()}>
+                      {"확인 후 다시 준비"}
+                    </PrimaryAction>
+                  }
+                </div>
+              </>
+            ) : showPlan && latestPlan ? (
+              <>
+                {title(
+                  "준비한 계획서를 확인해 주세요",
+                  "요약을 먼저 살펴보고, 확인이 필요한 부분이나 다른 내용만 고쳐 주세요.",
+                )}
+                <section className={styles.sheet} aria-label="현재 원고와 검토 상태">
+                  <h3 className={styles.subheading}>현재 원고 v{latestPlan.version}</h3>
+                  <p className={styles.helper}>
+                    {needsReview.length
+                      ? `항목 확인 필요 ${needsReview.length}개`
+                      : "표시된 항목에 확인 필요 표시 없음"}
+                    {findings.length ? ` · 검토 의견 ${findings.length}개` : ""}
+                  </p>
+                  <p className={styles.helper}>
+                    {flow.planReady
+                      ? "내부 검토 기록 있음 · 기관 제출 전"
+                      : "전체 검토 미완료 · 신청 준비 미완료"}
+                  </p>
+                  {flow.planNeedsContextReview && (
+                    <p className={styles.helper}>
+                      자료와 신청 방향의 현재 연결은 확인이 필요합니다. 저장한 수정본의 내용 검토와
+                      내려받기를 이어갈 수 있으며, 항목 확인만으로 전체 검토가 완료되지는 않습니다.
+                    </p>
+                  )}
+                  <p className={styles.helper}>
+                    이 버전의 본문·근거·남은 검토 의견을 Word에 담습니다. 이전 버전은 보관됩니다.
+                  </p>
+                  {locked || editingDirty || existingRunUnknown ? (
+                    <button type="button" className={styles.link} disabled>
+                      원고 v{latestPlan.version} Word 내려받기
+                    </button>
+                  ) : (
+                    <a
+                      className={styles.link}
+                      href={`/api/studio/cases/${company.id}/export?planId=${latestPlan.id}&format=docx`}
+                      download
+                    >
+                      원고 v{latestPlan.version} Word 내려받기
+                    </a>
+                  )}
+                </section>
+                <section className={`${styles.sheet} ${styles.topic}`}>
+                  <p className={styles.eyebrow}>
+                    {latestPlan.mode === "ai"
+                      ? "AI 작성 · 사용자 검토 필요"
+                      : latestPlan.mode === "assisted"
+                        ? "자료 기반 정리본 · AI 작성 아님"
+                        : "수정해 보관한 계획서"}
+                  </p>
+                  <h3 className={styles.topicTitle}>{latestPlan.content.title}</h3>
+                  <p className={styles.body}>{latestPlan.content.summary}</p>
+                  <button
+                    type="button"
+                    className={styles.link}
+                    disabled={locked || editingDirty}
+                    onClick={openOverview}
+                  >
+                    제목·요약 고치기
+                  </button>
+                  <details className={styles.details}>
+                    <summary>전체 사업계획서 읽기</summary>
+                    {latestPlan.content.sections.map((item) => (
+                      <article key={item.key} className="mt-6 border-t pt-5">
+                        <h4 className={styles.subheading}>{item.title}</h4>
+                        <p className={styles.body}>{item.content}</p>
+                        <button
+                          type="button"
+                          className={styles.link}
+                          onClick={() => openSection(item.key)}
+                          disabled={locked}
+                        >
+                          이 부분 고치기{item.needsConfirmation ? " · 확인 필요" : ""}
+                        </button>
+                      </article>
+                    ))}
+                  </details>
+                </section>
+                <GuidedPlanEvidence company={company} plan={latestPlan} />
+                <GuidedRepairSummary company={company} run={lastRun} />
+                {answerSelection && (
+                  <section className={styles.notice} aria-label="저장한 답변으로 원고 보완">
+                    <h3 className={styles.subheading}>답변을 저장했어요. 관련 항목을 보완하세요</h3>
+                    <p>
+                      방금 저장한 답변을 선택한 상태로 수정안을 준비합니다. 질문과 항목을 확인한 뒤
+                      전송하며, 기존 원고는 비교 후 새 버전으로 채택할 때까지 그대로입니다.
+                    </p>
+                    <PrimaryAction
+                      disabled={locked || editingDirty}
+                      onClick={() => {
+                        const selected = answerSupplementSelection(company, answerSaved);
+                        if (!selected) return;
+                        setSupplementInitial(selected);
+                        setSupplementOpen(true);
+                      }}
+                    >
+                      이 답변으로 항목 수정안 만들기
+                    </PrimaryAction>
+                  </section>
+                )}
+                {!answerSelection &&
+                  (flow.guidedInputState !== "changed" || latestPlan.mode === "manual") && (
+                    <button
+                      type="button"
+                      className={`${styles.link} mr-4 mb-3`}
+                      disabled={locked || editingDirty}
+                      onClick={() => setSupplementOpen(true)}
+                    >
+                      보완 자료로 수정안 만들기
+                    </button>
+                  )}
                 <button
                   type="button"
                   className={styles.link}
                   disabled={locked || editingDirty}
-                  onClick={openOverview}
+                  onClick={() => setPublicEvidenceOpen(true)}
                 >
-                  제목·요약 고치기
+                  공개 근거 보완
                 </button>
-                <details className={styles.details}>
-                  <summary>전체 사업계획서 읽기</summary>
-                  {latestPlan.content.sections.map((item) => (
-                    <article key={item.key} className="mt-6 border-t pt-5">
-                      <h4 className={styles.subheading}>{item.title}</h4>
-                      <p className={styles.body}>{item.content}</p>
-                      <button
-                        type="button"
-                        className={styles.link}
-                        onClick={() => openSection(item.key)}
-                        disabled={locked}
-                      >
-                        이 부분 고치기{item.needsConfirmation ? " · 확인 필요" : ""}
-                      </button>
-                    </article>
-                  ))}
-                </details>
-              </section>
-              <GuidedPlanEvidence company={company} plan={latestPlan} />
-              <GuidedRepairSummary company={company} run={lastRun} />
-              {answerSelection && (
-                <section className={styles.notice} aria-label="저장한 답변으로 원고 보완">
-                  <h3 className={styles.subheading}>답변을 저장했어요. 관련 항목을 보완하세요</h3>
-                  <p>
-                    방금 저장한 답변을 선택한 상태로 수정안을 준비합니다. 질문과 항목을 확인한 뒤
-                    전송하며, 기존 원고는 비교 후 새 버전으로 채택할 때까지 그대로입니다.
+                {questions.length > 0 && (
+                  <section className={styles.sheet} aria-label="우선 보완 질문">
+                    <h3 className={styles.subheading}>먼저 보완하면 좋은 질문</h3>
+                    <p className={styles.helper}>
+                      처음 3개를 보여 드립니다. 모르는 내용은 남겨 두고 초안을 계속 검토할 수
+                      있습니다.
+                    </p>
+                    {questions.slice(0, 3).map((question) => (
+                      <article key={question.id} className="mt-4">
+                        <p className={styles.label}>{question.question}</p>
+                        <GuidedQuestionCard question={question} company={company} />
+                      </article>
+                    ))}
+                    <button
+                      type="button"
+                      className={styles.link}
+                      disabled={locked}
+                      onClick={openAnswers}
+                    >
+                      답변·메모·보완 자료 연결
+                      {questions.length > 3 ? ` · 전체 ${questions.length}개` : ""}
+                    </button>
+                  </section>
+                )}
+
+                {(needsReview.length > 0 || findings.length > 0 || aiFindings.length > 0) && (
+                  <div className={styles.notice}>
+                    <strong>확인할 내용이 남아 있어요</strong>
+                    <ul className={styles.reviewList}>
+                      {[
+                        ...aiFindings,
+                        ...findings.map((finding) => finding.action || finding.message),
+                        ...needsReview.map((item) => `${item.title}: 사실과 근거 확인`),
+                      ]
+                        .slice(0, 3)
+                        .map((item, index) => (
+                          <li key={index}>{item}</li>
+                        ))}
+                    </ul>
+                    {Math.max(findings.length, needsReview.length) > 3 && (
+                      <p className="mt-2">나머지는 전체 원고에서 확인할 수 있습니다.</p>
+                    )}
+                  </div>
+                )}
+                {findingEntries.length > 0 && (
+                  <section className={styles.sheet} aria-label="의견별 검토 판단 바로가기">
+                    <h3 className={styles.subheading}>검토 의견에 판단 남기기</h3>
+                    <p className={styles.helper}>
+                      의견을 선택해 담당자 해결 판단이나 보류 이유를 기록하세요. 원고의 확인 필요
+                      표시는 유지됩니다.
+                    </p>
+                    <ul className={styles.reviewList}>
+                      {findingEntries.map(({ finding, findingIndex }) => (
+                        <li key={findingIndex}>
+                          <button
+                            type="button"
+                            className={styles.link}
+                            disabled={locked || editingDirty || existingRunUnknown}
+                            onClick={() => openReview(findingIndex)}
+                          >
+                            의견 {findingIndex + 1}: {finding.message}
+                          </button>
+                          <GuidedReviewDecisionSummary
+                            company={company}
+                            plan={latestPlan}
+                            findingIndex={findingIndex}
+                          />
+                        </li>
+                      ))}
+                    </ul>
+                  </section>
+                )}
+                {flow.guidedInputState === "changed" && (
+                  <p className={styles.notice}>
+                    작성 당시와 현재 자료가 다릅니다. 보완해 저장한 내용과 아직 반영하지 않은 내용을
+                    함께 확인해 주세요. 필요한 항목만 고치거나 보완할 수 있습니다.
                   </p>
-                  <PrimaryAction
-                    disabled={locked || editingDirty}
-                    onClick={() => {
-                      const selected = answerSupplementSelection(company, answerSaved);
-                      if (!selected) return;
-                      setSupplementInitial(selected);
-                      setSupplementOpen(true);
-                    }}
-                  >
-                    이 답변으로 항목 수정안 만들기
-                  </PrimaryAction>
-                </section>
-              )}
-              {!answerSelection &&
-                (flow.guidedInputState !== "changed" || latestPlan.mode === "manual") && (
+                )}
+                <div className={styles.actions}>
                   <button
                     type="button"
-                    className={`${styles.link} mr-4 mb-3`}
-                    disabled={locked || editingDirty}
-                    onClick={() => setSupplementOpen(true)}
+                    className={styles.link}
+                    onClick={() => openSection(latestPlan.content.sections[0]?.key ?? "")}
+                    disabled={locked}
                   >
-                    보완 자료로 수정안 만들기
+                    내용 고치기
                   </button>
+                  {answerSelection ? null : needsReview.length ? (
+                    <PrimaryAction
+                      disabled={locked}
+                      onClick={() => openSection(needsReview[0].key)}
+                    >
+                      {"확인이 필요한 부분 보기"}
+                    </PrimaryAction>
+                  ) : findings.some(
+                      (item) => item.severity === "error" || item.category === "confirmation",
+                    ) ? (
+                    <PrimaryAction
+                      disabled={locked || editingDirty || existingRunUnknown}
+                      onClick={() => openReview()}
+                    >
+                      {"검토 의견 확인하기"}
+                    </PrimaryAction>
+                  ) : flow.planNeedsContextReview && latestPlan.mode === "manual" ? (
+                    <PrimaryAction disabled={locked} onClick={() => onDetails("analysis")}>
+                      {"자료·신청 방향 확인"}
+                    </PrimaryAction>
+                  ) : flow.guidedInputState === "changed" &&
+                    latestPlan.content.interviewQuestions.length > 0 ? (
+                    <PrimaryAction
+                      disabled={locked || editingDirty}
+                      onClick={() => setSupplementOpen(true)}
+                    >
+                      {"보완 자료로 수정안 만들기"}
+                    </PrimaryAction>
+                  ) : flow.guidedInputState === "changed" ? (
+                    <PrimaryAction
+                      disabled={locked || editingDirty}
+                      onClick={() => void preparePreview()}
+                    >
+                      현재 자료로 다시 준비
+                    </PrimaryAction>
+                  ) : flow.guidedInputState === "unverified" ? (
+                    <PrimaryAction disabled={locked} onClick={() => void reconcile()}>
+                      {"최신 자료 연결 확인"}
+                    </PrimaryAction>
+                  ) : flow.planNeedsContextReview ? (
+                    <PrimaryAction disabled={locked} onClick={() => onDetails("analysis")}>
+                      {"자료·신청 방향 확인"}
+                    </PrimaryAction>
+                  ) : latestPlan.confirmedAt && flow.planReady ? (
+                    <PrimaryAction disabled={locked} onClick={() => setStep("application")}>
+                      {"신청 준비 이어가기"}
+                    </PrimaryAction>
+                  ) : latestPlan.confirmedAt ? (
+                    <PrimaryAction disabled={locked} onClick={() => onDetails("plan")}>
+                      {"준비 상태 자세히 확인"}
+                    </PrimaryAction>
+                  ) : (
+                    <PrimaryAction disabled={locked} onClick={() => void confirmPlan()}>
+                      {"검토 마치고 신청 준비"}
+                    </PrimaryAction>
+                  )}
+                </div>
+                <details className={styles.details}>
+                  <summary>추가 자료·AI 다시 작성·내려받기</summary>
+                  <div className={styles.support}>
+                    <button
+                      type="button"
+                      className={styles.link}
+                      disabled={locked}
+                      onClick={() => setStep("materials")}
+                    >
+                      자료 추가
+                    </button>
+                    <button
+                      type="button"
+                      className={styles.link}
+                      disabled={locked}
+                      onClick={() => void preparePreview()}
+                    >
+                      현재 자료로 AI 다시 작성
+                    </button>
+                    <button
+                      type="button"
+                      className={styles.link}
+                      disabled={locked}
+                      onClick={() => setPackagePlanId(latestPlan.id)}
+                    >
+                      원고·첨부 보관 및 내려받기
+                    </button>
+                  </div>
+                </details>
+              </>
+            ) : candidate ? (
+              <>
+                {title(
+                  "이 방향으로 계획서를 준비할까요?",
+                  "자료에서 찾은 신청 주제입니다. 실제 사업과 맞는지 확인해 주세요.",
                 )}
-              <button
-                type="button"
-                className={styles.link}
-                disabled={locked || editingDirty}
-                onClick={() => setPublicEvidenceOpen(true)}
-              >
-                공개 근거 보완
-              </button>
-              {questions.length > 0 && (
-                <section className={styles.sheet} aria-label="우선 보완 질문">
-                  <h3 className={styles.subheading}>먼저 보완하면 좋은 질문</h3>
-                  <p className={styles.helper}>
-                    처음 3개를 보여 드립니다. 모르는 내용은 남겨 두고 초안을 계속 검토할 수
-                    있습니다.
+                <section className={`${styles.sheet} ${styles.topic}`}>
+                  <p className={styles.eyebrow}>
+                    {company.analysis?.mode === "ai"
+                      ? "AI 추천 신청 주제"
+                      : "자료에서 정리한 신청 주제"}
                   </p>
-                  {questions.slice(0, 3).map((question) => (
-                    <article key={question.id} className="mt-4">
-                      <p className={styles.label}>{question.question}</p>
-                      <GuidedQuestionCard question={question} company={company} />
-                    </article>
-                  ))}
+                  <h3 className={styles.topicTitle}>{candidate.title}</h3>
+                  <dl className={styles.facts}>
+                    <div className={styles.fact}>
+                      <dt>고객의 문제</dt>
+                      <dd>{candidate.problem}</dd>
+                    </div>
+                    <div className={styles.fact}>
+                      <dt>해결 방법</dt>
+                      <dd>{candidate.solution}</dd>
+                    </div>
+                    <div className={styles.fact}>
+                      <dt>추천 이유</dt>
+                      <dd>{candidate.recommendation}</dd>
+                    </div>
+                  </dl>
+                  <details className={styles.details}>
+                    <summary>근거와 확인할 내용</summary>
+                    <EvidenceList company={company} evidence={candidate.evidence} />
+                    <ul className={styles.reviewList}>
+                      {candidate.gaps.map((gap, index) => (
+                        <li key={index}>{gap}</li>
+                      ))}
+                    </ul>
+                  </details>
+                </section>
+                {!selection && (
+                  <div className="mt-5">
+                    <label className={styles.label} htmlFor="guided-choice-reason">
+                      이 주제가 우리 회사에 맞는 이유를 한 문장으로 알려 주세요
+                    </label>
+                    <textarea
+                      id="guided-choice-reason"
+                      className={styles.textarea}
+                      maxLength={2000}
+                      value={reason}
+                      onChange={(event) => setReason(event.target.value)}
+                      placeholder="예: 실제로 운영 중인 서비스와 담당 인력의 경험을 설명할 수 있습니다."
+                    />
+                  </div>
+                )}
+                <div className={styles.actions}>
+                  <button
+                    type="button"
+                    className={styles.link}
+                    onClick={() => setStep("materials")}
+                    disabled={locked}
+                  >
+                    회사 설명·자료 고치기
+                  </button>
+                  {selection && lastRun?.status === "awaiting_choice" ? (
+                    <PrimaryAction
+                      disabled={locked}
+                      onClick={() =>
+                        void runPreparation({
+                          action: "continue",
+                          revision: company.revision,
+                          clientRequestId: crypto.randomUUID(),
+                          runId: lastRun.id,
+                        })
+                      }
+                    >
+                      {"선택한 주제로 작성 이어가기"}
+                    </PrimaryAction>
+                  ) : selection ? (
+                    <PrimaryAction disabled={locked} onClick={() => void preparePreview()}>
+                      {"선택한 주제로 AI 작성"}
+                    </PrimaryAction>
+                  ) : (
+                    <PrimaryAction
+                      disabled={locked || !reason.trim()}
+                      onClick={() => void chooseCandidate()}
+                    >
+                      {"이 주제로 작성"}
+                    </PrimaryAction>
+                  )}
+                </div>
+                {(company.analysis?.candidates.length ?? 0) > 1 && (
+                  <details className={styles.details}>
+                    <summary>다른 신청 주제 보기</summary>
+                    <div className={styles.support}>
+                      {company.analysis?.candidates
+                        .filter((item) => item.id !== candidate.id)
+                        .map((item) => (
+                          <button
+                            type="button"
+                            className={styles.link}
+                            disabled={locked}
+                            key={item.id}
+                            onClick={() => {
+                              setCandidateId(item.id);
+                              setReason("");
+                            }}
+                          >
+                            {item.title}
+                          </button>
+                        ))}
+                    </div>
+                  </details>
+                )}
+              </>
+            ) : (
+              <>
+                {title(
+                  hasSourceText || hasDescription
+                    ? "이 자료로 계획서를 준비합니다"
+                    : "회사 설명부터 시작할 수 있어요",
+                  hasSourceText || hasDescription
+                    ? "현재 자료로 설명할 수 있는 신청 방향을 찾고, 필요한 내용만 질문합니다."
+                    : "파일이 없어도 현재 사업과 고객을 설명하면 준비를 시작할 수 있습니다.",
+                )}
+                {hasSourceText || hasDescription ? (
+                  <section className={styles.sheet}>
+                    <h3 className={styles.subheading}>저장한 자료와 설명</h3>
+                    <p className={styles.helper}>
+                      자료 {company.sources.length}개{hasDescription ? " · 회사 설명 있음" : ""}
+                    </p>
+                    {company.profile.technologySummary && (
+                      <p className={`${styles.body} mt-4`}>{company.profile.technologySummary}</p>
+                    )}
+                    {!status?.aiConfigured && (
+                      <div className={styles.notice}>
+                        <strong>AI 서비스 연결이 필요해요</strong>자료는 보관되어 있습니다. 운영자가
+                        연결을 마치면 같은 자료로 이어서 작성할 수 있습니다.
+                      </div>
+                    )}
+                  </section>
+                ) : (
+                  <div className={styles.notice}>
+                    <strong>가진 자료부터 준비하세요</strong>회사소개서가 없으면 어떤 일을 하는
+                    회사인지 직접 설명해 주세요.
+                  </div>
+                )}
+                {questions.length > 0 && (
+                  <div className={styles.notice}>
+                    <strong>더 알려 주시면 도움이 되는 내용</strong>
+                    <ul className={styles.reviewList}>
+                      {shownQuestions.map((question) => (
+                        <li key={question.id}>{question.question}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                <div className={styles.actions}>
+                  <button
+                    type="button"
+                    className={styles.link}
+                    onClick={() => setStep("materials")}
+                    disabled={locked}
+                  >
+                    자료 추가
+                  </button>
+                  {hasSourceText || hasDescription ? (
+                    status?.aiConfigured ? (
+                      <PrimaryAction disabled={locked} onClick={() => void preparePreview()}>
+                        {"AI로 계획서 준비"}
+                      </PrimaryAction>
+                    ) : (
+                      <PrimaryAction disabled={locked} onClick={onSettings}>
+                        {"AI 연결 상태 확인"}
+                      </PrimaryAction>
+                    )
+                  ) : (
+                    <PrimaryAction
+                      disabled={locked}
+                      onClick={() => {
+                        setDescribing(true);
+                        setStep("materials");
+                      }}
+                    >
+                      {"회사 설명부터 시작"}
+                    </PrimaryAction>
+                  )}
+                </div>
+                {questions.length > 0 && (
+                  <div className={styles.support}>
+                    <button
+                      type="button"
+                      className={styles.link}
+                      disabled={locked}
+                      onClick={() => setDeferred(true)}
+                    >
+                      지금 자료가 없어요
+                    </button>
+                  </div>
+                )}
+                {deferred && (
+                  <p className={styles.helper}>
+                    설명과 준비 과제를 보관했습니다. 자료가 생기면 이 화면에서 이어 가세요.
+                  </p>
+                )}
+                {!status?.aiConfigured && (
+                  <details className={styles.details}>
+                    <summary>AI 연결 전 할 수 있는 일</summary>
+                    {detailLink("저장 자료로 정리본 준비", "analysis")}
+                    <p className={styles.helper}>
+                      자료를 항목별로 정리하는 기능입니다. AI 사업계획서 작성과 구분합니다.
+                    </p>
+                  </details>
+                )}
+              </>
+            )}
+            {answerSaved && (
+              <p role="status" className={styles.notice}>
+                보완 내용을 사용자 진술 자료로 보관했습니다. 기존 원고·인용·선택 범위는
+                그대로입니다. AI에 사용할 때는 새 자료 선택과 전송 동의가 필요합니다.
+              </p>
+            )}
+            {!answering &&
+              !editingSection &&
+              !editingOverview &&
+              !existingRunUnknown &&
+              (questions.length > 0 || answerContext) && (
+                <div className={styles.support}>
                   <button
                     type="button"
                     className={styles.link}
                     disabled={locked}
                     onClick={openAnswers}
                   >
-                    답변·메모·보완 자료 연결
-                    {questions.length > 3 ? ` · 전체 ${questions.length}개` : ""}
-                  </button>
-                </section>
-              )}
-
-              {(needsReview.length > 0 || findings.length > 0 || aiFindings.length > 0) && (
-                <div className={styles.notice}>
-                  <strong>확인할 내용이 남아 있어요</strong>
-                  <ul className={styles.reviewList}>
-                    {[
-                      ...aiFindings,
-                      ...findings.map((finding) => finding.action || finding.message),
-                      ...needsReview.map((item) => `${item.title}: 사실과 근거 확인`),
-                    ]
-                      .slice(0, 3)
-                      .map((item, index) => (
-                        <li key={index}>{item}</li>
-                      ))}
-                  </ul>
-                  {Math.max(findings.length, needsReview.length) > 3 && (
-                    <p className="mt-2">나머지는 전체 원고에서 확인할 수 있습니다.</p>
-                  )}
-                </div>
-              )}
-              {findingEntries.length > 0 && (
-                <section className={styles.sheet} aria-label="의견별 검토 판단 바로가기">
-                  <h3 className={styles.subheading}>검토 의견에 판단 남기기</h3>
-                  <p className={styles.helper}>
-                    의견을 선택해 담당자 해결 판단이나 보류 이유를 기록하세요. 원고의 확인 필요
-                    표시는 유지됩니다.
-                  </p>
-                  <ul className={styles.reviewList}>
-                    {findingEntries.map(({ finding, findingIndex }) => (
-                      <li key={findingIndex}>
-                        <button
-                          type="button"
-                          className={styles.link}
-                          disabled={locked || editingDirty || existingRunUnknown}
-                          onClick={() => openReview(findingIndex)}
-                        >
-                          의견 {findingIndex + 1}: {finding.message}
-                        </button>
-                        <GuidedReviewDecisionSummary
-                          company={company}
-                          plan={latestPlan}
-                          findingIndex={findingIndex}
-                        />
-                      </li>
-                    ))}
-                  </ul>
-                </section>
-              )}
-              {flow.guidedInputState === "changed" && (
-                <p className={styles.notice}>
-                  작성 당시와 현재 자료가 다릅니다. 보완해 저장한 내용과 아직 반영하지 않은 내용을
-                  함께 확인해 주세요. 필요한 항목만 고치거나 보완할 수 있습니다.
-                </p>
-              )}
-              <div className={styles.actions}>
-                <button
-                  type="button"
-                  className={styles.link}
-                  onClick={() => openSection(latestPlan.content.sections[0]?.key ?? "")}
-                  disabled={locked}
-                >
-                  내용 고치기
-                </button>
-                {answerSelection ? null : needsReview.length ? (
-                  <PrimaryAction disabled={locked} onClick={() => openSection(needsReview[0].key)}>
-                    {"확인이 필요한 부분 보기"}
-                  </PrimaryAction>
-                ) : findings.some(
-                    (item) => item.severity === "error" || item.category === "confirmation",
-                  ) ? (
-                  <PrimaryAction
-                    disabled={locked || editingDirty || existingRunUnknown}
-                    onClick={() => openReview()}
-                  >
-                    {"검토 의견 확인하기"}
-                  </PrimaryAction>
-                ) : flow.planNeedsContextReview && latestPlan.mode === "manual" ? (
-                  <PrimaryAction disabled={locked} onClick={() => onDetails("analysis")}>
-                    {"자료·신청 방향 확인"}
-                  </PrimaryAction>
-                ) : flow.guidedInputState === "changed" &&
-                  latestPlan.content.interviewQuestions.length > 0 ? (
-                  <PrimaryAction
-                    disabled={locked || editingDirty}
-                    onClick={() => setSupplementOpen(true)}
-                  >
-                    {"보완 자료로 수정안 만들기"}
-                  </PrimaryAction>
-                ) : flow.guidedInputState === "changed" ? (
-                  <PrimaryAction
-                    disabled={locked || editingDirty}
-                    onClick={() => void preparePreview()}
-                  >
-                    현재 자료로 다시 준비
-                  </PrimaryAction>
-                ) : flow.guidedInputState === "unverified" ? (
-                  <PrimaryAction disabled={locked} onClick={() => void reconcile()}>
-                    {"최신 자료 연결 확인"}
-                  </PrimaryAction>
-                ) : flow.planNeedsContextReview ? (
-                  <PrimaryAction disabled={locked} onClick={() => onDetails("analysis")}>
-                    {"자료·신청 방향 확인"}
-                  </PrimaryAction>
-                ) : latestPlan.confirmedAt && flow.planReady ? (
-                  <PrimaryAction disabled={locked} onClick={() => setStep("application")}>
-                    {"신청 준비 이어가기"}
-                  </PrimaryAction>
-                ) : latestPlan.confirmedAt ? (
-                  <PrimaryAction disabled={locked} onClick={() => onDetails("plan")}>
-                    {"준비 상태 자세히 확인"}
-                  </PrimaryAction>
-                ) : (
-                  <PrimaryAction disabled={locked} onClick={() => void confirmPlan()}>
-                    {"검토 마치고 신청 준비"}
-                  </PrimaryAction>
-                )}
-              </div>
-              <details className={styles.details}>
-                <summary>추가 자료·AI 다시 작성·내려받기</summary>
-                <div className={styles.support}>
-                  <button
-                    type="button"
-                    className={styles.link}
-                    disabled={locked}
-                    onClick={() => setStep("materials")}
-                  >
-                    자료 추가
-                  </button>
-                  <button
-                    type="button"
-                    className={styles.link}
-                    disabled={locked}
-                    onClick={() => void preparePreview()}
-                  >
-                    현재 자료로 AI 다시 작성
-                  </button>
-                  <button
-                    type="button"
-                    className={styles.link}
-                    disabled={locked}
-                    onClick={() => setPackagePlanId(latestPlan.id)}
-                  >
-                    원고·첨부 보관 및 내려받기
-                  </button>
-                </div>
-              </details>
-            </>
-          ) : candidate ? (
-            <>
-              {title(
-                "이 방향으로 계획서를 준비할까요?",
-                "자료에서 찾은 신청 주제입니다. 실제 사업과 맞는지 확인해 주세요.",
-              )}
-              <section className={`${styles.sheet} ${styles.topic}`}>
-                <p className={styles.eyebrow}>
-                  {company.analysis?.mode === "ai"
-                    ? "AI 추천 신청 주제"
-                    : "자료에서 정리한 신청 주제"}
-                </p>
-                <h3 className={styles.topicTitle}>{candidate.title}</h3>
-                <dl className={styles.facts}>
-                  <div className={styles.fact}>
-                    <dt>고객의 문제</dt>
-                    <dd>{candidate.problem}</dd>
-                  </div>
-                  <div className={styles.fact}>
-                    <dt>해결 방법</dt>
-                    <dd>{candidate.solution}</dd>
-                  </div>
-                  <div className={styles.fact}>
-                    <dt>추천 이유</dt>
-                    <dd>{candidate.recommendation}</dd>
-                  </div>
-                </dl>
-                <details className={styles.details}>
-                  <summary>근거와 확인할 내용</summary>
-                  <EvidenceList company={company} evidence={candidate.evidence} />
-                  <ul className={styles.reviewList}>
-                    {candidate.gaps.map((gap, index) => (
-                      <li key={index}>{gap}</li>
-                    ))}
-                  </ul>
-                </details>
-              </section>
-              {!selection && (
-                <div className="mt-5">
-                  <label className={styles.label} htmlFor="guided-choice-reason">
-                    이 주제가 우리 회사에 맞는 이유를 한 문장으로 알려 주세요
-                  </label>
-                  <textarea
-                    id="guided-choice-reason"
-                    className={styles.textarea}
-                    maxLength={2000}
-                    value={reason}
-                    onChange={(event) => setReason(event.target.value)}
-                    placeholder="예: 실제로 운영 중인 서비스와 담당 인력의 경험을 설명할 수 있습니다."
-                  />
-                </div>
-              )}
-              <div className={styles.actions}>
-                <button
-                  type="button"
-                  className={styles.link}
-                  onClick={() => setStep("materials")}
-                  disabled={locked}
-                >
-                  회사 설명·자료 고치기
-                </button>
-                {selection && lastRun?.status === "awaiting_choice" ? (
-                  <PrimaryAction
-                    disabled={locked}
-                    onClick={() =>
-                      void runPreparation({
-                        action: "continue",
-                        revision: company.revision,
-                        clientRequestId: crypto.randomUUID(),
-                        runId: lastRun.id,
-                      })
-                    }
-                  >
-                    {"선택한 주제로 작성 이어가기"}
-                  </PrimaryAction>
-                ) : selection ? (
-                  <PrimaryAction disabled={locked} onClick={() => void preparePreview()}>
-                    {"선택한 주제로 AI 작성"}
-                  </PrimaryAction>
-                ) : (
-                  <PrimaryAction
-                    disabled={locked || !reason.trim()}
-                    onClick={() => void chooseCandidate()}
-                  >
-                    {"이 주제로 작성"}
-                  </PrimaryAction>
-                )}
-              </div>
-              {(company.analysis?.candidates.length ?? 0) > 1 && (
-                <details className={styles.details}>
-                  <summary>다른 신청 주제 보기</summary>
-                  <div className={styles.support}>
-                    {company.analysis?.candidates
-                      .filter((item) => item.id !== candidate.id)
-                      .map((item) => (
-                        <button
-                          type="button"
-                          className={styles.link}
-                          disabled={locked}
-                          key={item.id}
-                          onClick={() => {
-                            setCandidateId(item.id);
-                            setReason("");
-                          }}
-                        >
-                          {item.title}
-                        </button>
-                      ))}
-                  </div>
-                </details>
-              )}
-            </>
-          ) : (
-            <>
-              {title(
-                hasSourceText || hasDescription
-                  ? "이 자료로 계획서를 준비합니다"
-                  : "회사 설명부터 시작할 수 있어요",
-                hasSourceText || hasDescription
-                  ? "현재 자료로 설명할 수 있는 신청 방향을 찾고, 필요한 내용만 질문합니다."
-                  : "파일이 없어도 현재 사업과 고객을 설명하면 준비를 시작할 수 있습니다.",
-              )}
-              {hasSourceText || hasDescription ? (
-                <section className={styles.sheet}>
-                  <h3 className={styles.subheading}>저장한 자료와 설명</h3>
-                  <p className={styles.helper}>
-                    자료 {company.sources.length}개{hasDescription ? " · 회사 설명 있음" : ""}
-                  </p>
-                  {company.profile.technologySummary && (
-                    <p className={`${styles.body} mt-4`}>{company.profile.technologySummary}</p>
-                  )}
-                  {!status?.aiConfigured && (
-                    <div className={styles.notice}>
-                      <strong>AI 서비스 연결이 필요해요</strong>자료는 보관되어 있습니다. 운영자가
-                      연결을 마치면 같은 자료로 이어서 작성할 수 있습니다.
-                    </div>
-                  )}
-                </section>
-              ) : (
-                <div className={styles.notice}>
-                  <strong>가진 자료부터 준비하세요</strong>회사소개서가 없으면 어떤 일을 하는
-                  회사인지 직접 설명해 주세요.
-                </div>
-              )}
-              {questions.length > 0 && (
-                <div className={styles.notice}>
-                  <strong>더 알려 주시면 도움이 되는 내용</strong>
-                  <ul className={styles.reviewList}>
-                    {shownQuestions.map((question) => (
-                      <li key={question.id}>{question.question}</li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-              <div className={styles.actions}>
-                <button
-                  type="button"
-                  className={styles.link}
-                  onClick={() => setStep("materials")}
-                  disabled={locked}
-                >
-                  자료 추가
-                </button>
-                {hasSourceText || hasDescription ? (
-                  status?.aiConfigured ? (
-                    <PrimaryAction disabled={locked} onClick={() => void preparePreview()}>
-                      {"AI로 계획서 준비"}
-                    </PrimaryAction>
-                  ) : (
-                    <PrimaryAction disabled={locked} onClick={onSettings}>
-                      {"AI 연결 상태 확인"}
-                    </PrimaryAction>
-                  )
-                ) : (
-                  <PrimaryAction
-                    disabled={locked}
-                    onClick={() => {
-                      setDescribing(true);
-                      setStep("materials");
-                    }}
-                  >
-                    {"회사 설명부터 시작"}
-                  </PrimaryAction>
-                )}
-              </div>
-              {questions.length > 0 && (
-                <div className={styles.support}>
-                  <button
-                    type="button"
-                    className={styles.link}
-                    disabled={locked}
-                    onClick={() => setDeferred(true)}
-                  >
-                    지금 자료가 없어요
+                    {Object.values(questionAnswers).some((value) => value.trim())
+                      ? "보관한 답변 보기"
+                      : "필요한 질문에 답하기"}
                   </button>
                 </div>
               )}
-              {deferred && (
-                <p className={styles.helper}>
-                  설명과 준비 과제를 보관했습니다. 자료가 생기면 이 화면에서 이어 가세요.
-                </p>
-              )}
-              {!status?.aiConfigured && (
-                <details className={styles.details}>
-                  <summary>AI 연결 전 할 수 있는 일</summary>
-                  {detailLink("저장 자료로 정리본 준비", "analysis")}
-                  <p className={styles.helper}>
-                    자료를 항목별로 정리하는 기능입니다. AI 사업계획서 작성과 구분합니다.
-                  </p>
-                </details>
-              )}
-            </>
-          )}
-          {answerSaved && (
-            <p role="status" className={styles.notice}>
-              보완 내용을 사용자 진술 자료로 보관했습니다. 기존 원고·인용·선택 범위는 그대로입니다.
-              AI에 사용할 때는 새 자료 선택과 전송 동의가 필요합니다.
-            </p>
-          )}
-          {!answering &&
-            !editingSection &&
-            !editingOverview &&
-            !existingRunUnknown &&
-            (questions.length > 0 || answerContext) && (
-              <div className={styles.support}>
-                <button
-                  type="button"
-                  className={styles.link}
-                  disabled={locked}
-                  onClick={openAnswers}
-                >
-                  {Object.values(questionAnswers).some((value) => value.trim())
-                    ? "보관한 답변 보기"
-                    : "필요한 질문에 답하기"}
-                </button>
-              </div>
+          </>
+        ) : (
+          <>
+            {title(
+              flow.step === "application" ? flow.title : "신청 준비부터 차례로 이어갑니다",
+              flow.step === "application"
+                ? flow.description
+                : "계획서와 필요한 자료를 확인한 뒤 공식 사이트에 연결합니다.",
             )}
-        </>
-      ) : (
-        <>
-          {title(
-            flow.step === "application" ? flow.title : "신청 준비부터 차례로 이어갑니다",
-            flow.step === "application"
-              ? flow.description
-              : "계획서와 필요한 자료를 확인한 뒤 공식 사이트에 연결합니다.",
-          )}
-          {flow.followup && flow.followup.state !== "none" && (
-            <GuidedFollowupStatus
+            {flow.followup && flow.followup.state !== "none" && (
+              <GuidedFollowupStatus
+                company={company}
+                stage={company.stage}
+                summary={flow.followup}
+                disabled={locked}
+                onNavigate={(target) => onDetails("workflow", target)}
+              />
+            )}
+            {(!flow.followup || flow.followup.state === "none") &&
+              (flow.planReady ? (
+                <GuidedVentureConnection
+                  key={`venture-overview:${company.id}:${company.revision}`}
+                  company={company}
+                  disabled={locked}
+                  onOpen={(target) => onDetails("venturein", undefined, target)}
+                />
+              ) : (
+                <section className={`${styles.sheet} ${styles.topic}`}>
+                  <p className={styles.eyebrow}>지금 할 일</p>
+                  <h3 className={styles.subheading}>
+                    {flow.step === "application"
+                      ? (flow.action?.label ?? "다음 안내 기다리기")
+                      : flow.title}
+                  </h3>
+                  <p className={styles.helper}>
+                    {flow.step === "application"
+                      ? "입력·첨부할 자료와 최종 제출은 각각 내용을 확인받습니다. 기관 결과가 확인되기 전에는 접수 완료로 표시하지 않습니다."
+                      : flow.description}
+                  </p>
+                </section>
+              ))}
+            <div className={styles.actions}>
+              <button
+                type="button"
+                className={styles.link}
+                onClick={() => setStep("plan")}
+                disabled={locked}
+              >
+                계획서 다시 보기
+              </button>
+              {flow.step === "application" ? (
+                flow.action &&
+                (!flow.planReady || flow.followup?.state !== "none") && (
+                  <PrimaryAction
+                    disabled={locked}
+                    onClick={() => onDetails(flow.action!.destination, flow.action!.workflowTarget)}
+                  >
+                    {flow.action.label}
+                  </PrimaryAction>
+                )
+              ) : (
+                <PrimaryAction disabled={locked} onClick={() => setStep(flow.step)}>
+                  {"현재 준비 단계로 이동"}
+                </PrimaryAction>
+              )}
+            </div>
+            <GuidedApplicationHistory
               company={company}
-              stage={company.stage}
-              summary={flow.followup}
               disabled={locked}
               onNavigate={(target) => onDetails("workflow", target)}
             />
-          )}
-          {(!flow.followup || flow.followup.state === "none") &&
-            (flow.planReady ? (
-              <GuidedVentureConnection
-                key={`venture-overview:${company.id}:${company.revision}`}
-                company={company}
-                disabled={locked}
-                onOpen={(target) => onDetails("venturein", undefined, target)}
-              />
-            ) : (
-              <section className={`${styles.sheet} ${styles.topic}`}>
-                <p className={styles.eyebrow}>지금 할 일</p>
-                <h3 className={styles.subheading}>
-                  {flow.step === "application"
-                    ? (flow.action?.label ?? "다음 안내 기다리기")
-                    : flow.title}
-                </h3>
-                <p className={styles.helper}>
-                  {flow.step === "application"
-                    ? "입력·첨부할 자료와 최종 제출은 각각 내용을 확인받습니다. 기관 결과가 확인되기 전에는 접수 완료로 표시하지 않습니다."
-                    : flow.description}
-                </p>
-              </section>
-            ))}
-          <div className={styles.actions}>
-            <button
-              type="button"
-              className={styles.link}
-              onClick={() => setStep("plan")}
-              disabled={locked}
-            >
-              계획서 다시 보기
-            </button>
-            {flow.step === "application" ? (
-              flow.action &&
-              (!flow.planReady || flow.followup?.state !== "none") && (
-                <PrimaryAction
-                  disabled={locked}
-                  onClick={() => onDetails(flow.action!.destination, flow.action!.workflowTarget)}
-                >
-                  {flow.action.label}
-                </PrimaryAction>
-              )
-            ) : (
-              <PrimaryAction disabled={locked} onClick={() => setStep(flow.step)}>
-                {"현재 준비 단계로 이동"}
-              </PrimaryAction>
-            )}
-          </div>
-          <GuidedApplicationHistory
-            company={company}
-            disabled={locked}
-            onNavigate={(target) => onDetails("workflow", target)}
-          />
-          <details className={styles.details}>
-            <summary>신청 이력·보완·공식 연결</summary>
+            <details className={styles.details}>
+              <summary>신청 이력·보완·공식 연결</summary>
+              <div className={styles.support}>
+                {detailLink("기관 안내와 진행 기록", "workflow")}
+                {detailLink("벤처인 연결 상태", "venturein")}
+              </div>
+            </details>
             <div className={styles.support}>
-              {detailLink("기관 안내와 진행 기록", "workflow")}
-              {detailLink("벤처인 연결 상태", "venturein")}
+              <button
+                type="button"
+                className={styles.link}
+                disabled={locked}
+                onClick={() => setPackagePlanId(latestPlan?.id ?? "history")}
+              >
+                보관한 준비본 확인
+              </button>
             </div>
-          </details>
-          <div className={styles.support}>
-            <button
-              type="button"
-              className={styles.link}
-              disabled={locked}
-              onClick={() => setPackagePlanId(latestPlan?.id ?? "history")}
-            >
-              보관한 준비본 확인
-            </button>
-          </div>
-        </>
-      )}
-      {evidenceSelection && (
-        <GuidedEvidenceSelection
-          key={`${evidenceSelection.company.id}:${evidenceSelection.company.revision}`}
-          company={evidenceSelection.company}
-          sourceIds={evidenceSelection.sourceIds}
-          currentRevision={company.revision}
-          locked={locked}
-          onClose={() => setEvidenceSelection(null)}
-          onConfirm={offerPreparation}
-        />
-      )}
+          </>
+        )}
+        {evidenceSelection && (
+          <GuidedEvidenceSelection
+            key={`${evidenceSelection.company.id}:${evidenceSelection.company.revision}`}
+            company={evidenceSelection.company}
+            sourceIds={evidenceSelection.sourceIds}
+            currentRevision={company.revision}
+            locked={locked}
+            onClose={() => setEvidenceSelection(null)}
+            onConfirm={offerPreparation}
+          />
+        )}
+      </div>
       <Dialog
         open={approval !== null}
         onOpenChange={(open) => {

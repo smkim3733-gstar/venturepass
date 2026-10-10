@@ -17,7 +17,7 @@ const temporaryRoot = await realpath(path.resolve(app, "../../.venturepass-tools
 const staging = await realpath(process.argv[2]);
 const serverMode = process.argv[3] ?? "start";
 const scenario = process.argv[4] ?? "section";
-assert.ok(["section", "overview"].includes(scenario));
+assert.ok(["section", "overview", "reentry"].includes(scenario));
 
 assert.ok(["start", "dev"].includes(serverMode));
 const relative = path.relative(temporaryRoot, staging);
@@ -28,6 +28,8 @@ const sha = (bytes) => createHash("sha256").update(bytes).digest("hex");
 for (const file of [
   "src/components/studio/guided-workspace.tsx",
   "src/components/studio/manual-plan-save.ts",
+  "src/components/studio/manual-plan-recovery.ts",
+  "src/components/studio/use-manual-plan-save.ts",
   "src/components/studio/plan-editor.tsx",
   "scripts/fixtures/public-preview-cancel.ts",
   "scripts/guided-manual-save-validation.mjs",
@@ -39,7 +41,11 @@ for (const file of [
 const output = await mkdtemp(
   path.join(
     temporaryRoot,
-    scenario === "overview" ? "venturepass-plan-overview-ui-" : "venturepass-manual-save-ui-",
+    scenario === "reentry"
+      ? "venturepass-manual-reentry-ui-"
+      : scenario === "overview"
+        ? "venturepass-plan-overview-ui-"
+        : "venturepass-manual-save-ui-",
   ),
 );
 const guard = path.join(output, "network-guard.mjs");
@@ -290,7 +296,7 @@ try {
             return reply({ ...saved, id: "99999999-9999-4999-8999-999999999999" });
           if (readMode === "wrong") {
             const wrong = structuredClone(saved);
-            if (scenario === "overview") wrong.plans.at(-1).content.title = "다른 제목";
+            if (scenario !== "section") wrong.plans.at(-1).content.title = "다른 제목";
             else wrong.plans.at(-1).content.sections[0].content = "다른 수정 본문";
             return reply(wrong);
           }
@@ -300,7 +306,7 @@ try {
           }
           return reply(company);
         }
-        if (scenario === "overview" && u.pathname === root + "/source-intakes") {
+        if (scenario !== "section" && u.pathname === root + "/source-intakes") {
           intakeReads++;
           return reply({ company, activeItemIds: [] });
         }
@@ -314,7 +320,7 @@ try {
         const command = req.postDataJSON();
         commands.push(structuredClone(command));
         assert.ok(
-          commands.length <= (scenario === "overview" ? 1 : 2),
+          commands.length <= (scenario !== "section" ? 1 : 2),
           "Only explicit manual saves",
         );
         assert.equal(command.action, "save-plan");
@@ -323,7 +329,7 @@ try {
         assert.equal(command.revision, company.revision);
         assert.deepEqual(
           command.content,
-          scenario === "overview"
+          scenario !== "section"
             ? { ...previous.content, title: overviewTitle, summary: overviewSummary }
             : {
                 ...previous.content,
@@ -350,7 +356,7 @@ try {
           content: command.content,
         });
         if (commands.length === 1) {
-          if (scenario === "overview") {
+          if (scenario !== "section") {
             const wrong = structuredClone(saved);
             wrong.plans.at(-1).content.summary = "다른 핵심 요약";
             return reply(wrong);
@@ -386,7 +392,217 @@ try {
   await page.goto(origin + "/studio", { waitUntil: "networkidle", timeout: 60000 });
   await page.getByRole("button").filter({ hasText: name }).first().click();
   await page.getByRole("button", { name: "내용 고치기", exact: true }).waitFor();
-  if (scenario === "overview") {
+  if (scenario === "reentry") {
+    const key = `venturepass:manual-plan:v1:${caseId}`;
+    await page.getByRole("button", { name: "제목·요약 고치기", exact: true }).click();
+    await page.getByRole("textbox", { name: "사업계획서 제목", exact: true }).fill(overviewTitle);
+    await page.getByRole("textbox", { name: "핵심 요약", exact: true }).fill(overviewSummary);
+    await page.evaluate((key) => {
+      const originalSet = Storage.prototype.setItem;
+      window.restoreManualStorage = () => {
+        Storage.prototype.setItem = originalSet;
+      };
+      Storage.prototype.setItem = function (k, value) {
+        if (k === key) throw Error("synthetic quota failure");
+        return originalSet.call(this, k, value);
+      };
+    }, key);
+    await page.getByRole("button", { name: "수정 반영하기", exact: true }).click();
+    await page
+      .getByText("브라우저에서 수정본 복구 기록을 읽거나 보관하지 못했습니다.", { exact: false })
+      .waitFor();
+    assert.equal(commands.length, 0);
+    assert.equal(await page.evaluate((key) => localStorage.getItem(key), key), null);
+    assert.equal(
+      await page.getByRole("textbox", { name: "핵심 요약", exact: true }).inputValue(),
+      overviewSummary,
+    );
+    await page.evaluate(() => window.restoreManualStorage());
+    record("browser write failure blocks transmission and preserves the unsent edit");
+
+    await page.getByRole("button", { name: "수정 반영하기", exact: true }).click();
+    const inspectButton = () =>
+      page.getByRole("button", { name: "수정본 저장 상태 확인", exact: true });
+    await inspectButton().waitFor();
+    await inspectButton().click({ trial: true });
+    const receiptText = await page.evaluate((key) => localStorage.getItem(key), key);
+    assert.ok(receiptText);
+    const receipt = JSON.parse(receiptText);
+    assert.deepEqual(
+      Object.keys(receipt).sort(),
+      [
+        "format",
+        "caseId",
+        "planId",
+        "revision",
+        "nextVersion",
+        "previousDigest",
+        "contentDigest",
+      ].sort(),
+    );
+    for (const body of [
+      overviewTitle,
+      overviewSummary,
+      basePlan.content.title,
+      basePlan.content.summary,
+    ])
+      if (body) assert.equal(receiptText.includes(body), false);
+    assert.equal(commands.length, 1);
+    assert.equal(caseReads, 1);
+    record(
+      "only minimal identity and digests persist before the one explicit PATCH; a mismatched summary stays pending",
+    );
+
+    page.once("dialog", (dialog) => dialog.accept());
+    await page.reload({ waitUntil: "networkidle" });
+    await page.getByRole("button").filter({ hasText: name }).first().click();
+    await inspectButton().waitFor();
+    await inspectButton().click({ trial: true });
+    assert.equal(await page.getByRole("textbox", { name: "핵심 요약", exact: true }).count(), 0);
+    assert.equal(
+      await page.getByRole("button", { name: "상세 도구", exact: true }).isDisabled(),
+      true,
+    );
+    assert.equal(
+      await page.getByRole("button", { name: "자료 올리기", exact: false }).isDisabled(),
+      true,
+    );
+    assert.equal(commands.length, 1);
+    assert.equal(caseReads, 2);
+    assert.equal(await page.evaluate((key) => localStorage.getItem(key), key), receiptText);
+    await page.close();
+    page = await context.newPage();
+    page.on("pageerror", (error) => errors.push(error.message));
+    await page.goto(origin + "/studio", { waitUntil: "networkidle" });
+    await page.getByRole("button").filter({ hasText: name }).first().click();
+    await inspectButton().waitFor();
+    await inspectButton().click({ trial: true });
+    assert.equal(commands.length, 1);
+    assert.equal(caseReads, 3);
+    assert.equal(
+      await page.getByRole("textbox", { name: "사업계획서 제목", exact: true }).count(),
+      0,
+    );
+    record(
+      "actual reload and closing/reopening a tab restore the same pending identity without text replication or automatic GET recovery",
+    );
+
+    await page.evaluate(
+      ({ key, receipt }) =>
+        localStorage.setItem(
+          key,
+          JSON.stringify({ ...receipt, caseId: "99999999-9999-4999-8999-999999999999" }),
+        ),
+      { key, receipt },
+    );
+    await inspectButton().click();
+    const reread = page.getByRole("button", { name: "수정본 복구 기록 다시 확인", exact: true });
+    await reread.waitFor();
+    assert.equal(caseReads, 3, "foreign browser record is rejected before GET");
+    assert.equal(commands.length, 1);
+    await page.evaluate(({ key, receiptText }) => localStorage.setItem(key, receiptText), {
+      key,
+      receiptText,
+    });
+    await reread.click();
+    await inspectButton().click({ trial: true });
+    readMode = "wrong";
+    await inspectButton().click();
+    await inspectButton().click({ trial: true });
+    assert.equal(caseReads, 4);
+    assert.equal(await page.evaluate((key) => localStorage.getItem(key), key), receiptText);
+    record(
+      "a foreign browser record and another returned title cannot clear the original pending save",
+    );
+
+    const lockTab = await context.newPage();
+    await lockTab.goto(origin + "/studio", { waitUntil: "networkidle" });
+    await lockTab.evaluate(async (key) => {
+      let entered;
+      const ready = new Promise((resolve) => {
+        entered = resolve;
+      });
+      const gate = new Promise((resolve) => {
+        window.releaseManualLock = resolve;
+      });
+      window.manualLockTask = navigator.locks.request(key, async () => {
+        entered();
+        await gate;
+      });
+      await ready;
+    }, key);
+    await inspectButton().click();
+    await page
+      .getByText("다른 창에서 이 회사의 수정본을 저장하거나 확인 중입니다.", { exact: false })
+      .waitFor();
+    assert.equal(caseReads, 4);
+    assert.equal(commands.length, 1);
+    await lockTab.evaluate(async () => {
+      window.releaseManualLock();
+      await window.manualLockTask;
+    });
+    await lockTab.close();
+    record(
+      "another tab's real browser lock blocks concurrent recovery without sending or clearing the record",
+    );
+
+    await page.setViewportSize({ width: 390, height: 844 });
+    await inspectButton().scrollIntoViewIfNeeded();
+    assert.equal(
+      await page.evaluate(() => document.documentElement.scrollWidth > innerWidth),
+      false,
+    );
+    await page.screenshot({ path: path.join(output, "manual-reentry-mobile.png"), fullPage: true });
+    readMode = "exact";
+    await inspectButton().click();
+    await page.getByRole("button", { name: "제목·요약 고치기", exact: true }).waitFor();
+    await page.getByRole("heading", { name: overviewTitle, exact: true }).waitFor();
+    assert.equal(await page.evaluate((key) => localStorage.getItem(key), key), null);
+    assert.equal(commands.length, 1);
+    assert.equal(caseReads, 5);
+    assert.deepEqual(company.plans.slice(0, -1), original.plans);
+    assert.deepEqual(company.plans.at(-1).content, {
+      ...basePlan.content,
+      title: overviewTitle,
+      summary: overviewSummary,
+    });
+    assert.equal(company.plans.at(-1).confirmedAt, null);
+    assert.equal(
+      await page
+        .getByRole("link", { name: `원고 v${basePlan.version + 1} Word 내려받기`, exact: true })
+        .getAttribute("href"),
+      `/api/studio/cases/${caseId}/export?planId=${company.plans.at(-1).id}&format=docx`,
+    );
+    record(
+      "only exact prior-manuscript and new-version matching clears the receipt and restores the current plan",
+    );
+
+    await page.getByRole("button", { name: "공개 근거 보완", exact: true }).click();
+    const publicInput = page.getByLabel("공개 자료 제목", { exact: true });
+    await publicInput.fill("다른 입력창의 미저장 합성 제목");
+    const notificationTab = await context.newPage();
+    await notificationTab.goto(origin + "/studio", { waitUntil: "networkidle" });
+    // Deliver the retained synthetic identity as a browser event; this is not another save.
+    await notificationTab.evaluate(
+      ({ key, receiptText }) => localStorage.setItem(key, receiptText),
+      { key, receiptText },
+    );
+    await inspectButton().waitFor();
+    await inspectButton().click({ trial: true });
+    assert.equal(await publicInput.count(), 1, "the child editor must remain mounted");
+    assert.equal(await publicInput.isVisible(), false);
+    assert.equal(await publicInput.inputValue(), "다른 입력창의 미저장 합성 제목");
+    await inspectButton().click();
+    await publicInput.waitFor({ state: "visible" });
+    assert.equal(await publicInput.inputValue(), "다른 입력창의 미저장 합성 제목");
+    assert.equal(commands.length, 1);
+    assert.equal(caseReads, 6);
+    assert.equal(await page.evaluate((key) => localStorage.getItem(key), key), null);
+    await notificationTab.close();
+    record(
+      "a received synthetic identity hides an already open child editor without discarding its unsaved input; exact confirmation reveals it unchanged",
+    );
+  } else if (scenario === "overview") {
     const open = page.getByRole("button", { name: "제목·요약 고치기", exact: true });
     assert.equal(await open.count(), 1, "Guided title and summary editing must be reachable");
     await open.click();
@@ -612,9 +828,11 @@ try {
         continuousJourneys: 1,
         scenario,
         startingState:
-          scenario === "overview"
-            ? "guided title/summary edit, cancel/navigation, mismatched response and explicit exact GET; synthetic in-memory storage only"
-            : "actual guided app with synthetic plan; wrong PATCH response, explicit GET recovery and separate explicit save; no actual storage or request receipt attribution",
+          scenario === "reentry"
+            ? "actual reload and tab re-entry, storage failure, mismatches and exact GET; identity-only journal, in-memory synthetic server"
+            : scenario !== "section"
+              ? "guided title/summary edit, cancel/navigation, mismatched response and explicit exact GET; synthetic in-memory storage only"
+              : "actual guided app with synthetic plan; wrong PATCH response, explicit GET recovery and separate explicit save; no actual storage or request receipt attribution",
         errors,
         unexpected,
         actualBusinessApi: 0,
