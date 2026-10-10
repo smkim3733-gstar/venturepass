@@ -75,6 +75,7 @@ import {
   type GuidedReviewTarget,
 } from "./guided-plan-review";
 import { PlanComparison } from "./plan-comparison";
+import { GuidedPlanHistory } from "./guided-plan-history";
 import { GuidedPlanEvidence } from "./guided-plan-evidence";
 import { GuidedVentureConnection } from "./guided-venture-connection";
 import { GuidedApplicationHistory } from "./guided-application-history";
@@ -1580,6 +1581,23 @@ export function GuidedWorkspace({
                             ? "처리 중인 저장 상태를 먼저 확인한 뒤 원고를 비교해 주세요."
                             : editingDirty
                               ? "수정 내용을 저장하거나 편집을 취소한 뒤 비교해 주세요."
+                              : ""
+                        }
+                      />
+                    </div>
+                  </details>
+                )}
+                {company.plans.length > 1 && (
+                  <details className={styles.details}>
+                    <summary>이전 원고 읽기</summary>
+                    <div className="mt-4">
+                      <GuidedPlanHistory
+                        company={company}
+                        blockedReason={
+                          locked || existingRunUnknown
+                            ? "처리 중인 저장 상태를 먼저 확인한 뒤 저장 원고를 읽어 주세요."
+                            : editingDirty
+                              ? "수정 내용을 저장하거나 편집을 취소한 뒤 저장 원고를 읽어 주세요."
                               : ""
                         }
                       />
