@@ -1,4 +1,9 @@
 "use client";
+import {
+  planConfirmationSnapshot,
+  planConfirmationMessage,
+  type PlanConfirmation,
+} from "./plan-confirmation";
 import type { ManualPlanSave } from "./manual-plan-save";
 import { useManualPlanSave } from "./use-manual-plan-save";
 import { guidedDescriptionAcknowledged } from "./guided-description-save";
@@ -119,6 +124,9 @@ export function GuidedWorkspace({
   const [description, setDescription] = useState(company.profile.technologySummary);
   const [descriptionTouched, setDescriptionTouched] = useState(false);
   const [error, setError] = useState("");
+  const [confirmationPending, setConfirmationPending] = useState<PlanConfirmation | null>(null);
+  const currentCompany = useRef(company);
+  currentCompany.current = company;
   const [unsettled, setUnsettled] = useState(false);
   const [bulkUploading, setBulkUploading] = useState(false);
   const [evidenceSelection, setEvidenceSelection] = useState<{
@@ -192,6 +200,7 @@ export function GuidedWorkspace({
   const mounted = useRef(true);
   const pendingRequest = useRef<GuidedPreparationRequest | null>(null);
   const editingDirty =
+    !!confirmationPending ||
     Object.values(questionLinks).some((link) => link.sectionKey || link.sourceIds.length) ||
     sourceReviewDirty ||
     intakeDirty ||
@@ -212,7 +221,8 @@ export function GuidedWorkspace({
         supplementUnsettled ||
         publicEvidenceUnsettled ||
         intakeUnsettled ||
-        manualSaveBlocked,
+        manualSaveBlocked ||
+        !!confirmationPending,
     );
     return () => onUnsettledChange(false);
   }, [
@@ -222,6 +232,7 @@ export function GuidedWorkspace({
     publicEvidenceUnsettled,
     intakeUnsettled,
     manualSaveBlocked,
+    confirmationPending,
     onUnsettledChange,
   ]);
   useEffect(() => {
@@ -243,7 +254,7 @@ export function GuidedWorkspace({
       active = false;
     };
   }, [company.id, company.revision]);
-  const locked = !!busy || blocked || unsettled || manualSaveBlocked;
+  const locked = !!busy || blocked || unsettled || manualSaveBlocked || !!confirmationPending;
   const latestPlan = [...company.plans].sort((a, b) => b.version - a.version)[0];
   const lastRun = (company.guidedPreparationRuns ?? []).at(-1);
   const retainedDraft = lastRun?.repair?.initialPlanId === latestPlan?.id && !!latestPlan;
@@ -669,10 +680,49 @@ export function GuidedWorkspace({
     setError("");
     await manualSave.save(pending);
   }
+  async function readOrConfirmPlan(pending: PlanConfirmation, confirm: boolean) {
+    if (inFlight.current || busy) return;
+    inFlight.current = true;
+    setError("");
+    onBusyChange(
+      confirm ? "원고 검토 완료를 저장하고 있습니다" : "원고 검토 완료 상태를 확인하고 있습니다",
+    );
+    try {
+      const raw = await studioFetch<unknown>(
+        `/api/studio/cases/${pending.company.id}`,
+        confirm
+          ? {
+              method: "PATCH",
+              ...jsonBody({
+                action: "confirm-plan",
+                planId: pending.planId,
+                revision: pending.company.revision,
+              }),
+            }
+          : undefined,
+      );
+      const next = planConfirmationSnapshot(raw, pending);
+      if (!mounted.current) return;
+      if (
+        currentCompany.current.id !== pending.company.id ||
+        currentCompany.current.revision > next.revision
+      )
+        throw new Error(planConfirmationMessage);
+      onCompany(next);
+      setConfirmationPending(null);
+      setStep("application");
+    } catch {
+      if (mounted.current) setError(planConfirmationMessage);
+    } finally {
+      inFlight.current = false;
+      if (mounted.current) onBusyChange("");
+    }
+  }
   async function confirmPlan() {
-    if (!latestPlan || locked || inFlight.current) return;
-    const next = await mutateOnce({ action: "confirm-plan", planId: latestPlan.id });
-    if (next) setStep("application");
+    if (!latestPlan || locked || editingDirty || inFlight.current) return;
+    const pending = { company: structuredClone(company), planId: latestPlan.id };
+    setConfirmationPending(pending);
+    await readOrConfirmPlan(pending, true);
   }
   function openOverview() {
     if (!latestPlan || locked || editingDirty) return;
@@ -721,6 +771,23 @@ export function GuidedWorkspace({
         <div role="alert" className={styles.error}>
           {error}
         </div>
+      )}
+      {confirmationPending && (
+        <section className={styles.notice} aria-label="원고 검토 완료 확인">
+          <strong>검토 완료 상태를 확인해 주세요</strong>
+          <p>
+            선택한 원고의 내용과 검토 완료 기록을 확인한 뒤 신청 준비로 이어갑니다. 자동으로 다시
+            저장하지 않습니다. 확인이 끝날 때까지 이 화면을 유지해 주세요.
+          </p>
+          <button
+            type="button"
+            className={styles.primary}
+            disabled={!!busy || manualSave.working}
+            onClick={() => void readOrConfirmPlan(confirmationPending, false)}
+          >
+            검토 완료 상태 확인
+          </button>
+        </section>
       )}
       {(manualSave.pending || manualSave.error) && (
         <section className={styles.notice} aria-label="수정본 저장 확인">
