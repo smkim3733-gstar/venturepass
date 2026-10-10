@@ -1,4 +1,5 @@
 "use client";
+import { manualPlanSaveSnapshot, type ManualPlanSave } from "./manual-plan-save";
 import { guidedDescriptionAcknowledged } from "./guided-description-save";
 import { PlanSupplementPanel } from "./plan-supplement-panel";
 import {
@@ -134,6 +135,7 @@ export function GuidedWorkspace({
   const [editingPlanId, setEditingPlanId] = useState<string | null>(null);
   const [sectionText, setSectionText] = useState("");
   const [sectionVerified, setSectionVerified] = useState(false);
+  const [sectionSavePending, setSectionSavePending] = useState<ManualPlanSave | null>(null);
   const [questionAnswers, setQuestionAnswers] = useState<Record<string, string>>({});
   const [answering, setAnswering] = useState(false);
   const [questionLinks, setQuestionLinks] = useState<Record<string, GuidedQuestionLink>>({});
@@ -203,7 +205,8 @@ export function GuidedWorkspace({
         packageUnsettled ||
         supplementUnsettled ||
         publicEvidenceUnsettled ||
-        intakeUnsettled,
+        intakeUnsettled ||
+        sectionSavePending !== null,
     );
     return () => onUnsettledChange(false);
   }, [
@@ -212,6 +215,7 @@ export function GuidedWorkspace({
     supplementUnsettled,
     publicEvidenceUnsettled,
     intakeUnsettled,
+    sectionSavePending,
     onUnsettledChange,
   ]);
   useEffect(() => {
@@ -233,7 +237,7 @@ export function GuidedWorkspace({
       active = false;
     };
   }, [company.id, company.revision]);
-  const locked = !!busy || blocked || unsettled;
+  const locked = !!busy || blocked || unsettled || sectionSavePending !== null;
   const latestPlan = [...company.plans].sort((a, b) => b.version - a.version)[0];
   const lastRun = (company.guidedPreparationRuns ?? []).at(-1);
   const retainedDraft = lastRun?.repair?.initialPlanId === latestPlan?.id && !!latestPlan;
@@ -296,7 +300,7 @@ export function GuidedWorkspace({
     );
   }
   function goTo(next: GuidedStep) {
-    if (busy || blocked || sourceReview || packagePlanId || intakeOpen) return;
+    if (locked || sourceReview || packagePlanId || intakeOpen) return;
     setStep(next);
     // Drafts stay in this mounted component when users explore another stage.
     setError("");
@@ -604,24 +608,73 @@ export function GuidedWorkspace({
       setAnswerSaved(saved);
     }
   }
+  function finishSectionSave(next: StudioCase) {
+    onCompany(next);
+    setSectionSavePending(null);
+    setEditingSection(null);
+    setEditingPlanId(null);
+    setSectionVerified(false);
+    setError("");
+  }
   async function saveSection() {
     if (!latestPlan || !section || editingPlanChanged || locked || inFlight.current) return;
-    const next = await mutateOnce({
-      action: "save-plan",
-      planId: latestPlan.id,
-      content: {
-        ...latestPlan.content,
-        sections: latestPlan.content.sections.map((item) =>
-          item.key === section.key
-            ? { ...item, content: sectionText, needsConfirmation: !sectionVerified }
-            : item,
-        ),
+    const pending: ManualPlanSave = {
+      company: structuredClone(company),
+      mutation: {
+        action: "save-plan",
+        planId: latestPlan.id,
+        content: {
+          ...latestPlan.content,
+          sections: latestPlan.content.sections.map((item) =>
+            item.key === section.key
+              ? { ...item, content: sectionText, needsConfirmation: !sectionVerified }
+              : item,
+          ),
+        },
       },
-    });
-    if (next) {
-      setEditingSection(null);
-      setEditingPlanId(null);
-      setSectionVerified(false);
+    };
+    inFlight.current = true;
+    setSectionSavePending(pending);
+    setError("");
+    onBusyChange("수정본을 보관하고 있습니다");
+    try {
+      // Use the existing save-plan command. Accept it only after the exact version check;
+      // a generic company response must not close the editor or display a success toast.
+      const raw = await studioFetch<unknown>(`/api/studio/cases/${pending.company.id}`, {
+        method: "PATCH",
+        ...jsonBody({ ...pending.mutation, revision: pending.company.revision }),
+      });
+      const next = manualPlanSaveSnapshot(raw, pending);
+      if (mounted.current) finishSectionSave(next);
+    } catch {
+      if (mounted.current)
+        setError(
+          "수정본의 저장 결과를 아직 확인하지 못했습니다. 입력을 유지했습니다. 다시 저장하지 않고 저장 상태를 확인해 주세요.",
+        );
+    } finally {
+      inFlight.current = false;
+      if (mounted.current) onBusyChange("");
+    }
+  }
+  async function inspectSectionSave() {
+    if (!sectionSavePending || inFlight.current || busy) return;
+    const pending = sectionSavePending;
+    inFlight.current = true;
+    setError("");
+    onBusyChange("수정본 저장 상태를 확인하고 있습니다");
+    try {
+      const raw = await studioFetch<unknown>(`/api/studio/cases/${pending.company.id}`);
+      const next = manualPlanSaveSnapshot(raw, pending);
+      if (next.revision < company.revision) throw new Error("오래된 저장 상태");
+      if (mounted.current) finishSectionSave(next);
+    } catch {
+      if (mounted.current)
+        setError(
+          "수정본의 저장 결과를 아직 확인하지 못했습니다. 입력을 유지했습니다. 저장 상태를 다시 확인해 주세요.",
+        );
+    } finally {
+      inFlight.current = false;
+      if (mounted.current) onBusyChange("");
     }
   }
   async function confirmPlan() {
@@ -648,8 +701,7 @@ export function GuidedWorkspace({
             className={styles.step}
             aria-current={step === item.id ? "step" : undefined}
             disabled={
-              !!busy ||
-              blocked ||
+              locked ||
               !!sourceReview ||
               intakeOpen ||
               !!packagePlanId ||
@@ -902,6 +954,7 @@ export function GuidedWorkspace({
                   id="guided-section"
                   className={styles.textarea}
                   value={sectionText}
+                  readOnly={locked}
                   onChange={(event) => {
                     setSectionText(event.target.value);
                     setSectionVerified(false);
@@ -918,6 +971,7 @@ export function GuidedWorkspace({
                     type="checkbox"
                     className="mt-2 size-4 shrink-0"
                     checked={sectionVerified}
+                    disabled={locked}
                     onChange={(event) => setSectionVerified(event.target.checked)}
                   />
                   이 항목의 사실·수치·근거를 직접 확인했습니다.
@@ -930,7 +984,9 @@ export function GuidedWorkspace({
                 <button
                   type="button"
                   className={styles.link}
+                  disabled={locked}
                   onClick={() => {
+                    if (locked) return;
                     if (
                       sectionText !== section.content &&
                       !window.confirm("수정 중인 내용을 취소할까요?")
@@ -950,6 +1006,23 @@ export function GuidedWorkspace({
                   </PrimaryAction>
                 }
               </div>
+              {sectionSavePending && (
+                <div className={styles.notice} role="status">
+                  <strong>수정본을 확인할 때까지 입력을 보관합니다</strong>
+                  <p>
+                    원래 원고와 수정 내용이 일치하는 새 버전을 확인하면 원고로 돌아갑니다. 확인
+                    전에는 다시 저장하거나 화면을 닫지 않습니다.
+                  </p>
+                  <button
+                    type="button"
+                    className={styles.primary}
+                    disabled={!!busy}
+                    onClick={() => void inspectSectionSave()}
+                  >
+                    수정본 저장 상태 확인
+                  </button>
+                </div>
+              )}
               {editingPlanChanged && (
                 <p role="alert" className={styles.error}>
                   새 작성본이 생겼습니다. 입력 중인 내용은 이 화면에 보존했고 새 원고에 덮어쓰지
