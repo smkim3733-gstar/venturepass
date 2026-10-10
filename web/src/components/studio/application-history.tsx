@@ -3,6 +3,10 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { Plus, Save, X } from "lucide-react";
 import { ApplicationNumberPanel } from "./application-number-panel";
+import {
+  applicationCycleSaveAcknowledged,
+  isApplicationCycleMutation,
+} from "./application-cycle-response";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -427,7 +431,9 @@ function ApplicationHistoryEditor({ company, mutate, blockedReason, onDirtyChang
       if (!mounted.current) return;
       if (
         saved &&
-        applicationSaveAcknowledged(saved, company.id, company.revision, form.clientRequestId)
+        (isApplicationCycleMutation(parsed.data)
+          ? applicationCycleSaveAcknowledged(saved, company, parsed.data)
+          : applicationSaveAcknowledged(saved, company.id, company.revision, form.clientRequestId))
       )
         setForm(null);
       else
