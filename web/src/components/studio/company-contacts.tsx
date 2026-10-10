@@ -5,12 +5,11 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import type { StudioCase } from "@/lib/studio-schema";
+import { caseSchema, type StudioCase } from "@/lib/studio-schema";
 import {
   companyContactsInputSchema,
   companyContactsLabels,
   companyContactsLimits,
-  companyContactsRecordSchema,
   emptyCompanyContacts,
   latestCompanyContacts,
   type CompanyContactsFields,
@@ -34,23 +33,52 @@ export function companyContactsSaveAcknowledged(
   clientRequestId: string,
   raw: CompanyContactsInput,
 ): boolean {
-  if (!response || response.id !== company.id || response.revision < company.revision) return false;
+  const savedCase = caseSchema.safeParse(response),
+    originalCase = caseSchema.safeParse(company);
   const input = companyContactsInputSchema.safeParse(raw);
-  if (!input.success) return false;
-  const matches = (response.companyContacts ?? []).filter(
-    (record) => record.clientRequestId === clientRequestId,
-  );
+  if (!savedCase.success || !originalCase.success || !input.success) return false;
+  const saved = savedCase.data,
+    original = originalCase.data;
+  if (saved.id !== original.id || saved.revision <= original.revision) return false;
+  const previous = original.companyContacts,
+    records = saved.companyContacts;
+  if (previous.length >= companyContactsLimits.records) return false;
+  for (const list of [previous, records])
+    for (const key of ["id", "version", "clientRequestId"] as const)
+      if (new Set(list.map((record) => record[key])).size !== list.length) return false;
+  const prior = latestCompanyContacts(original);
+  if (previous.some((record) => record.version > (prior?.version ?? 0))) return false;
+  const matches = records.filter((record) => record.clientRequestId === clientRequestId);
   if (matches.length !== 1) return false;
-  const parsed = companyContactsRecordSchema.safeParse(matches[0]);
-  if (!parsed.success) return false;
-  const record = parsed.data;
-  const prior = latestCompanyContacts(company);
-  return (
-    record.previousVersionId === input.data.previousVersionId &&
-    record.version === (prior?.version ?? 0) + 1 &&
-    (prior?.id ?? null) === input.data.previousVersionId &&
-    JSON.stringify(record.contacts) === JSON.stringify(input.data.contacts)
-  );
+  const record = matches[0];
+  const equal = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+  if (
+    record.previousVersionId !== input.data.previousVersionId ||
+    record.version !== (prior?.version ?? 0) + 1 ||
+    (prior?.id ?? null) !== input.data.previousVersionId ||
+    !equal(record.contacts, input.data.contacts) ||
+    !equal(records, [...previous, record])
+  )
+    return false;
+  for (const key of [
+    "profile",
+    "sources",
+    "analysis",
+    "selectedCandidateId",
+    "candidateSelections",
+    "plans",
+    "planReviewDecisions",
+    "tasks",
+    "agencyRecords",
+    "applications",
+    "applicationEvents",
+    "stage",
+    "stageHistory",
+    "diagnosisAnswers",
+    "diagnoses",
+  ] as const)
+    if (!equal(saved[key], original[key])) return false;
+  return true;
 }
 
 const contactKeys = Object.keys(companyContactsLabels) as (keyof CompanyContactsFields)[];

@@ -57,6 +57,7 @@ import { DiagnosisPanel } from "./diagnosis-panel";
 import { diagnosisAnswersSaveAcknowledged } from "./diagnosis-answers-response";
 import { diagnosisTasksSaveAcknowledged } from "./diagnosis-tasks-response";
 import { certificateTaskSaveAcknowledged } from "./certificate-task-response";
+import { companyContactsSaveAcknowledged } from "./company-contacts";
 import { PreparationPanel } from "./preparation-panel";
 import { PreparationAutomationPanel } from "./preparation-automation-panel";
 import { AnalysisPanel } from "./analysis-panel";
@@ -465,6 +466,16 @@ export function StudioWorkspace() {
       )
         throw new Error(
           "확인서 준비 업무의 등록 결과를 확인하지 못했습니다. 원래 통보와 입력 날짜를 유지했습니다.",
+        );
+      if (
+        mutation.action === "append-company-contacts" &&
+        !companyContactsSaveAcknowledged(next, company, mutation.clientRequestId, {
+          previousVersionId: mutation.previousVersionId,
+          contacts: mutation.contacts,
+        })
+      )
+        throw new Error(
+          "연락처·담당 역할의 저장 기록을 확인하지 못했습니다. 원래 입력과 이전 연락 메모를 유지했습니다.",
         );
       accept(next);
       toast.success("저장했습니다.");
