@@ -452,6 +452,7 @@ export function PublicEvidencePanel({
                     currentCompany.current,
                   );
                   setDraft(next);
+                  setConfirmed(false);
                   setError("");
                 }}
                 onCellEvidence={(result, command) => {

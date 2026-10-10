@@ -17,7 +17,7 @@ const temporaryRoot = await realpath(path.resolve(app, "../../.venturepass-tools
 const staging = await realpath(process.argv[2]);
 const serverMode = process.argv[3] ?? "start";
 const scenario = process.argv[4] ?? "reentry";
-assert.ok(["reentry", "errors", "tabs", "arrival", "resume"].includes(scenario));
+assert.ok(["reentry", "errors", "tabs", "arrival", "resume", "comment-consent"].includes(scenario));
 assert.ok(["start", "dev"].includes(serverMode));
 const relative = path.relative(temporaryRoot, staging);
 assert.ok(relative && !relative.startsWith("..") && !path.isAbsolute(relative));
@@ -40,15 +40,17 @@ for (const file of [
 const output = await mkdtemp(
   path.join(
     temporaryRoot,
-    scenario === "resume"
-      ? "venturepass-public-resume-ui-"
-      : scenario === "arrival"
-        ? "venturepass-public-arrival-ui-"
-        : scenario === "tabs"
-          ? "venturepass-public-tabs-ui-"
-          : scenario === "errors"
-            ? "venturepass-public-errors-ui-"
-            : "venturepass-public-reentry-ui-",
+    scenario === "comment-consent"
+      ? "venturepass-comment-consent-ui-"
+      : scenario === "resume"
+        ? "venturepass-public-resume-ui-"
+        : scenario === "arrival"
+          ? "venturepass-public-arrival-ui-"
+          : scenario === "tabs"
+            ? "venturepass-public-tabs-ui-"
+            : scenario === "errors"
+              ? "venturepass-public-errors-ui-"
+              : "venturepass-public-reentry-ui-",
   ),
 );
 const guard = path.join(output, "network-guard.mjs");
@@ -126,6 +128,27 @@ const commands = [],
   errors = [],
   checks = [],
   logs = [];
+const researchCommands = [];
+const commentCandidate = {
+  organizationId: "999",
+  tableId: "DT_SYNTHETIC_CONSENT",
+  title: "합성 주석 동의 확인용 표",
+  organization: "합성 기관",
+  periodStart: "2020",
+  periodEnd: "2024",
+  originalUrl: "https://kosis.kr/statHtml/statHtml.do?orgId=999&tblId=DT_SYNTHETIC_CONSENT",
+};
+const commentRows = [
+  { CMMT_NM: "빈 합성 행", CMMT_DC: "" },
+  {
+    CMMT_NM: "선택할 합성 행",
+    CMMT_DC: "  합성 설명 원문\\r\\n수치·회사 사실 확인 아님  ",
+    OBJ_ID: "",
+    OBJ_NM: null,
+    ITM_ID: "01",
+  },
+  { CMMT_NM: "선택하지 않은 행", CMMT_DC: "옮기지 않을 다른 합성 설명", ITM_ID: "01" },
+];
 let recoveryReads = 0;
 let readMode = "stale";
 let releaseRead;
@@ -321,6 +344,54 @@ try {
             aiConfigured: true,
           });
       }
+      if (
+        scenario === "comment-consent" &&
+        req.method() === "POST" &&
+        u.pathname === "/api/studio/public-research/search"
+      ) {
+        const command = req.postDataJSON();
+        researchCommands.push(structuredClone(command));
+        assert.ok(researchCommands.length <= 2, "Only explicit synthetic search and comment read");
+        if (researchCommands.length === 1) {
+          assert.deepEqual(command, { topic: "services" });
+          return reply({
+            topic: "services",
+            query: "서비스업",
+            provider: "KOSIS 국가통계포털",
+            status: "results",
+            retrievedAt: "2026-10-10T02:00:00.000Z",
+            page: 1,
+            pageSize: 10,
+            candidates: [commentCandidate],
+            originalRead: false,
+            databaseChanged: false,
+          });
+        }
+        assert.deepEqual(command, {
+          action: "read-selected-table-metadata",
+          topic: "services",
+          candidate: commentCandidate,
+          searchRetrievedAt: "2026-10-10T02:00:00.000Z",
+          kind: "CMMT",
+          confirmed: true,
+        });
+        return reply({
+          command,
+          source: "kosis-api-response",
+          status: "results",
+          searchCheckedAt: "2026-10-10T02:01:00.000Z",
+          retrievedAt: "2026-10-10T02:02:00.000Z",
+          metadata: { kind: "CMMT", rows: commentRows },
+          identityBasis: "request-target-not-echoed",
+          periodsComplete: false,
+          numericalDataRead: false,
+          originalRead: false,
+          factChecked: false,
+          companyApplicabilityChecked: false,
+          databaseChanged: false,
+          aiInputApproved: false,
+        });
+      }
       if (req.method() === "PATCH" && u.pathname === root) {
         assert.ok(
           commands.length < (["arrival", "resume"].includes(scenario) ? 2 : 1),
@@ -334,6 +405,7 @@ try {
         assert.equal(command.revision, company.revision);
         company = fixture.save(company, command);
         commands.push(structuredClone(command));
+        if (scenario === "comment-consent") return reply(company);
         const wrong = structuredClone(company);
         wrong.sources.find((s) => s.id === command.source.id).text = "의도한 불완전 저장 응답";
         return reply(wrong);
@@ -371,14 +443,126 @@ try {
   const panel = page.getByRole("region", { name: "공개 근거 후보 보관", exact: true });
   const title = panel.getByRole("textbox", { name: "공개 자료 제목", exact: true });
   const quote = "합성 산업 자료의 문장입니다. 회사의 매출이나 계약을 확인한 결과가 아닙니다.";
-  await title.fill("복구 흐름용 공개 자료");
-  await panel
-    .getByRole("textbox", { name: "원문 URL (HTTPS)", exact: true })
-    .fill("https://example.invalid/report");
-  await panel.getByRole("textbox", { name: "원문 발췌" }).fill(quote);
-  await panel.getByLabel("원문을 읽은 날짜 (담당자 기록)", { exact: true }).fill("2026-10-10");
+  if (scenario !== "comment-consent") {
+    await title.fill("복구 흐름용 공개 자료");
+    await panel
+      .getByRole("textbox", { name: "원문 URL (HTTPS)", exact: true })
+      .fill("https://example.invalid/report");
+    await panel.getByRole("textbox", { name: "원문 발췌" }).fill(quote);
+    await panel.getByLabel("원문을 읽은 날짜 (담당자 기록)", { exact: true }).fill("2026-10-10");
+  }
   const close = panel.getByRole("button", { name: "닫기", exact: true });
-  if (scenario === "resume") {
+  if (scenario === "comment-consent") {
+    const consent = panel.getByRole("checkbox");
+    const save = panel.getByRole("button", { name: "공개 근거 후보 보관", exact: true });
+    const excerpt = panel.getByRole("textbox", { name: "원문 발췌" });
+    const readOn = panel.getByLabel("원문을 읽은 날짜 (담당자 기록)", { exact: true });
+    await readOn.fill("2026-10-10");
+    await panel.getByLabel("보완할 항목", { exact: true }).selectOption("development");
+    await panel.getByText("발행일·기준 기간·관련성 기록", { exact: true }).click();
+    const note = panel.getByRole("textbox", { name: "이 항목과 관련된 이유", exact: true });
+    await note.fill("유지할 담당자 메모");
+    await consent.check();
+    assert.equal(await title.inputValue(), "");
+    assert.equal(await excerpt.inputValue(), "");
+    assert.equal(await save.isDisabled(), true);
+    await panel.getByText("공개 통계 찾기 (선택)", { exact: true }).click();
+    await panel.getByLabel("찾을 공개 주제", { exact: true }).selectOption("services");
+    await panel.getByRole("button", { name: "공개 검색 후보 10개 조회", exact: true }).click();
+    await panel.getByText("이 표의 기본 정보 확인 (선택)", { exact: true }).click();
+    await panel.getByLabel("읽을 표 정보", { exact: true }).selectOption("CMMT");
+    await panel.getByRole("button", { name: "선택 표 정보 한 번 조회", exact: true }).click();
+    const transfer = panel
+      .getByRole("article", { name: "주석 2", exact: true })
+      .getByRole("button", { name: "이 주석을 아래 빈 입력칸에 넣기", exact: true });
+    await transfer.waitFor();
+    assert.equal(await consent.isChecked(), true);
+    assert.equal(
+      await panel
+        .getByRole("article", { name: "주석 1", exact: true })
+        .getByRole("button", { name: "이 주석을 아래 빈 입력칸에 넣기", exact: true })
+        .isDisabled(),
+      true,
+    );
+    assert.equal(commands.length, 0);
+    assert.equal(researchCommands.length, 2);
+    record(
+      "an empty comment row cannot transfer; explicit synthetic reads do not change draft or prior consent",
+    );
+    await transfer.click();
+    await panel.getByText(/선택한 주석을 아래 입력칸에 옮겼습니다/).waitFor();
+    assert.equal(
+      await consent.isChecked(),
+      false,
+      "new comment contents require fresh storage consent",
+    );
+    assert.equal(await save.isDisabled(), true);
+    assert.equal(commands.length, 0);
+    assert.equal(await title.inputValue(), commentCandidate.title);
+    assert.equal(
+      await panel.getByRole("textbox", { name: "원문 URL (HTTPS)", exact: true }).inputValue(),
+      commentCandidate.originalUrl,
+    );
+    const movedQuote = await excerpt.inputValue();
+    const rowRecord = JSON.parse(
+      movedQuote.slice(movedQuote.indexOf("{"), movedQuote.lastIndexOf("}") + 1),
+    );
+    assert.deepEqual(rowRecord["원래 주석 행"], commentRows[1]);
+    assert.equal(rowRecord["선택한 행 번호 (이 응답에서 1부터)"], 2);
+    assert.ok(movedQuote.includes("수동 미확인"));
+    assert.equal(await readOn.inputValue(), "2026-10-10");
+    assert.equal(
+      await panel.getByLabel("보완할 항목", { exact: true }).inputValue(),
+      "development",
+    );
+    assert.equal(await note.inputValue(), "유지할 담당자 메모");
+    record(
+      "successful exact comment transfer keeps date, section and notes but clears consent and blocks saving",
+    );
+    assert.equal(await transfer.isDisabled(), true);
+    assert.equal(
+      await panel
+        .getByRole("article", { name: "주석 3", exact: true })
+        .getByRole("button", { name: "이 주석을 아래 빈 입력칸에 넣기", exact: true })
+        .isDisabled(),
+      true,
+    );
+    await panel.getByText("공개 통계 찾기 (선택)", { exact: true }).click();
+    await panel.getByText("발행일·기준 기간·관련성 기록", { exact: true }).click();
+    await page.setViewportSize({ width: 390, height: 1000 });
+    await panel.scrollIntoViewIfNeeded();
+    await panel.screenshot({ path: path.join(output, "comment-consent-mobile.png") });
+    assert.equal(await excerpt.inputValue(), movedQuote);
+    assert.equal(await consent.isChecked(), false);
+    assert.equal(await save.isDisabled(), true);
+    record(
+      "filled inputs reject further comment transfers and mobile view retains unchecked consent without automatic save",
+    );
+    await consent.check();
+    assert.equal(await save.isDisabled(), false);
+    await save.click();
+    await panel.getByText(/공개 근거 후보를 보관했습니다/).waitFor();
+    assert.equal(commands.length, 1);
+    assert.equal(recoveryReads, 0);
+    assert.equal(researchCommands.length, 2);
+    assert.ok(commands[0].source.text.includes(movedQuote));
+    assert.equal(commands[0].source.name, "[공개 근거 후보] " + commentCandidate.title);
+    assert.equal(commands[0].revision, original.revision);
+    assert.deepEqual(
+      company.plans,
+      original.plans.map((p) => ({ ...p, confirmedAt: null })),
+    );
+    assert.equal(
+      await page.evaluate(
+        (key) => localStorage.getItem(key),
+        "venturepass:public-evidence:v1:" + caseId,
+      ),
+      null,
+    );
+    record(
+      "fresh explicit consent permits one synthetic save of the selected comment and preserves manuscript contents",
+    );
+  } else if (scenario === "resume") {
     const key = `venturepass:public-evidence:v1:${caseId}`;
     const resume = panel.getByRole("button", { name: "최신 자료로 입력 이어쓰기", exact: true });
     const consent = panel.getByRole("checkbox", { name: /발췌와 출처를 확인/ });
@@ -1105,17 +1289,20 @@ try {
         syntheticApiCommands: commands.length,
         syntheticExports: 0,
         recoveryReads,
+        syntheticResearchCommands: researchCommands.length,
         continuousJourneys: 1,
         startingState:
-          scenario === "resume"
-            ? "preserved unsent draft after another tab saves; explicit read-only resume rejects stale/storage/concurrent receipt, retains inputs, resets consent, then one new explicit save; no writer, SQL or provider"
-            : scenario === "arrival"
-              ? "two real tabs; already-open unsent and saved views observe two distinct explicit saves, preserve draft/selection and confirm only exact evidence; no writer, SQL or provider"
-              : scenario === "tabs"
-                ? "two real tabs holding the same synthetic uncertain request; one completes, the other rejects mismatched evidence/new pending then explicitly confirms exact evidence; no reload, writer, SQL or provider"
-                : scenario === "errors"
-                  ? "single synthetic uncertain save; malformed/HTTP/storage/real second-tab-lock/removal errors then exact GET; no reload, writer, SQL or provider"
-                  : "existing synthetic manuscript; persistence failure then single public-evidence save, real reload and tab re-entry, mismatch and exact GET recovery; no writer, SQL or provider",
+          scenario === "comment-consent"
+            ? "empty evidence inputs with prior consent; explicit synthetic comment read/transfer requires fresh consent before one explicit save; no external KOSIS, business route, SQL or provider"
+            : scenario === "resume"
+              ? "preserved unsent draft after another tab saves; explicit read-only resume rejects stale/storage/concurrent receipt, retains inputs, resets consent, then one new explicit save; no writer, SQL or provider"
+              : scenario === "arrival"
+                ? "two real tabs; already-open unsent and saved views observe two distinct explicit saves, preserve draft/selection and confirm only exact evidence; no writer, SQL or provider"
+                : scenario === "tabs"
+                  ? "two real tabs holding the same synthetic uncertain request; one completes, the other rejects mismatched evidence/new pending then explicitly confirms exact evidence; no reload, writer, SQL or provider"
+                  : scenario === "errors"
+                    ? "single synthetic uncertain save; malformed/HTTP/storage/real second-tab-lock/removal errors then exact GET; no reload, writer, SQL or provider"
+                    : "existing synthetic manuscript; persistence failure then single public-evidence save, real reload and tab re-entry, mismatch and exact GET recovery; no writer, SQL or provider",
         scenario,
         commandActions: commands.map((c) => c.action),
         errors,
