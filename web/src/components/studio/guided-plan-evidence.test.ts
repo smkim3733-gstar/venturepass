@@ -368,3 +368,51 @@ describe("기본 계획서의 기준·근거 읽기", () => {
     expect(render(company).html).toBe("");
   });
 });
+
+describe("근거에서 해당 원고 항목 편집 연결", () => {
+  it("저장된 고유 항목은 원래 인용과 미확인 표시를 유지한 채 편집 진입을 제공한다", () => {
+    const { company, plan } = fixture();
+    const before = structuredClone(company);
+    const onEditSection = vi.fn();
+    const html = renderToStaticMarkup(
+      createElement(GuidedPlanEvidence, { company, plan, onEditSection }),
+    );
+    expect(html).toContain("이 항목의 원고 고치기");
+    expect(html).toContain(" · 고객 문제");
+    expect(html).toContain(quote);
+    expect(html).toContain("편집을 열어도 사실 확인이 끝난 것으로 표시하지 않습니다");
+    expect(html).not.toMatch(/<button[^>]*disabled/);
+    expect(company).toEqual(before);
+    expect(onEditSection).not.toHaveBeenCalled();
+  });
+  it("미확인 저장 등 차단 사유를 보여 주며 편집 연결을 비활성화한다", () => {
+    const { company, plan } = fixture();
+    const html = renderToStaticMarkup(
+      createElement(GuidedPlanEvidence, {
+        company,
+        plan,
+        onEditSection: vi.fn(),
+        editBlockedReason: "원래 저장 상태 확인 필요",
+      }),
+    );
+    expect(html).toContain("원래 저장 상태 확인 필요");
+    expect(html).toMatch(/<button[^>]*disabled=""/);
+    expect(html).toContain(quote);
+  });
+  it("같은 키의 항목이 둘 이상이거나 저장된 원고가 아니면 편집 대상을 추정하지 않는다", () => {
+    const { company, plan } = fixture();
+    plan.content.sections.push({ ...plan.content.sections[0], title: "다른 항목" });
+    const props = { company, plan, onEditSection: vi.fn() };
+    expect(renderToStaticMarkup(createElement(GuidedPlanEvidence, props))).not.toContain(
+      "이 항목의 원고 고치기",
+    );
+    expect(
+      renderToStaticMarkup(
+        createElement(GuidedPlanEvidence, {
+          ...props,
+          plan: { ...plan, id: randomUUID() },
+        }),
+      ),
+    ).toBe("");
+  });
+});

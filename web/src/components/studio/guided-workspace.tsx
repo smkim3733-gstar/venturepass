@@ -1586,7 +1586,18 @@ export function GuidedWorkspace({
                     </div>
                   </details>
                 )}
-                <GuidedPlanEvidence company={company} plan={latestPlan} />
+                <GuidedPlanEvidence
+                  company={company}
+                  plan={latestPlan}
+                  onEditSection={openSection}
+                  editBlockedReason={
+                    locked || existingRunUnknown
+                      ? "처리 중인 저장 상태를 먼저 확인한 뒤 원고를 고쳐 주세요."
+                      : editingDirty
+                        ? "수정 내용을 저장하거나 편집을 취소한 뒤 다른 항목을 고쳐 주세요."
+                        : ""
+                  }
+                />
                 <GuidedRepairSummary company={company} run={lastRun} />
                 {answerSelection && (
                   <section className={styles.notice} aria-label="저장한 답변으로 원고 보완">

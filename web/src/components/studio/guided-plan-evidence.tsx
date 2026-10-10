@@ -126,7 +126,17 @@ function ApplicationCriteriaReference({
   );
 }
 
-export function GuidedPlanEvidence({ company, plan }: { company: StudioCase; plan: BusinessPlan }) {
+export function GuidedPlanEvidence({
+  company,
+  plan,
+  onEditSection,
+  editBlockedReason = "",
+}: {
+  company: StudioCase;
+  plan: BusinessPlan;
+  onEditSection?: (sectionKey: string) => void;
+  editBlockedReason?: string;
+}) {
   const stored = company.plans.filter((item) => item.id === plan.id);
   if (stored.length !== 1 || JSON.stringify(stored[0]) !== JSON.stringify(plan)) return null;
   return (
@@ -140,6 +150,12 @@ export function GuidedPlanEvidence({ company, plan }: { company: StudioCase; pla
         아래 작성 가이드는 앱의 내부 점검용입니다. 공식 배점표나 모든 회사의 필수서류 목록은
         아닙니다.
       </p>
+      {onEditSection && (
+        <p className={styles.helper}>
+          {editBlockedReason ||
+            "근거를 살펴본 뒤 해당 항목의 원고를 고칠 수 있습니다. 편집을 열어도 사실 확인이 끝난 것으로 표시하지 않습니다."}
+        </p>
+      )}
       {plan.content.sections.map((section, index) => {
         const guidance = evaluationFocusItems.filter((item) =>
           item.sectionKeys.includes(section.key),
@@ -186,6 +202,19 @@ export function GuidedPlanEvidence({ company, plan }: { company: StudioCase; pla
                 );
               })
             )}
+            {onEditSection &&
+              plan.content.sections.filter((item) => item.key === section.key).length === 1 && (
+                <button
+                  type="button"
+                  className={styles.link}
+                  disabled={!!editBlockedReason}
+                  onClick={() => {
+                    if (!editBlockedReason) onEditSection(section.key);
+                  }}
+                >
+                  이 항목의 원고 고치기<span className="sr-only"> · {section.title}</span>
+                </button>
+              )}
           </details>
         );
       })}
