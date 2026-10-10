@@ -16,6 +16,8 @@ const app = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const temporaryRoot = await realpath(path.resolve(app, "../../.venturepass-tools/build-temp"));
 const staging = await realpath(process.argv[2]);
 const serverMode = process.argv[3] ?? "start";
+const scenario = process.argv[4] ?? "reentry";
+assert.ok(["reentry", "errors"].includes(scenario));
 assert.ok(["start", "dev"].includes(serverMode));
 const relative = path.relative(temporaryRoot, staging);
 assert.ok(relative && !relative.startsWith("..") && !path.isAbsolute(relative));
@@ -35,7 +37,12 @@ for (const file of [
     sha(await readFile(path.join(app, file))),
     sha(await readFile(path.join(staging, file))),
   );
-const output = await mkdtemp(path.join(temporaryRoot, "venturepass-public-reentry-ui-"));
+const output = await mkdtemp(
+  path.join(
+    temporaryRoot,
+    scenario === "errors" ? "venturepass-public-errors-ui-" : "venturepass-public-reentry-ui-",
+  ),
+);
 const guard = path.join(output, "network-guard.mjs");
 await writeFile(
   guard,
@@ -273,6 +280,10 @@ try {
         if (u.pathname === root) {
           if (!commands.length) return reply(company);
           recoveryReads++;
+          if (readMode === "malformed")
+            return reply({ revision: "PRIVATE_REVISION", error: "PRIVATE_SERVER_FIELD" });
+          if (readMode === "server-error")
+            return reply({ error: "PRIVATE_SERVER_TRACE", reason: "busy" }, 503);
           if (readMode === "stale") return reply(original);
           if (readMode === "mismatch") {
             const wrong = structuredClone(company);
@@ -333,108 +344,242 @@ try {
   await panel.getByRole("textbox", { name: "원문 발췌" }).fill(quote);
   await panel.getByLabel("원문을 읽은 날짜 (담당자 기록)", { exact: true }).fill("2026-10-10");
   const close = panel.getByRole("button", { name: "닫기", exact: true });
-  const save = panel.getByRole("button", { name: "공개 근거 후보 보관", exact: true });
-  await panel.getByRole("checkbox", { name: /발췌와 출처를 확인/ }).check();
-  const key = `venturepass:public-evidence:v1:${caseId}`;
-  await page.evaluate(() => {
-    window.originalStorageWrite = Storage.prototype.setItem;
-    Storage.prototype.setItem = function (key, value) {
-      if (key.startsWith("venturepass:public-evidence:")) throw Error("Synthetic quota failure");
-      return window.originalStorageWrite.call(this, key, value);
+  if (scenario === "errors") {
+    const save = panel.getByRole("button", { name: "공개 근거 후보 보관", exact: true });
+    await panel.getByRole("checkbox", { name: /발췌와 출처를 확인/ }).check();
+    await save.click();
+    await panel
+      .getByRole("alert")
+      .filter({ hasText: "저장 여부를 아직 확인하지 못했습니다." })
+      .waitFor();
+    assert.equal(commands.length, 1);
+    const key = `venturepass:public-evidence:v1:${caseId}`;
+    const stored = await page.evaluate((key) => localStorage.getItem(key), key);
+    assert.ok(stored);
+    const inspect = panel.getByRole("button", { name: "이 자료의 저장 상태 확인", exact: true });
+    const retained = async (message) => {
+      await panel.getByRole("alert").filter({ hasText: message }).waitFor();
+      const text = await panel.innerText();
+      assert.ok(!/PRIVATE_|invalid_type|expected|sourceId|receiptSchema/.test(text));
+      assert.equal(await close.isDisabled(), true);
+      assert.equal(await save.isDisabled(), true);
+      assert.equal(await panel.getByRole("textbox", { name: "원문 발췌" }).inputValue(), quote);
+      assert.equal(commands.length, 1);
+      assert.equal(await page.evaluate((key) => localStorage.getItem(key), key), stored);
+      assert.deepEqual(company.plans, original.plans);
     };
-  });
-  await save.click();
-  await panel.getByText("복구 기록을 안전하게 보관하지 못했습니다.", { exact: false }).waitFor();
-  assert.equal(commands.length, 0);
-  assert.equal(await title.inputValue(), "복구 흐름용 공개 자료");
-  assert.equal(await page.evaluate((key) => localStorage.getItem(key), key), null);
-  await page.evaluate(() => {
-    Storage.prototype.setItem = window.originalStorageWrite;
-    delete window.originalStorageWrite;
-  });
-  record("browser persistence failure prevents transmission and preserves the unsent draft");
+    readMode = "malformed";
+    await inspect.click();
+    await retained("저장 여부를 아직 확인하지 못했습니다.");
+    record(
+      "invalid response shape shows a safe unconfirmed message and keeps the original request",
+    );
+    readMode = "server-error";
+    await inspect.click();
+    await retained("저장 여부를 아직 확인하지 못했습니다.");
+    record("HTTP failure hides server exception text and cannot impersonate a browser lock error");
 
-  await save.click();
-  await panel.getByText("저장 결과가 미확인입니다.", { exact: false }).waitFor();
-  assert.equal(commands.length, 1);
-  assert.equal(recoveryReads, 1);
-  const stored = await page.evaluate((key) => localStorage.getItem(key), key);
-  const identity = JSON.parse(stored);
-  assert.deepEqual(Object.keys(identity).sort(), [
-    "caseId",
-    "digest",
-    "format",
-    "revision",
-    "sectionKey",
-    "sourceId",
-  ]);
-  assert.equal(identity.caseId, caseId);
-  assert.equal(identity.sourceId, commands[0].source.id);
-  assert.equal(identity.revision, commands[0].revision);
-  assert.ok(
-    !stored.includes(quote) &&
-      !stored.includes("example.invalid") &&
-      !stored.includes("복구 흐름용"),
-  );
-  assert.equal(await close.isDisabled(), true);
-  record("original request identity is persisted without evidence contents before the single save");
+    const beforeReadFailure = recoveryReads;
+    await page.evaluate(() => {
+      window.originalStorageRead = Storage.prototype.getItem;
+      Storage.prototype.getItem = function (key) {
+        if (key.startsWith("venturepass:public-evidence:")) throw Error("PRIVATE_STORAGE_PATH");
+        return window.originalStorageRead.call(this, key);
+      };
+    });
+    await inspect.click();
+    await panel
+      .getByRole("alert")
+      .filter({ hasText: "브라우저에서 복구 기록을 읽거나 보관하지 못했습니다." })
+      .waitFor();
+    await page.evaluate(() => {
+      Storage.prototype.getItem = window.originalStorageRead;
+      delete window.originalStorageRead;
+    });
+    await retained("브라우저에서 복구 기록을 읽거나 보관하지 못했습니다.");
+    assert.equal(recoveryReads, beforeReadFailure);
+    record(
+      "storage read failure is distinguished without sending a recovery request or losing the record",
+    );
 
-  readMode = "exact";
-  page.once("dialog", (dialog) => dialog.accept());
-  await page.reload({ waitUntil: "networkidle" });
-  await page.getByRole("button").filter({ hasText: name }).first().click();
-  await panel.getByText("이전 공개 근거 저장 요청이 미확인입니다.", { exact: false }).waitFor();
-  assert.equal(await panel.getByRole("textbox").count(), 0);
-  assert.equal(await save.count(), 0);
-  assert.equal(await close.isDisabled(), true);
-  assert.equal(commands.length, 1);
-  assert.equal(await page.evaluate((key) => localStorage.getItem(key), key), stored);
-  record(
-    "real reload and company re-entry reopen the unresolved request without draft duplication or resend",
-  );
+    const other = await context.newPage();
+    other.on("pageerror", (e) => errors.push(e.message));
+    await other.goto(origin + "/studio", { waitUntil: "networkidle" });
+    await other.evaluate(
+      (key) =>
+        new Promise((acquired, reject) => {
+          window.heldLock = navigator.locks
+            .request(key, { mode: "exclusive" }, () => {
+              acquired(true);
+              return new Promise((release) => {
+                window.releaseHeldLock = release;
+              });
+            })
+            .catch(reject);
+        }),
+      key,
+    );
+    const beforeBusy = recoveryReads;
+    await inspect.click();
+    await retained("다른 창에서 이 회사의 공개 근거 저장을 확인 중입니다.");
+    assert.equal(recoveryReads, beforeBusy);
+    await other.evaluate(() => window.releaseHeldLock());
+    await other.close();
+    record(
+      "an actual second browser tab holding the lock gets a specific wait message with no request",
+    );
 
-  readMode = "mismatch";
-  const inspect = panel.getByRole("button", { name: "이 자료의 저장 상태 확인", exact: true });
-  await inspect.click();
-  await panel.getByText("원래 공개 근거의 저장을 확인하지 못했습니다.", { exact: false }).waitFor();
-  assert.equal(await close.isDisabled(), true);
-  assert.equal(await page.evaluate((key) => localStorage.getItem(key), key), stored);
-  assert.equal(commands.length, 1);
-  await page.setViewportSize({ width: 390, height: 844 });
-  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
-  await page.screenshot({
-    path: path.join(output, "public-evidence-reentry-mobile.png"),
-    fullPage: true,
-  });
-  record(
-    "same-ID different-body response after reload keeps the recovery identity and mobile controls locked",
-  );
+    readMode = "exact";
+    await page.evaluate(() => {
+      window.originalStorageRemove = Storage.prototype.removeItem;
+      Storage.prototype.removeItem = function (key) {
+        if (key.startsWith("venturepass:public-evidence:")) throw Error("PRIVATE_REMOVE_PATH");
+        return window.originalStorageRemove.call(this, key);
+      };
+    });
+    await inspect.click();
+    await retained("브라우저에서 복구 기록을 읽거나 보관하지 못했습니다.");
+    assert.equal(
+      await panel.getByText("공개 근거 후보를 보관했습니다.", { exact: false }).count(),
+      0,
+    );
+    await page.evaluate(() => {
+      Storage.prototype.removeItem = window.originalStorageRemove;
+      delete window.originalStorageRemove;
+    });
+    await page.setViewportSize({ width: 390, height: 844 });
+    assert.equal(
+      await page.evaluate(() => document.documentElement.scrollWidth > innerWidth),
+      false,
+    );
+    await page.screenshot({
+      path: path.join(output, "public-evidence-errors-mobile.png"),
+      fullPage: true,
+    });
+    record(
+      "failed local receipt removal keeps recovery locked even after an exact server response",
+    );
+    await inspect.click();
+    await panel.getByText("공개 근거 후보를 보관했습니다.", { exact: false }).waitFor();
+    assert.equal(await page.evaluate((key) => localStorage.getItem(key), key), null);
+    assert.equal(commands.length, 1);
+    assert.deepEqual(company.plans, original.plans);
+    record(
+      "explicit exact recovery succeeds once the browser failure is resolved, without resending",
+    );
+  } else {
+    const save = panel.getByRole("button", { name: "공개 근거 후보 보관", exact: true });
+    await panel.getByRole("checkbox", { name: /발췌와 출처를 확인/ }).check();
+    const key = `venturepass:public-evidence:v1:${caseId}`;
+    await page.evaluate(() => {
+      window.originalStorageWrite = Storage.prototype.setItem;
+      Storage.prototype.setItem = function (key, value) {
+        if (key.startsWith("venturepass:public-evidence:")) throw Error("Synthetic quota failure");
+        return window.originalStorageWrite.call(this, key, value);
+      };
+    });
+    await save.click();
+    await panel
+      .getByText("브라우저에서 복구 기록을 읽거나 보관하지 못했습니다.", { exact: false })
+      .waitFor();
+    assert.equal(commands.length, 0);
+    assert.equal(await title.inputValue(), "복구 흐름용 공개 자료");
+    assert.equal(await page.evaluate((key) => localStorage.getItem(key), key), null);
+    await page.evaluate(() => {
+      Storage.prototype.setItem = window.originalStorageWrite;
+      delete window.originalStorageWrite;
+    });
+    record("browser persistence failure prevents transmission and preserves the unsent draft");
 
-  readMode = "exact";
-  // Close the tab entirely, then re-enter in another tab of the same isolated browser profile.
-  await page.close();
-  page = await context.newPage();
-  page.on("pageerror", (e) => errors.push(e.message));
-  await page.goto(origin + "/studio", { waitUntil: "networkidle" });
-  await page.getByRole("button").filter({ hasText: name }).first().click();
-  const reopened = page.getByRole("region", { name: "공개 근거 후보 보관", exact: true });
-  await reopened.getByText("이전 공개 근거 저장 요청이 미확인입니다.", { exact: false }).waitFor();
-  assert.equal(await page.evaluate((key) => localStorage.getItem(key), key), stored);
-  await reopened.getByRole("button", { name: "이 자료의 저장 상태 확인", exact: true }).click();
-  await reopened.getByText("공개 근거 후보를 보관했습니다.", { exact: false }).waitFor();
-  assert.equal(await page.evaluate((key) => localStorage.getItem(key), key), null);
-  assert.equal(commands.length, 1);
-  assert.ok((await reopened.innerText()).includes(quote));
-  assert.deepEqual(company.plans, original.plans);
-  await reopened.getByRole("button", { name: "닫기", exact: true }).click();
-  await reopened.waitFor({ state: "detached" });
-  assert.equal(
-    await page.getByRole("button", { name: "상세 도구", exact: true }).isEnabled(),
-    true,
-  );
-  record(
-    "tab re-entry and explicit exact GET clear only the original identity and preserve the manuscript",
-  );
+    await save.click();
+    await panel.getByText("저장 여부를 아직 확인하지 못했습니다.", { exact: false }).waitFor();
+    assert.equal(commands.length, 1);
+    assert.equal(recoveryReads, 1);
+    const stored = await page.evaluate((key) => localStorage.getItem(key), key);
+    const identity = JSON.parse(stored);
+    assert.deepEqual(Object.keys(identity).sort(), [
+      "caseId",
+      "digest",
+      "format",
+      "revision",
+      "sectionKey",
+      "sourceId",
+    ]);
+    assert.equal(identity.caseId, caseId);
+    assert.equal(identity.sourceId, commands[0].source.id);
+    assert.equal(identity.revision, commands[0].revision);
+    assert.ok(
+      !stored.includes(quote) &&
+        !stored.includes("example.invalid") &&
+        !stored.includes("복구 흐름용"),
+    );
+    assert.equal(await close.isDisabled(), true);
+    record(
+      "original request identity is persisted without evidence contents before the single save",
+    );
+
+    readMode = "exact";
+    page.once("dialog", (dialog) => dialog.accept());
+    await page.reload({ waitUntil: "networkidle" });
+    await page.getByRole("button").filter({ hasText: name }).first().click();
+    await panel.getByText("이전 공개 근거 저장 요청이 미확인입니다.", { exact: false }).waitFor();
+    assert.equal(await panel.getByRole("textbox").count(), 0);
+    assert.equal(await save.count(), 0);
+    assert.equal(await close.isDisabled(), true);
+    assert.equal(commands.length, 1);
+    assert.equal(await page.evaluate((key) => localStorage.getItem(key), key), stored);
+    record(
+      "real reload and company re-entry reopen the unresolved request without draft duplication or resend",
+    );
+
+    readMode = "mismatch";
+    const inspect = panel.getByRole("button", { name: "이 자료의 저장 상태 확인", exact: true });
+    await inspect.click();
+    await panel.getByText("저장 여부를 아직 확인하지 못했습니다.", { exact: false }).waitFor();
+    assert.equal(await close.isDisabled(), true);
+    assert.equal(await page.evaluate((key) => localStorage.getItem(key), key), stored);
+    assert.equal(commands.length, 1);
+    await page.setViewportSize({ width: 390, height: 844 });
+    assert.equal(
+      await page.evaluate(() => document.documentElement.scrollWidth > innerWidth),
+      false,
+    );
+    await page.screenshot({
+      path: path.join(output, "public-evidence-reentry-mobile.png"),
+      fullPage: true,
+    });
+    record(
+      "same-ID different-body response after reload keeps the recovery identity and mobile controls locked",
+    );
+
+    readMode = "exact";
+    // Close the tab entirely, then re-enter in another tab of the same isolated browser profile.
+    await page.close();
+    page = await context.newPage();
+    page.on("pageerror", (e) => errors.push(e.message));
+    await page.goto(origin + "/studio", { waitUntil: "networkidle" });
+    await page.getByRole("button").filter({ hasText: name }).first().click();
+    const reopened = page.getByRole("region", { name: "공개 근거 후보 보관", exact: true });
+    await reopened
+      .getByText("이전 공개 근거 저장 요청이 미확인입니다.", { exact: false })
+      .waitFor();
+    assert.equal(await page.evaluate((key) => localStorage.getItem(key), key), stored);
+    await reopened.getByRole("button", { name: "이 자료의 저장 상태 확인", exact: true }).click();
+    await reopened.getByText("공개 근거 후보를 보관했습니다.", { exact: false }).waitFor();
+    assert.equal(await page.evaluate((key) => localStorage.getItem(key), key), null);
+    assert.equal(commands.length, 1);
+    assert.ok((await reopened.innerText()).includes(quote));
+    assert.deepEqual(company.plans, original.plans);
+    await reopened.getByRole("button", { name: "닫기", exact: true }).click();
+    await reopened.waitFor({ state: "detached" });
+    assert.equal(
+      await page.getByRole("button", { name: "상세 도구", exact: true }).isEnabled(),
+      true,
+    );
+    record(
+      "tab re-entry and explicit exact GET clear only the original identity and preserve the manuscript",
+    );
+  }
   assert.deepEqual(errors, []);
   assert.deepEqual(unexpected, []);
   assert.ok(!logs.join("").includes("FORBIDDEN_SERVER_FETCH"));
@@ -451,7 +596,10 @@ try {
         recoveryReads,
         continuousJourneys: 1,
         startingState:
-          "existing synthetic manuscript; persistence failure then single public-evidence save, real reload and tab re-entry, mismatch and exact GET recovery; no writer, SQL or provider",
+          scenario === "errors"
+            ? "single synthetic uncertain save; malformed/HTTP/storage/real second-tab-lock/removal errors then exact GET; no reload, writer, SQL or provider"
+            : "existing synthetic manuscript; persistence failure then single public-evidence save, real reload and tab re-entry, mismatch and exact GET recovery; no writer, SQL or provider",
+        scenario,
         commandActions: commands.map((c) => c.action),
         errors,
         unexpected,

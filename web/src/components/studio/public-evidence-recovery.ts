@@ -17,8 +17,49 @@ const receiptSchema = z
   })
   .strict();
 export type PublicEvidenceReceipt = z.infer<typeof receiptSchema>;
+const recoveryMessages = {
+  unconfirmed:
+    "저장 여부를 아직 확인하지 못했습니다. 원래 요청을 유지하며 자동으로 다시 저장하지 않습니다. ‘이 자료의 저장 상태 확인’을 눌러 주세요.",
+  storage:
+    "브라우저에서 복구 기록을 읽거나 보관하지 못했습니다. 저장 여부를 확인할 때까지 새 저장을 멈춥니다. 브라우저 저장소를 사용할 수 있는지 확인한 뒤 다시 확인해 주세요.",
+  busy: "다른 창에서 이 회사의 공개 근거 저장을 확인 중입니다. 다른 창의 처리가 끝나면 다시 확인해 주세요.",
+  unavailable:
+    "이 브라우저에서는 저장 요청을 안전하게 구분할 수 없습니다. 사용하던 브라우저에서 다시 확인해 주세요.",
+} as const;
+type RecoveryFailure = keyof typeof recoveryMessages;
+export class PublicEvidenceRecoveryError extends Error {
+  constructor(readonly reason: RecoveryFailure) {
+    super(recoveryMessages[reason]);
+  }
+}
+/** Never display response/error text, even when a remote error resembles a known failure. */
+export function publicEvidenceRecoveryMessage(
+  error: unknown,
+  fallback: RecoveryFailure = "unconfirmed",
+) {
+  if (error instanceof PublicEvidenceRecoveryError) {
+    switch (error.reason) {
+      case "unconfirmed":
+      case "storage":
+      case "busy":
+      case "unavailable":
+        return recoveryMessages[error.reason];
+    }
+  }
+  return recoveryMessages[fallback];
+}
+function storageAccess<T>(task: () => T): T {
+  try {
+    return task();
+  } catch {
+    throw new PublicEvidenceRecoveryError("storage");
+  }
+}
+export function publicEvidenceBrowserStorage() {
+  return storageAccess(() => window.localStorage);
+}
 const fail = () => {
-  throw Error("원래 공개 근거의 저장을 확인하지 못했습니다. 저장 상태를 다시 확인해 주세요.");
+  throw new PublicEvidenceRecoveryError("unconfirmed");
 };
 const equal = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
 
@@ -75,7 +116,7 @@ export class PublicEvidenceJournal {
     this.key = publicEvidenceRecoveryKey(caseId);
   }
   private pending() {
-    const text = this.storage.getItem(this.key);
+    const text = storageAccess(() => this.storage.getItem(this.key));
     if (text === null) return null;
     if (text.length > 1024) fail();
     const parsed = receiptSchema.parse(JSON.parse(text));
@@ -100,8 +141,9 @@ export class PublicEvidenceJournal {
     // Re-read the current company after hashing, then compare-and-remove under the same lock.
     const accepted = publicEvidenceSaved(company, request, current());
     if (!accepted || !equal(this.pending(), expected)) return fail();
-    this.storage.removeItem(this.key);
-    if (this.storage.getItem(this.key) !== null) return fail();
+    storageAccess(() => this.storage.removeItem(this.key));
+    if (storageAccess(() => this.storage.getItem(this.key)) !== null)
+      throw new PublicEvidenceRecoveryError("storage");
     return { company: accepted, request };
   }
   save(
@@ -115,8 +157,8 @@ export class PublicEvidenceJournal {
       const original = await receipt(request);
       const now = current();
       if (now.id !== this.caseId || now.revision !== original.revision || this.pending()) fail();
-      this.storage.setItem(this.key, JSON.stringify(original));
-      if (!equal(this.pending(), original)) fail();
+      storageAccess(() => this.storage.setItem(this.key, JSON.stringify(original)));
+      if (!equal(this.pending(), original)) throw new PublicEvidenceRecoveryError("storage");
       onPending(original);
       // Only this first explicit save sends a command. Reload/recovery is always GET only.
       try {
@@ -136,12 +178,9 @@ export class PublicEvidenceJournal {
 }
 
 export const publicEvidenceBrowserLock: Lock = async (name, task) => {
-  if (!navigator.locks) throw Error("이 브라우저에서는 저장 요청을 안전하게 구분할 수 없습니다.");
+  if (!navigator.locks) throw new PublicEvidenceRecoveryError("unavailable");
   return navigator.locks.request(name, { mode: "exclusive", ifAvailable: true }, async (lock) => {
-    if (!lock)
-      throw Error(
-        "다른 창에서 이 회사의 공개 근거 저장을 확인 중입니다. 잠시 후 다시 확인해 주세요.",
-      );
+    if (!lock) throw new PublicEvidenceRecoveryError("busy");
     return task();
   });
 };

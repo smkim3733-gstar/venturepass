@@ -1,5 +1,10 @@
-import { describe, it, expect, vi } from "vitest";
-import { PublicEvidenceJournal } from "./public-evidence-recovery";
+import { afterEach, describe, it, expect, vi } from "vitest";
+import {
+  PublicEvidenceJournal,
+  PublicEvidenceRecoveryError,
+  publicEvidenceRecoveryMessage,
+  publicEvidenceBrowserLock,
+} from "./public-evidence-recovery";
 import { emptyPublicEvidence, preparePublicEvidence } from "@/lib/studio-public-evidence";
 import { recoveryCompany, save } from "../../../scripts/fixtures/guided-public-recovery";
 
@@ -215,5 +220,82 @@ describe("public evidence reload recovery", () => {
         .recover(original, () => ({ id: "e0000000-0000-4000-8000-000000000001", revision: 0 })),
     ).rejects.toThrow();
     expect(await s.journal().read()).toEqual(original);
+  });
+});
+
+// Error boundaries: unknown server/schema details must never become product instructions.
+describe("public evidence recovery messages", () => {
+  afterEach(() => vi.unstubAllGlobals());
+  it.each([null, { error: "PRIVATE_SERVER_FIELD" }, { revision: "PRIVATE_REVISION" }])(
+    "keeps an invalid response pending and hides schema details: %j",
+    async (response) => {
+      const s = setup(),
+        original = await s.pending();
+      s.response(response);
+      const error = await s
+        .journal()
+        .recover(original, s.current)
+        .catch((error: unknown) => error);
+      expect(publicEvidenceRecoveryMessage(error)).toContain(
+        "저장 여부를 아직 확인하지 못했습니다",
+      );
+      expect(publicEvidenceRecoveryMessage(error)).not.toMatch(
+        /PRIVATE|invalid_type|revision|expected/,
+      );
+      expect(await s.journal().read()).toEqual(original);
+      expect(s.storage.removeItem).not.toHaveBeenCalled();
+    },
+  );
+  it("does not trust server exception text or a forged local failure code", async () => {
+    const s = setup(),
+      original = await s.pending();
+    s.transport.mockRejectedValueOnce(
+      Object.assign(Error("PRIVATE_SERVER_TRACE"), { reason: "busy" }),
+    );
+    const error = await s
+      .journal()
+      .recover(original, s.current)
+      .catch((error: unknown) => error);
+    expect(publicEvidenceRecoveryMessage(error)).toContain("저장 여부를 아직 확인하지 못했습니다");
+    expect(publicEvidenceRecoveryMessage(error)).not.toContain("PRIVATE_SERVER_TRACE");
+    expect(await s.journal().read()).toEqual(original);
+  });
+  it("classifies browser storage failure at its source and keeps the pending record", async () => {
+    const s = setup(),
+      original = await s.pending();
+    s.storage.getItem.mockImplementationOnce(() => {
+      throw Error("PRIVATE_STORAGE_PATH");
+    });
+    const before = s.transport.mock.calls.length;
+    const error = await s
+      .journal()
+      .recover(original, s.current)
+      .catch((error: unknown) => error);
+    expect(error).toBeInstanceOf(PublicEvidenceRecoveryError);
+    expect(publicEvidenceRecoveryMessage(error)).toContain(
+      "브라우저에서 복구 기록을 읽거나 보관하지 못했습니다",
+    );
+    expect(publicEvidenceRecoveryMessage(error)).not.toContain("PRIVATE_STORAGE_PATH");
+    expect(s.transport.mock.calls.length).toBe(before);
+    expect(await s.journal().read()).toEqual(original);
+  });
+  it("distinguishes unavailable and occupied browser locks without starting a task", async () => {
+    const task = vi.fn(async () => true);
+    vi.stubGlobal("navigator", {});
+    const unavailable = await publicEvidenceBrowserLock("synthetic", task).catch((e: unknown) => e);
+    expect(publicEvidenceRecoveryMessage(unavailable)).toContain(
+      "이 브라우저에서는 저장 요청을 안전하게 구분할 수 없습니다",
+    );
+    vi.stubGlobal("navigator", {
+      locks: {
+        request: async (_name: string, _options: unknown, callback: (lock: null) => unknown) =>
+          callback(null),
+      },
+    });
+    const busy = await publicEvidenceBrowserLock("synthetic", task).catch((e: unknown) => e);
+    expect(publicEvidenceRecoveryMessage(busy)).toContain(
+      "다른 창에서 이 회사의 공개 근거 저장을 확인 중입니다",
+    );
+    expect(task).not.toHaveBeenCalled();
   });
 });

@@ -12,6 +12,8 @@ import { jsonBody, studioFetch, useDirty } from "./shared";
 import {
   PublicEvidenceJournal,
   publicEvidenceBrowserLock,
+  publicEvidenceBrowserStorage,
+  publicEvidenceRecoveryMessage,
   type PublicEvidenceReceipt,
 } from "./public-evidence-recovery";
 import styles from "./guided-workspace.module.css";
@@ -80,7 +82,7 @@ export function PublicEvidencePanel({
   function journal() {
     return new PublicEvidenceJournal(
       base.id,
-      window.localStorage,
+      publicEvidenceBrowserStorage(),
       publicEvidenceBrowserLock,
       (command) =>
         studioFetch<unknown>(
@@ -96,7 +98,7 @@ export function PublicEvidencePanel({
       .then(() =>
         new PublicEvidenceJournal(
           base.id,
-          window.localStorage,
+          publicEvidenceBrowserStorage(),
           publicEvidenceBrowserLock,
           async () => {
             throw Error("저장 상태 확인을 선택해 주세요.");
@@ -109,11 +111,8 @@ export function PublicEvidencePanel({
           setReady(true);
         }
       })
-      .catch(() => {
-        if (!cancelled)
-          setError(
-            "이 브라우저의 이전 저장 요청을 읽지 못했습니다. 새 저장을 멈췄습니다. 복구 기록을 다시 확인해 주세요.",
-          );
+      .catch((error) => {
+        if (!cancelled) setError(publicEvidenceRecoveryMessage(error, "storage"));
       });
     return () => {
       cancelled = true;
@@ -130,12 +129,10 @@ export function PublicEvidencePanel({
         setReady(true);
         setError("");
       }
-    } catch {
+    } catch (error) {
       if (mounted.current) {
         setReady(false);
-        setError(
-          "이전 저장 요청을 읽지 못했습니다. 브라우저 저장소를 사용할 수 있는지 확인한 뒤 다시 확인해 주세요.",
-        );
+        setError(publicEvidenceRecoveryMessage(error, "storage"));
       }
     } finally {
       flight.current = false;
@@ -185,24 +182,18 @@ export function PublicEvidencePanel({
           },
         ),
       );
-    } catch {
+    } catch (error) {
       // Also inspect a partial storage write; never send if persistence/read-back failed.
       try {
         const record = await journal().read();
         if (mounted.current) {
           setPending(record);
-          setError(
-            record
-              ? "저장 결과가 미확인입니다. 원래 요청을 보존했습니다. 저장 상태를 확인해 주세요. 자동으로 다시 저장하지 않습니다."
-              : "복구 기록을 안전하게 보관하지 못했습니다. 입력을 유지했습니다. 다시 확인해 주세요.",
-          );
+          setError(publicEvidenceRecoveryMessage(error, record ? "unconfirmed" : "storage"));
         }
-      } catch {
+      } catch (readError) {
         if (mounted.current) {
           setReady(false);
-          setError(
-            "복구 기록을 읽지 못했습니다. 새 저장을 멈췄습니다. 복구 기록을 다시 확인해 주세요.",
-          );
+          setError(publicEvidenceRecoveryMessage(readError, "storage"));
         }
       }
     } finally {
@@ -219,7 +210,7 @@ export function PublicEvidencePanel({
     try {
       accept(await journal().recover(pending, () => currentCompany.current));
     } catch (e) {
-      if (mounted.current) setError(e instanceof Error ? e.message : "저장 상태 미확인");
+      if (mounted.current) setError(publicEvidenceRecoveryMessage(e));
     } finally {
       flight.current = false;
       if (mounted.current) setWorking(false);
