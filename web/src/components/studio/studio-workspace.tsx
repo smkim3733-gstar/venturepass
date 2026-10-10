@@ -57,6 +57,7 @@ import { PreparationPanel } from "./preparation-panel";
 import { PreparationAutomationPanel } from "./preparation-automation-panel";
 import { AnalysisPanel } from "./analysis-panel";
 import { candidateSelectionAcknowledged } from "./candidate-selection";
+import { planReviewSaveAcknowledged } from "./plan-review-decisions";
 import { PlanEditor } from "./plan-editor";
 import { WorkflowPanel } from "./workflow-panel";
 import { readVentureOverview, type VentureOverview } from "@/lib/venturein-overview-types";
@@ -346,6 +347,14 @@ export function StudioWorkspace() {
       )
         throw new Error(
           "신청 방향의 저장 기록을 확인하지 못했습니다. 원래 선택 이유와 요청을 유지했습니다.",
+        );
+      // A manual judgement must match before publishing its company state or success toast.
+      if (
+        mutation.action === "append-plan-review" &&
+        !planReviewSaveAcknowledged(next, company.id, mutation.clientRequestId, mutation.decision)
+      )
+        throw new Error(
+          "검토 판단의 저장 기록을 확인하지 못했습니다. 원래 작성 내용과 요청을 유지했습니다.",
         );
       accept(next);
       toast.success("저장했습니다.");
