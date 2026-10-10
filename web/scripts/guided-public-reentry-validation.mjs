@@ -17,7 +17,7 @@ const temporaryRoot = await realpath(path.resolve(app, "../../.venturepass-tools
 const staging = await realpath(process.argv[2]);
 const serverMode = process.argv[3] ?? "start";
 const scenario = process.argv[4] ?? "reentry";
-assert.ok(["reentry", "errors"].includes(scenario));
+assert.ok(["reentry", "errors", "tabs"].includes(scenario));
 assert.ok(["start", "dev"].includes(serverMode));
 const relative = path.relative(temporaryRoot, staging);
 assert.ok(relative && !relative.startsWith("..") && !path.isAbsolute(relative));
@@ -40,7 +40,11 @@ for (const file of [
 const output = await mkdtemp(
   path.join(
     temporaryRoot,
-    scenario === "errors" ? "venturepass-public-errors-ui-" : "venturepass-public-reentry-ui-",
+    scenario === "tabs"
+      ? "venturepass-public-tabs-ui-"
+      : scenario === "errors"
+        ? "venturepass-public-errors-ui-"
+        : "venturepass-public-reentry-ui-",
   ),
 );
 const guard = path.join(output, "network-guard.mjs");
@@ -344,7 +348,119 @@ try {
   await panel.getByRole("textbox", { name: "원문 발췌" }).fill(quote);
   await panel.getByLabel("원문을 읽은 날짜 (담당자 기록)", { exact: true }).fill("2026-10-10");
   const close = panel.getByRole("button", { name: "닫기", exact: true });
-  if (scenario === "errors") {
+  if (scenario === "tabs") {
+    const save = panel.getByRole("button", { name: "공개 근거 후보 보관", exact: true });
+    await panel.getByRole("checkbox", { name: /발췌와 출처를 확인/ }).check();
+    await save.click();
+    await panel
+      .getByRole("alert")
+      .filter({ hasText: "저장 여부를 아직 확인하지 못했습니다." })
+      .waitFor();
+    assert.equal(commands.length, 1);
+    const key = `venturepass:public-evidence:v1:${caseId}`;
+    const stored = await page.evaluate((key) => localStorage.getItem(key), key);
+    assert.ok(stored);
+    const inspect = panel.getByRole("button", { name: "이 자료의 저장 상태 확인", exact: true });
+
+    readMode = "exact"; // Company entry must match the saved list revision.
+    const other = await context.newPage();
+    other.on("pageerror", (e) => errors.push(e.message));
+    await other.goto(origin + "/studio", { waitUntil: "networkidle" });
+    await other.getByRole("button").filter({ hasText: name }).first().click();
+    const otherPanel = other.getByRole("region", { name: "공개 근거 후보 보관", exact: true });
+    await otherPanel
+      .getByText("이전 공개 근거 저장 요청이 미확인입니다.", { exact: false })
+      .waitFor();
+    assert.equal(await other.evaluate((key) => localStorage.getItem(key), key), stored);
+    readMode = "exact";
+    await otherPanel.getByRole("button", { name: "이 자료의 저장 상태 확인", exact: true }).click();
+    await otherPanel.getByText("공개 근거 후보를 보관했습니다.", { exact: false }).waitFor();
+    assert.equal(await page.evaluate((key) => localStorage.getItem(key), key), null);
+    assert.equal(await close.isDisabled(), true);
+    assert.equal(await save.isDisabled(), true);
+    assert.equal(
+      await panel.getByText("공개 근거 후보를 보관했습니다.", { exact: false }).count(),
+      0,
+    );
+    record(
+      "one real tab acknowledges the original request; another remains pending until its own exact check",
+    );
+
+    readMode = "mismatch";
+    const beforeMismatch = recoveryReads;
+    await inspect.click();
+    await panel
+      .getByRole("alert")
+      .filter({ hasText: "저장 여부를 아직 확인하지 못했습니다." })
+      .waitFor();
+    assert.equal(
+      recoveryReads,
+      beforeMismatch + 1,
+      "remaining tab must perform GET even after the other tab removed the receipt",
+    );
+    assert.equal(await close.isDisabled(), true);
+    assert.equal(await page.evaluate((key) => localStorage.getItem(key), key), null);
+    assert.equal(await panel.getByRole("textbox", { name: "원문 발췌" }).inputValue(), quote);
+    record(
+      "absent browser record does not accept a different source body or lose the original draft",
+    );
+
+    const replacement = JSON.stringify({
+      ...JSON.parse(stored),
+      sourceId: "d0000000-0000-4000-8000-000000000099",
+      revision: JSON.parse(stored).revision + 1,
+      digest: "0".repeat(64),
+    });
+    await other.evaluate(({ key, replacement }) => localStorage.setItem(key, replacement), {
+      key,
+      replacement,
+    });
+    const beforeReplacement = recoveryReads;
+    readMode = "exact";
+    await inspect.click();
+    await panel
+      .getByRole("alert")
+      .filter({ hasText: "저장 여부를 아직 확인하지 못했습니다." })
+      .waitFor();
+    assert.equal(recoveryReads, beforeReplacement);
+    assert.equal(await page.evaluate((key) => localStorage.getItem(key), key), replacement);
+    assert.equal(await close.isDisabled(), true);
+    record("a subsequent different pending receipt is preserved and blocks the old tab before GET");
+    // Remove only the synthetic competing receipt installed immediately above.
+    await other.evaluate(
+      ({ key, replacement }) => {
+        if (localStorage.getItem(key) !== replacement) throw Error("Synthetic receipt changed");
+        localStorage.removeItem(key);
+      },
+      { key, replacement },
+    );
+
+    await inspect.click();
+    await panel.getByText("공개 근거 후보를 보관했습니다.", { exact: false }).waitFor();
+    assert.equal(await page.evaluate((key) => localStorage.getItem(key), key), null);
+    assert.equal(commands.length, 1);
+    assert.ok((await panel.innerText()).includes(quote));
+    assert.deepEqual(company.plans, original.plans);
+    await page.setViewportSize({ width: 390, height: 844 });
+    assert.equal(
+      await page.evaluate(() => document.documentElement.scrollWidth > innerWidth),
+      false,
+    );
+    await page.screenshot({
+      path: path.join(output, "public-evidence-tabs-mobile.png"),
+      fullPage: true,
+    });
+    await close.click();
+    await panel.waitFor({ state: "detached" });
+    assert.equal(
+      await page.getByRole("button", { name: "상세 도구", exact: true }).isEnabled(),
+      true,
+    );
+    await other.close();
+    record(
+      "the remaining tab explicitly accepts only its original exact evidence and unlocks without PATCH",
+    );
+  } else if (scenario === "errors") {
     const save = panel.getByRole("button", { name: "공개 근거 후보 보관", exact: true });
     await panel.getByRole("checkbox", { name: /발췌와 출처를 확인/ }).check();
     await save.click();
@@ -596,9 +712,11 @@ try {
         recoveryReads,
         continuousJourneys: 1,
         startingState:
-          scenario === "errors"
-            ? "single synthetic uncertain save; malformed/HTTP/storage/real second-tab-lock/removal errors then exact GET; no reload, writer, SQL or provider"
-            : "existing synthetic manuscript; persistence failure then single public-evidence save, real reload and tab re-entry, mismatch and exact GET recovery; no writer, SQL or provider",
+          scenario === "tabs"
+            ? "two real tabs holding the same synthetic uncertain request; one completes, the other rejects mismatched evidence/new pending then explicitly confirms exact evidence; no reload, writer, SQL or provider"
+            : scenario === "errors"
+              ? "single synthetic uncertain save; malformed/HTTP/storage/real second-tab-lock/removal errors then exact GET; no reload, writer, SQL or provider"
+              : "existing synthetic manuscript; persistence failure then single public-evidence save, real reload and tab re-entry, mismatch and exact GET recovery; no writer, SQL or provider",
         scenario,
         commandActions: commands.map((c) => c.action),
         errors,

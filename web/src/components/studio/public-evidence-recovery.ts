@@ -128,7 +128,12 @@ export class PublicEvidenceJournal {
     // another mount or a live write; save/recover recheck under the exclusive lock.
     return this.pending();
   }
-  private async accept(raw: unknown, expected: PublicEvidenceReceipt, current: Current) {
+  private async accept(
+    raw: unknown,
+    expected: PublicEvidenceReceipt,
+    current: Current,
+    storedAtStart: PublicEvidenceReceipt | null = expected,
+  ) {
     const company = caseSchema.parse(raw);
     const matches = company.sources.filter((s) => s.id === expected.sourceId);
     if (matches.length !== 1) return fail();
@@ -140,10 +145,15 @@ export class PublicEvidenceJournal {
     if (!equal(await receipt(request), expected)) return fail();
     // Re-read the current company after hashing, then compare-and-remove under the same lock.
     const accepted = publicEvidenceSaved(company, request, current());
-    if (!accepted || !equal(this.pending(), expected)) return fail();
-    storageAccess(() => this.storage.removeItem(this.key));
-    if (storageAccess(() => this.storage.getItem(this.key)) !== null)
-      throw new PublicEvidenceRecoveryError("storage");
+    if (!accepted || !equal(this.pending(), storedAtStart)) return fail();
+    // A tab may retain the original identity after another tab has completed it.
+    // Absence permits only an exact GET acknowledgement, never inferred success.
+    // Do not recreate a receipt or remove anything if this lookup began without it.
+    if (storedAtStart !== null) {
+      storageAccess(() => this.storage.removeItem(this.key));
+      if (storageAccess(() => this.storage.getItem(this.key)) !== null)
+        throw new PublicEvidenceRecoveryError("storage");
+    }
     return { company: accepted, request };
   }
   save(
@@ -171,8 +181,13 @@ export class PublicEvidenceJournal {
   recover(raw: PublicEvidenceReceipt, current: Current) {
     const original = receiptSchema.parse(structuredClone(raw));
     return this.lock(this.key, async () => {
-      if (original.caseId !== this.caseId || !equal(this.pending(), original)) fail();
-      return this.accept(await this.transport(), original, current);
+      const storedAtStart = this.pending();
+      if (
+        original.caseId !== this.caseId ||
+        (storedAtStart !== null && !equal(storedAtStart, original))
+      )
+        fail();
+      return this.accept(await this.transport(), original, current, storedAtStart);
     });
   }
 }

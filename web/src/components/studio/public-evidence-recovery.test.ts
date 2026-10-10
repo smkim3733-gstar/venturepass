@@ -299,3 +299,81 @@ describe("public evidence recovery messages", () => {
     expect(task).not.toHaveBeenCalled();
   });
 });
+
+describe("public evidence cross-tab completion", () => {
+  it("lets the remaining tab confirm exact evidence after another tab has removed the receipt", async () => {
+    const s = setup(),
+      original = await s.pending();
+    const other = s.journal();
+    const otherReceipt = (await other.read())!;
+    s.response(s.acknowledged);
+    const before = s.transport.mock.calls.length;
+    await other.recover(otherReceipt, s.current);
+    expect(await s.journal().read()).toBeNull();
+    const result = await s.journal().recover(original, s.current);
+    expect(result.request.command.source.text).toBe(s.request.command.source.text);
+    expect(result.company.plans).toEqual(s.acknowledged.plans);
+    expect(s.transport.mock.calls.slice(before)).toEqual([[], []]);
+    expect(s.storage.removeItem).toHaveBeenCalledTimes(1);
+    expect(s.storage.setItem).toHaveBeenCalledTimes(1);
+  });
+  it.each([
+    "old revision",
+    "other company",
+    "different text",
+    "duplicate ID",
+    "missing ID",
+    "newer current",
+    "switched current",
+  ])("does not infer success from an absent receipt: %s", async (kind) => {
+    const s = setup(),
+      original = await s.pending();
+    s.data.delete(s.journal().key);
+    const raw = structuredClone(s.acknowledged);
+    if (kind === "old revision") raw.revision = s.company.revision;
+    if (kind === "other company") raw.id = "e0000000-0000-4000-8000-000000000001";
+    if (kind === "different text") raw.sources[0].text += " changed";
+    if (kind === "duplicate ID") raw.sources.push(raw.sources[0]);
+    if (kind === "missing ID") raw.sources = [];
+    s.response(raw);
+    const current = () =>
+      kind === "newer current"
+        ? { ...s.company, revision: raw.revision + 1 }
+        : kind === "switched current"
+          ? { ...s.company, id: "e0000000-0000-4000-8000-000000000001" }
+          : s.company;
+    const before = s.transport.mock.calls.length;
+    await expect(s.journal().recover(original, current)).rejects.toThrow();
+    expect(s.transport.mock.calls.slice(before)).toEqual([[]]);
+    expect(s.storage.removeItem).not.toHaveBeenCalled();
+    expect(await s.journal().read()).toBeNull();
+  });
+  it("preserves a new receipt that appears while the remaining tab is reading its result", async () => {
+    const s = setup(),
+      original = await s.pending();
+    const key = s.journal().key;
+    s.data.delete(key);
+    const replacement = {
+      ...original,
+      sourceId: "d0000000-0000-4000-8000-000000000099",
+      digest: "0".repeat(64),
+    };
+    s.transport.mockImplementationOnce(async () => {
+      s.data.set(key, JSON.stringify(replacement));
+      return s.acknowledged;
+    });
+    await expect(s.journal().recover(original, s.current)).rejects.toThrow();
+    expect(await s.journal().read()).toEqual(replacement);
+    expect(s.storage.removeItem).not.toHaveBeenCalled();
+  });
+  it("still rejects a receipt disappearing during a lookup that began with it present", async () => {
+    const s = setup(),
+      original = await s.pending();
+    s.transport.mockImplementationOnce(async () => {
+      s.data.delete(s.journal().key);
+      return s.acknowledged;
+    });
+    await expect(s.journal().recover(original, s.current)).rejects.toThrow();
+    expect(s.storage.removeItem).not.toHaveBeenCalled();
+  });
+});
