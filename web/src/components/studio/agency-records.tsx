@@ -18,6 +18,7 @@ import {
 import type { SourceDocument, StudioCase } from "@/lib/studio-schema";
 import { agencyTaskContext } from "@/lib/studio-agency-tasks";
 import { Notice, formatDate, selectClass, studioFetch, useDirty, type PanelProps } from "./shared";
+import { agencyRecordSaveAcknowledged } from "./agency-record-response";
 import { TaskOwnersSummary } from "./task-owners";
 import { TaskProcessingSummary } from "./task-processing";
 
@@ -537,6 +538,7 @@ type FormState = {
   baseline: string;
   clientRequestId: string;
   binding: string;
+  attempted: string | null;
 };
 type Props = Pick<PanelProps, "company" | "mutate"> & {
   blockedReason: string;
@@ -564,7 +566,7 @@ export function AgencyRecords({ company, mutate, blockedReason, onDirtyChange }:
   useEffect(() => {
     context.current = binding;
   }, [binding]);
-  const dirty = Boolean(form && JSON.stringify(form.input) !== form.baseline);
+  const dirty = Boolean(form && (form.attempted || JSON.stringify(form.input) !== form.baseline));
   useDirty(dirty || saving || creatingTaskId !== null, onDirtyChange);
   const busy = saving || checkingId !== null || creatingTaskId !== null;
 
@@ -580,11 +582,12 @@ export function AgencyRecords({ company, mutate, blockedReason, onDirtyChange }:
       baseline: JSON.stringify(input),
       clientRequestId: crypto.randomUUID(),
       binding,
+      attempted: null,
     });
     setError("");
   }
   function edit(input: AgencyRecordInput) {
-    if (form) setForm({ ...form, input });
+    if (form && !form.attempted && !busy && !blockedReason) setForm({ ...form, input });
   }
   function cancel() {
     if (!dirty || window.confirm("작성 중인 기관 기록을 취소할까요?")) {
@@ -605,6 +608,20 @@ export function AgencyRecords({ company, mutate, blockedReason, onDirtyChange }:
       setError(parsed.error.issues[0]?.message || "기록 내용을 확인해 주세요.");
       return;
     }
+    const attempted = JSON.stringify(parsed.data);
+    if (form.attempted && form.attempted !== attempted) {
+      setError(
+        "원래 저장 요청과 입력이 달라 확인을 중단했습니다. 원래 입력과 요청을 유지해 주세요.",
+      );
+      return;
+    }
+    const command = {
+      action: "append-agency-record" as const,
+      revision: company.revision,
+      clientRequestId: form.clientRequestId,
+      record: parsed.data,
+    };
+    setForm({ ...form, attempted });
     inFlight.current = true;
     setSaving(true);
     setError("");
@@ -615,18 +632,16 @@ export function AgencyRecords({ company, mutate, blockedReason, onDirtyChange }:
         record: parsed.data,
       });
       if (mounted.current && context.current === binding) {
-        if (saved) setForm(null);
+        if (saved && agencyRecordSaveAcknowledged(saved, company, command)) setForm(null);
         else
           setError(
-            "기록을 저장하지 못했습니다. 작성 내용은 유지했습니다. 오류 안내와 최신 저장 상태를 확인해 주세요.",
+            "저장 결과가 미확인입니다. 원래 입력과 요청 번호를 유지했습니다. 같은 내용으로 저장 확인을 눌러 다시 확인할 수 있습니다. 자동 재시도하지 않습니다.",
           );
       }
-    } catch (caught) {
+    } catch {
       if (mounted.current && context.current === binding)
         setError(
-          caught instanceof Error
-            ? caught.message
-            : "기록을 저장하지 못했습니다. 작성 내용은 유지했습니다.",
+          "저장 결과가 미확인입니다. 원래 입력과 요청 번호를 유지했습니다. 같은 내용으로 저장 확인을 눌러 주세요.",
         );
     } finally {
       inFlight.current = false;
@@ -838,161 +853,169 @@ export function AgencyRecords({ company, mutate, blockedReason, onDirtyChange }:
               <X />
             </Button>
           </div>
-          {requestContext && (
-            <p className="text-xs leading-6 text-muted-foreground">
-              기준 요청: {requestContext.title} · {requestContext.institution} · 요청 v
-              {requestContext.version}
-            </p>
-          )}
-          {noticeContext && (
-            <p className="text-xs leading-6 text-muted-foreground">
-              기준 통보: {noticeContext.title} · 통보 v{noticeContext.version} · 이전 분류:{" "}
-              {noticeCategoryLabels[noticeContext.details.category]}
-            </p>
-          )}
-          {(input.kind === "request-correction" || input.kind === "notice-correction") && (
-            <Notice>
-              기존 원문을 덮어쓰지 않습니다. 정정된 내용과 근거를 새 기록에 남기세요. 원본 증빙은
-              자동으로 다시 선택하지 않습니다.
-            </Notice>
-          )}
-          <div className="space-y-2">
-            <Label htmlFor="agency-title">기록 제목 *</Label>
-            <Input
-              id="agency-title"
-              value={input.title}
-              maxLength={300}
-              onChange={(event) => edit({ ...input, title: event.target.value })}
-            />
-          </div>
-          {input.kind !== "response" ? (
-            <div className="grid gap-4 sm:grid-cols-2">
-              <div className="space-y-2">
-                <Label htmlFor="agency-institution">기관명 *</Label>
-                <Input
-                  id="agency-institution"
-                  value={input.institution}
-                  maxLength={200}
-                  onChange={(event) => edit({ ...input, institution: event.target.value })}
-                />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="agency-occurred">
-                  {input.kind === "notice" || input.kind === "notice-correction"
-                    ? "담당자 기입 통보 수신·발생일 (선택)"
-                    : input.kind === "request-correction"
-                      ? "정정된 요청 수신·발생일 (선택)"
-                      : "담당자 기입 수신일 (선택)"}
-                </Label>
-                <Input
-                  id="agency-occurred"
-                  type="date"
-                  value={input.occurredOn}
-                  onChange={(event) => edit({ ...input, occurredOn: event.target.value })}
-                />
-              </div>
-              {(input.kind === "request" || input.kind === "request-correction") && (
-                <>
-                  <div className="space-y-2">
-                    <Label htmlFor="agency-due">담당자 기입 기한 (선택)</Label>
-                    <Input
-                      id="agency-due"
-                      type="date"
-                      value={input.dueOn}
-                      onChange={(event) => edit({ ...input, dueOn: event.target.value })}
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="agency-due-note">기한 근거·확인한 안내</Label>
-                    <Textarea
-                      id="agency-due-note"
-                      value={input.dueNote}
-                      maxLength={2000}
-                      onChange={(event) => edit({ ...input, dueNote: event.target.value })}
-                    />
-                  </div>
-                </>
-              )}
+          <fieldset disabled={!!form?.attempted} aria-label="기관 기록 입력" className="space-y-4">
+            {requestContext && (
+              <p className="text-xs leading-6 text-muted-foreground">
+                기준 요청: {requestContext.title} · {requestContext.institution} · 요청 v
+                {requestContext.version}
+              </p>
+            )}
+            {noticeContext && (
+              <p className="text-xs leading-6 text-muted-foreground">
+                기준 통보: {noticeContext.title} · 통보 v{noticeContext.version} · 이전 분류:{" "}
+                {noticeCategoryLabels[noticeContext.details.category]}
+              </p>
+            )}
+            {(input.kind === "request-correction" || input.kind === "notice-correction") && (
+              <Notice>
+                기존 원문을 덮어쓰지 않습니다. 정정된 내용과 근거를 새 기록에 남기세요. 원본 증빙은
+                자동으로 다시 선택하지 않습니다.
+              </Notice>
+            )}
+            <div className="space-y-2">
+              <Label htmlFor="agency-title">기록 제목 *</Label>
+              <Input
+                id="agency-title"
+                value={input.title}
+                maxLength={300}
+                onChange={(event) => edit({ ...input, title: event.target.value })}
+              />
             </div>
-          ) : (
-            <div className="grid gap-4 sm:grid-cols-2">
-              <div className="space-y-2">
-                <Label htmlFor="agency-response-status">담당자 기록 구분</Label>
-                <select
-                  id="agency-response-status"
-                  className={selectClass}
-                  value={input.responseStatus}
-                  onChange={(event) =>
-                    edit({
-                      ...input,
-                      responseStatus: event.target.value as "draft" | "reported-sent",
-                    })
-                  }
-                >
-                  <option value="draft">답변 초안 · 미발송</option>
-                  <option value="reported-sent">담당자가 발송했다고 기록</option>
-                </select>
+            {input.kind !== "response" ? (
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div className="space-y-2">
+                  <Label htmlFor="agency-institution">기관명 *</Label>
+                  <Input
+                    id="agency-institution"
+                    value={input.institution}
+                    maxLength={200}
+                    onChange={(event) => edit({ ...input, institution: event.target.value })}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="agency-occurred">
+                    {input.kind === "notice" || input.kind === "notice-correction"
+                      ? "담당자 기입 통보 수신·발생일 (선택)"
+                      : input.kind === "request-correction"
+                        ? "정정된 요청 수신·발생일 (선택)"
+                        : "담당자 기입 수신일 (선택)"}
+                  </Label>
+                  <Input
+                    id="agency-occurred"
+                    type="date"
+                    value={input.occurredOn}
+                    onChange={(event) => edit({ ...input, occurredOn: event.target.value })}
+                  />
+                </div>
+                {(input.kind === "request" || input.kind === "request-correction") && (
+                  <>
+                    <div className="space-y-2">
+                      <Label htmlFor="agency-due">담당자 기입 기한 (선택)</Label>
+                      <Input
+                        id="agency-due"
+                        type="date"
+                        value={input.dueOn}
+                        onChange={(event) => edit({ ...input, dueOn: event.target.value })}
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="agency-due-note">기한 근거·확인한 안내</Label>
+                      <Textarea
+                        id="agency-due-note"
+                        value={input.dueNote}
+                        maxLength={2000}
+                        onChange={(event) => edit({ ...input, dueNote: event.target.value })}
+                      />
+                    </div>
+                  </>
+                )}
               </div>
-              <div className="space-y-2">
-                <Label htmlFor="agency-occurred">
-                  {input.responseStatus === "reported-sent"
-                    ? "담당자 기입 발송일 *"
-                    : "담당자 기입 발생일 (선택)"}
-                </Label>
-                <Input
-                  id="agency-occurred"
-                  type="date"
-                  value={input.occurredOn}
-                  onChange={(event) => edit({ ...input, occurredOn: event.target.value })}
-                />
+            ) : (
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div className="space-y-2">
+                  <Label htmlFor="agency-response-status">담당자 기록 구분</Label>
+                  <select
+                    id="agency-response-status"
+                    className={selectClass}
+                    value={input.responseStatus}
+                    onChange={(event) =>
+                      edit({
+                        ...input,
+                        responseStatus: event.target.value as "draft" | "reported-sent",
+                      })
+                    }
+                  >
+                    <option value="draft">답변 초안 · 미발송</option>
+                    <option value="reported-sent">담당자가 발송했다고 기록</option>
+                  </select>
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="agency-occurred">
+                    {input.responseStatus === "reported-sent"
+                      ? "담당자 기입 발송일 *"
+                      : "담당자 기입 발생일 (선택)"}
+                  </Label>
+                  <Input
+                    id="agency-occurred"
+                    type="date"
+                    value={input.occurredOn}
+                    onChange={(event) => edit({ ...input, occurredOn: event.target.value })}
+                  />
+                </div>
               </div>
+            )}
+            {(input.kind === "notice" || input.kind === "notice-correction") && (
+              <AgencyNoticeFields
+                details={input.details}
+                onChange={(details) => edit({ ...input, details })}
+              />
+            )}
+            <div className="space-y-2">
+              <Label htmlFor="agency-body">
+                {input.kind === "notice" || input.kind === "notice-correction"
+                  ? "통보 원문·정정 내용 *"
+                  : input.kind === "response"
+                    ? "답변 내용 *"
+                    : "요청 원문·정정 내용 *"}
+              </Label>
+              <Textarea
+                id="agency-body"
+                className="min-h-40 bg-background leading-7"
+                value={input.body}
+                maxLength={20000}
+                onChange={(event) => edit({ ...input, body: event.target.value })}
+              />
+              <p className="text-right text-xs text-muted-foreground">
+                {input.body.length.toLocaleString()} / 20,000자
+              </p>
             </div>
-          )}
-          {(input.kind === "notice" || input.kind === "notice-correction") && (
-            <AgencyNoticeFields
-              details={input.details}
-              onChange={(details) => edit({ ...input, details })}
+            <div className="space-y-2">
+              <Label htmlFor="agency-note">
+                {input.kind === "response" ? "발송 방법·확인 근거·메모" : "기록·정정 근거 메모"}
+              </Label>
+              <Textarea
+                id="agency-note"
+                value={input.note}
+                maxLength={2000}
+                onChange={(event) => edit({ ...input, note: event.target.value })}
+              />
+            </div>
+            <AgencySourcePicker
+              sources={company.sources}
+              selected={input.sourceIds}
+              onChange={(sourceIds) => edit({ ...input, sourceIds })}
             />
-          )}
-          <div className="space-y-2">
-            <Label htmlFor="agency-body">
-              {input.kind === "notice" || input.kind === "notice-correction"
-                ? "통보 원문·정정 내용 *"
-                : input.kind === "response"
-                  ? "답변 내용 *"
-                  : "요청 원문·정정 내용 *"}
-            </Label>
-            <Textarea
-              id="agency-body"
-              className="min-h-40 bg-background leading-7"
-              value={input.body}
-              maxLength={20000}
-              onChange={(event) => edit({ ...input, body: event.target.value })}
-            />
-            <p className="text-right text-xs text-muted-foreground">
-              {input.body.length.toLocaleString()} / 20,000자
-            </p>
-          </div>
-          <div className="space-y-2">
-            <Label htmlFor="agency-note">
-              {input.kind === "response" ? "발송 방법·확인 근거·메모" : "기록·정정 근거 메모"}
-            </Label>
-            <Textarea
-              id="agency-note"
-              value={input.note}
-              maxLength={2000}
-              onChange={(event) => edit({ ...input, note: event.target.value })}
-            />
-          </div>
-          <AgencySourcePicker
-            sources={company.sources}
-            selected={input.sourceIds}
-            onChange={(sourceIds) => edit({ ...input, sourceIds })}
-          />
-          {input.kind === "response" && input.responseStatus === "reported-sent" && (
-            <Notice>
-              실제 발송 후 확인한 날짜와 근거만 기록하세요. 저장 버튼은 이메일·공식 사이트로
-              발송하지 않습니다.
+            {input.kind === "response" && input.responseStatus === "reported-sent" && (
+              <Notice>
+                실제 발송 후 확인한 날짜와 근거만 기록하세요. 저장 버튼은 이메일·공식 사이트로
+                발송하지 않습니다.
+              </Notice>
+            )}
+          </fieldset>
+          {form?.attempted && (
+            <Notice tone="warning">
+              원래 저장 요청의 결과가 미확인입니다. 입력은 그대로 두고 같은 내용으로 저장 확인을
+              눌러 주세요.
             </Notice>
           )}
           <div className="flex flex-wrap justify-end gap-2">
@@ -1001,7 +1024,11 @@ export function AgencyRecords({ company, mutate, blockedReason, onDirtyChange }:
             </Button>
             <Button type="button" onClick={save}>
               <Save />
-              {saving ? "로컬 기록 저장 중" : "로컬 기록 저장"}
+              {saving
+                ? "로컬 기록 확인 중"
+                : form?.attempted
+                  ? "같은 내용으로 저장 확인"
+                  : "로컬 기록 저장"}
             </Button>
           </div>
         </fieldset>
