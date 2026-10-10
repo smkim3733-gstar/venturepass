@@ -63,7 +63,10 @@ import { applicationSubmissionAcknowledged } from "./application-submission-resp
 import { applicationLinkSaveAcknowledged } from "./application-link-response";
 import { agencyRecordSaveAcknowledged } from "./agency-record-response";
 import { agencyTaskSaveAcknowledged } from "./agency-task-response";
-import { workflowTaskSaveAcknowledged } from "./workflow-task-response";
+import {
+  workflowTaskSaveAcknowledged,
+  workflowTaskDeleteAcknowledged,
+} from "./workflow-task-response";
 import { PlanEditor } from "./plan-editor";
 import { WorkflowPanel } from "./workflow-panel";
 import { readVentureOverview, type VentureOverview } from "@/lib/venturein-overview-types";
@@ -412,6 +415,13 @@ export function StudioWorkspace() {
       )
         throw new Error(
           "업무 변경 내용의 저장 결과를 확인하지 못했습니다. 원래 업무 입력과 상태를 유지했습니다.",
+        );
+      if (
+        mutation.action === "delete-task" &&
+        !workflowTaskDeleteAcknowledged(next, company, { ...mutation, revision: company.revision })
+      )
+        throw new Error(
+          "선택한 업무의 삭제 결과를 확인하지 못했습니다. 원래 업무 목록을 유지했습니다.",
         );
       accept(next);
       toast.success("저장했습니다.");
