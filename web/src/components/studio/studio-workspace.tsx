@@ -59,6 +59,7 @@ import { AnalysisPanel } from "./analysis-panel";
 import { candidateSelectionAcknowledged } from "./candidate-selection";
 import { planReviewSaveAcknowledged } from "./plan-review-decisions";
 import { applicationCycleSaveAcknowledged } from "./application-cycle-response";
+import { applicationSubmissionAcknowledged } from "./application-submission-response";
 import { PlanEditor } from "./plan-editor";
 import { WorkflowPanel } from "./workflow-panel";
 import { readVentureOverview, type VentureOverview } from "@/lib/venturein-overview-types";
@@ -367,6 +368,17 @@ export function StudioWorkspace() {
       )
         throw new Error(
           "신청 회차의 저장 기록을 확인하지 못했습니다. 원래 입력과 요청을 유지했습니다.",
+        );
+      if (
+        (mutation.action === "record-application-submission" ||
+          mutation.action === "correct-application-submission") &&
+        !(await applicationSubmissionAcknowledged(next, company, {
+          ...mutation,
+          revision: company.revision,
+        }))
+      )
+        throw new Error(
+          "제출 당시 기록의 저장 결과를 확인하지 못했습니다. 원래 입력과 요청을 유지했습니다.",
         );
       accept(next);
       toast.success("저장했습니다.");
