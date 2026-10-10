@@ -17,6 +17,7 @@ import {
   type CreateCertificateTask,
 } from "@/lib/studio-certificate-renewal-types";
 import { Notice, useDirty } from "./shared";
+import { certificateTaskSaveAcknowledged } from "./certificate-task-response";
 
 type Mutation = Omit<CreateCertificateTask, "revision">;
 type Props = {
@@ -191,7 +192,13 @@ function CertificateRenewalEditor({
     try {
       const saved = await mutate(input);
       if (!mounted.current) return;
-      if (certificateTaskAcknowledged(saved, company.id, input, form.validUntil)) setForm(null);
+      if (
+        certificateTaskSaveAcknowledged(saved, company, {
+          ...input,
+          revision: form.companyRevision,
+        })
+      )
+        setForm(null);
       else
         setError(
           "업무 생성 결과를 확인하지 못했습니다. 같은 입력으로 재확인하거나 최신 업무 목록을 확인해 주세요.",
