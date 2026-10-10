@@ -377,3 +377,117 @@ describe("public evidence cross-tab completion", () => {
     expect(s.storage.removeItem).not.toHaveBeenCalled();
   });
 });
+
+describe("public evidence explicit draft refresh", () => {
+  it("reads the latest company without writing or acknowledging any receipt", async () => {
+    const s = setup();
+    s.response(s.acknowledged);
+    expect(await s.journal().refresh(s.current)).toEqual(s.acknowledged);
+    expect(s.transport.mock.calls).toEqual([[]]);
+    expect(s.storage.setItem).not.toHaveBeenCalled();
+    expect(s.storage.removeItem).not.toHaveBeenCalled();
+  });
+  it.each(["malformed", "other company", "old revision"])(
+    "rejects %s without changing browser records",
+    async (kind) => {
+      const s = setup();
+      const raw = structuredClone(s.acknowledged);
+      if (kind === "other company") raw.id = "e0000000-0000-4000-8000-000000000001";
+      if (kind === "old revision") raw.revision = s.company.revision;
+      s.response(kind === "malformed" ? { revision: "PRIVATE_FIELD" } : raw);
+      await expect(s.journal().refresh(() => s.acknowledged)).rejects.toMatchObject({
+        reason: "refresh",
+      });
+      expect(s.transport.mock.calls).toEqual([[]]);
+      expect(s.data.size).toBe(0);
+      expect(s.storage.removeItem).not.toHaveBeenCalled();
+    },
+  );
+  it("does not read a server response while an unresolved receipt exists", async () => {
+    const s = setup(),
+      pending = await s.pending();
+    s.transport.mockClear();
+    await expect(s.journal().refresh(s.current)).rejects.toMatchObject({ reason: "refresh" });
+    expect(s.transport).not.toHaveBeenCalled();
+    expect(await s.journal().read()).toEqual(pending);
+    expect(s.storage.removeItem).not.toHaveBeenCalled();
+  });
+  it("retains a receipt arriving during the GET and rejects resuming", async () => {
+    const s = setup(),
+      pending = await s.pending();
+    s.data.clear();
+    s.transport.mockClear();
+    s.transport.mockImplementationOnce(async () => {
+      s.data.set(s.journal().key, JSON.stringify(pending));
+      return s.acknowledged;
+    });
+    await expect(s.journal().refresh(s.current)).rejects.toMatchObject({ reason: "refresh" });
+    expect(s.transport.mock.calls).toEqual([[]]);
+    expect(await s.journal().read()).toEqual(pending);
+    expect(s.storage.removeItem).not.toHaveBeenCalled();
+  });
+  it.each(["newer current", "switched current", "older current"])(
+    "rechecks the current company after GET: %s",
+    async (kind) => {
+      const s = setup();
+      let current = { id: s.company.id, revision: s.acknowledged.revision };
+      s.transport.mockImplementationOnce(async () => {
+        if (kind === "newer current") current = { ...current, revision: current.revision + 1 };
+        if (kind === "switched current")
+          current = { ...current, id: "e0000000-0000-4000-8000-000000000001" };
+        if (kind === "older current") current = { ...current, revision: s.company.revision };
+        return kind === "older current" ? s.company : s.acknowledged;
+      });
+      await expect(s.journal().refresh(() => current)).rejects.toMatchObject({ reason: "refresh" });
+      expect(s.data.size).toBe(0);
+    },
+  );
+  it.each(["before", "after"])("fails closed if browser reading fails %s GET", async (when) => {
+    const s = setup();
+    const deny = () => {
+      throw Error("PRIVATE_STORAGE_PATH");
+    };
+    if (when === "before") s.storage.getItem.mockImplementation(deny);
+    else
+      s.transport.mockImplementationOnce(async () => {
+        s.storage.getItem.mockImplementation(deny);
+        return s.acknowledged;
+      });
+    await expect(s.journal().refresh(s.current)).rejects.toMatchObject({ reason: "storage" });
+    expect(s.transport.mock.calls.length).toBe(when === "before" ? 0 : 1);
+    expect(s.storage.setItem).not.toHaveBeenCalled();
+    expect(s.storage.removeItem).not.toHaveBeenCalled();
+  });
+  it("keeps the company lock across GET and rejects a concurrent refresh", async () => {
+    const s = setup();
+    let finish!: (value: unknown) => void;
+    s.transport.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const first = s.journal().refresh(s.current);
+    await expect(s.journal().refresh(s.current)).rejects.toThrow("busy");
+    expect(s.transport).toHaveBeenCalledTimes(1);
+    finish(s.acknowledged);
+    expect(await first).toEqual(s.acknowledged);
+    expect(s.data.size).toBe(0);
+  });
+  it("does not query when the current company already differs", async () => {
+    const s = setup();
+    await expect(
+      s.journal().refresh(() => ({ id: "e0000000-0000-4000-8000-000000000001", revision: 0 })),
+    ).rejects.toMatchObject({ reason: "refresh" });
+    expect(s.transport).not.toHaveBeenCalled();
+  });
+  it("shows a safe draft-refresh message without trusting a remote reason or message", () => {
+    const value = publicEvidenceRecoveryMessage(
+      Object.assign(Error("PRIVATE_HTTP_TRACE"), { reason: "busy" }),
+      "refresh",
+    );
+    expect(value).toContain("최신 회사 자료를 확인하지 못했습니다.");
+    expect(value).not.toContain("PRIVATE_");
+    expect(value).toBe(publicEvidenceRecoveryMessage(new PublicEvidenceRecoveryError("refresh")));
+  });
+});

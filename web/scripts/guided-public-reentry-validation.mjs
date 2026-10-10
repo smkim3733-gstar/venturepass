@@ -17,7 +17,7 @@ const temporaryRoot = await realpath(path.resolve(app, "../../.venturepass-tools
 const staging = await realpath(process.argv[2]);
 const serverMode = process.argv[3] ?? "start";
 const scenario = process.argv[4] ?? "reentry";
-assert.ok(["reentry", "errors", "tabs", "arrival"].includes(scenario));
+assert.ok(["reentry", "errors", "tabs", "arrival", "resume"].includes(scenario));
 assert.ok(["start", "dev"].includes(serverMode));
 const relative = path.relative(temporaryRoot, staging);
 assert.ok(relative && !relative.startsWith("..") && !path.isAbsolute(relative));
@@ -40,13 +40,15 @@ for (const file of [
 const output = await mkdtemp(
   path.join(
     temporaryRoot,
-    scenario === "arrival"
-      ? "venturepass-public-arrival-ui-"
-      : scenario === "tabs"
-        ? "venturepass-public-tabs-ui-"
-        : scenario === "errors"
-          ? "venturepass-public-errors-ui-"
-          : "venturepass-public-reentry-ui-",
+    scenario === "resume"
+      ? "venturepass-public-resume-ui-"
+      : scenario === "arrival"
+        ? "venturepass-public-arrival-ui-"
+        : scenario === "tabs"
+          ? "venturepass-public-tabs-ui-"
+          : scenario === "errors"
+            ? "venturepass-public-errors-ui-"
+            : "venturepass-public-reentry-ui-",
   ),
 );
 const guard = path.join(output, "network-guard.mjs");
@@ -126,6 +128,7 @@ const commands = [],
   logs = [];
 let recoveryReads = 0;
 let readMode = "stale";
+let releaseRead;
 // Browser attachment downloads may bypass Playwright interception. The HTTP boundary
 // must enforce isolation independently: only static UI requests reach Next.
 const proxy = createHttpServer(async (req, res) => {
@@ -286,6 +289,14 @@ try {
         if (u.pathname === root) {
           if (!commands.length) return reply(company);
           recoveryReads++;
+          if (readMode === "hold") {
+            const snapshot = structuredClone(company);
+            await new Promise((resolve) => {
+              releaseRead = resolve;
+            });
+            releaseRead = undefined;
+            return reply(snapshot);
+          }
           if (readMode === "malformed")
             return reply({ revision: "PRIVATE_REVISION", error: "PRIVATE_SERVER_FIELD" });
           if (readMode === "server-error")
@@ -311,7 +322,10 @@ try {
           });
       }
       if (req.method() === "PATCH" && u.pathname === root) {
-        assert.ok(commands.length < (scenario === "arrival" ? 2 : 1), "No extra save or resend");
+        assert.ok(
+          commands.length < (["arrival", "resume"].includes(scenario) ? 2 : 1),
+          "No extra save or resend",
+        );
         const command = req.postDataJSON();
         assert.ok(
           !commands.some((c) => c.source.id === command.source.id),
@@ -364,7 +378,154 @@ try {
   await panel.getByRole("textbox", { name: "원문 발췌" }).fill(quote);
   await panel.getByLabel("원문을 읽은 날짜 (담당자 기록)", { exact: true }).fill("2026-10-10");
   const close = panel.getByRole("button", { name: "닫기", exact: true });
-  if (scenario === "arrival") {
+  if (scenario === "resume") {
+    const key = `venturepass:public-evidence:v1:${caseId}`;
+    const resume = panel.getByRole("button", { name: "최신 자료로 입력 이어쓰기", exact: true });
+    const consent = panel.getByRole("checkbox", { name: /발췌와 출처를 확인/ });
+    const save = panel.getByRole("button", { name: "공개 근거 후보 보관", exact: true });
+    await consent.check();
+    const other = await context.newPage();
+    other.on("pageerror", (e) => errors.push(e.message));
+    await other.goto(origin + "/studio", { waitUntil: "networkidle" });
+    await other.getByRole("button").filter({ hasText: name }).first().click();
+    await other
+      .getByRole("navigation", { name: "신청 준비 3단계" })
+      .getByRole("button", { name: /자료 올리기/ })
+      .click();
+    await other.getByRole("button", { name: "공개 근거 보완", exact: true }).click();
+    const otherPanel = other.getByRole("region", { name: "공개 근거 후보 보관", exact: true });
+    await otherPanel
+      .getByRole("textbox", { name: "공개 자료 제목", exact: true })
+      .fill("이어쓰기 전 다른 창 자료");
+    await otherPanel
+      .getByRole("textbox", { name: "원문 URL (HTTPS)", exact: true })
+      .fill("https://example.invalid/before-resume");
+    await otherPanel.getByRole("textbox", { name: "원문 발췌" }).fill("별도 합성 자료입니다.");
+    await otherPanel
+      .getByLabel("원문을 읽은 날짜 (담당자 기록)", { exact: true })
+      .fill("2026-10-10");
+    await otherPanel.getByRole("checkbox", { name: /발췌와 출처를 확인/ }).check();
+    await otherPanel.getByRole("button", { name: "공개 근거 후보 보관", exact: true }).click();
+    await otherPanel
+      .getByRole("alert")
+      .filter({ hasText: "저장 여부를 아직 확인하지 못했습니다." })
+      .waitFor();
+    const previous = await page.evaluate((key) => localStorage.getItem(key), key);
+    readMode = "exact";
+    await panel.getByRole("button", { name: "이 자료의 저장 상태 확인", exact: true }).click();
+    await panel.getByText("다른 창의 공개 근거 저장을 확인했습니다.", { exact: false }).waitFor();
+    assert.equal(await title.isDisabled(), true);
+    assert.equal(await consent.isChecked(), true);
+    await resume.waitFor({ timeout: 8000 });
+    record(
+      "the preserved unsent draft offers an explicit resume action after exact foreign-request confirmation",
+    );
+
+    const retained = async () => {
+      assert.equal(await title.inputValue(), "복구 흐름용 공개 자료");
+      assert.equal(await panel.getByRole("textbox", { name: "원문 발췌" }).inputValue(), quote);
+      assert.equal(await title.isDisabled(), true);
+      assert.equal(await save.isDisabled(), true);
+      assert.equal(commands.length, 1);
+    };
+    readMode = "stale";
+    await resume.click();
+    await panel
+      .getByRole("alert")
+      .filter({ hasText: "최신 회사 자료를 확인하지 못했습니다." })
+      .waitFor();
+    await retained();
+    const beforeStorage = recoveryReads;
+    await page.evaluate(() => {
+      window.originalStorageRead = Storage.prototype.getItem;
+      Storage.prototype.getItem = function (key) {
+        if (key.startsWith("venturepass:public-evidence:")) throw Error("PRIVATE_RESUME_READ");
+        return window.originalStorageRead.call(this, key);
+      };
+    });
+    await resume.click();
+    await panel
+      .getByRole("alert")
+      .filter({ hasText: "브라우저에서 복구 기록을 읽거나 보관하지 못했습니다." })
+      .waitFor();
+    assert.equal(recoveryReads, beforeStorage);
+    await page.evaluate(() => {
+      Storage.prototype.getItem = window.originalStorageRead;
+      delete window.originalStorageRead;
+    });
+    await panel.getByRole("button", { name: "복구 기록 다시 확인", exact: true }).click();
+    await resume.waitFor();
+    await retained();
+    record(
+      "stale company data and browser read failure preserve the draft and prevent continuation or extra saves",
+    );
+
+    // Insert an original-shaped memory-only competing receipt while the explicit GET is in flight.
+    readMode = "hold";
+    await resume.click();
+    const deadline = Date.now() + 10000;
+    while (!releaseRead && Date.now() < deadline)
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.ok(releaseRead, "The explicit refresh GET must be waiting");
+    await other.evaluate(({ key, previous }) => localStorage.setItem(key, previous), {
+      key,
+      previous,
+    });
+    releaseRead();
+    await panel.getByRole("button", { name: "이 자료의 저장 상태 확인", exact: true }).waitFor();
+    await panel
+      .getByRole("alert")
+      .filter({ hasText: "최신 회사 자료를 확인하지 못했습니다." })
+      .waitFor();
+    await retained();
+    assert.equal(await page.evaluate((key) => localStorage.getItem(key), key), previous);
+    assert.equal(await resume.isDisabled(), true);
+    readMode = "exact";
+    await panel.getByRole("button", { name: "이 자료의 저장 상태 확인", exact: true }).click();
+    await panel.getByText("다른 창의 공개 근거 저장을 확인했습니다.", { exact: false }).waitFor();
+    record(
+      "a competing receipt appearing during refresh aborts continuation and remains available for exact recovery",
+    );
+
+    await resume.click();
+    await panel
+      .getByText("최신 자료 기준으로 입력을 이어 쓸 수 있습니다.", { exact: false })
+      .waitFor();
+    assert.equal(await title.isEnabled(), true);
+    assert.equal(await title.inputValue(), "복구 흐름용 공개 자료");
+    assert.equal(await panel.getByRole("textbox", { name: "원문 발췌" }).inputValue(), quote);
+    assert.equal(await consent.isChecked(), false);
+    assert.equal(await save.isDisabled(), true);
+    assert.equal(await page.evaluate((key) => localStorage.getItem(key), key), null);
+    assert.equal(commands.length, 1, "Resume reads only; it must not save");
+    await page.setViewportSize({ width: 390, height: 844 });
+    assert.equal(
+      await page.evaluate(() => document.documentElement.scrollWidth > innerWidth),
+      false,
+    );
+    await page.screenshot({
+      path: path.join(output, "public-evidence-resume-mobile.png"),
+      fullPage: true,
+    });
+    record(
+      "exact refresh retains every input, updates the draft basis only on explicit action and requires fresh consent",
+    );
+
+    await consent.check();
+    await save.click();
+    await panel.getByText("공개 근거 후보를 보관했습니다.", { exact: false }).waitFor();
+    assert.equal(commands.length, 2);
+    assert.equal(commands[1].revision, commands[0].revision + 1);
+    assert.notEqual(commands[1].source.id, commands[0].source.id);
+    assert.ok(commands[1].source.text.includes(quote));
+    assert.ok(commands[1].source.name.includes("복구 흐름용 공개 자료"));
+    assert.deepEqual(company.plans, original.plans);
+    assert.equal(await page.evaluate((key) => localStorage.getItem(key), key), null);
+    await other.close();
+    record(
+      "a fresh explicit consent and save store the preserved draft once with the current revision and a new source identity",
+    );
+  } else if (scenario === "arrival") {
     const key = `venturepass:public-evidence:v1:${caseId}`;
     const inspectName = "이 자료의 저장 상태 확인";
     const savedText = "공개 근거 후보를 보관했습니다.";
@@ -946,13 +1107,15 @@ try {
         recoveryReads,
         continuousJourneys: 1,
         startingState:
-          scenario === "arrival"
-            ? "two real tabs; already-open unsent and saved views observe two distinct explicit saves, preserve draft/selection and confirm only exact evidence; no writer, SQL or provider"
-            : scenario === "tabs"
-              ? "two real tabs holding the same synthetic uncertain request; one completes, the other rejects mismatched evidence/new pending then explicitly confirms exact evidence; no reload, writer, SQL or provider"
-              : scenario === "errors"
-                ? "single synthetic uncertain save; malformed/HTTP/storage/real second-tab-lock/removal errors then exact GET; no reload, writer, SQL or provider"
-                : "existing synthetic manuscript; persistence failure then single public-evidence save, real reload and tab re-entry, mismatch and exact GET recovery; no writer, SQL or provider",
+          scenario === "resume"
+            ? "preserved unsent draft after another tab saves; explicit read-only resume rejects stale/storage/concurrent receipt, retains inputs, resets consent, then one new explicit save; no writer, SQL or provider"
+            : scenario === "arrival"
+              ? "two real tabs; already-open unsent and saved views observe two distinct explicit saves, preserve draft/selection and confirm only exact evidence; no writer, SQL or provider"
+              : scenario === "tabs"
+                ? "two real tabs holding the same synthetic uncertain request; one completes, the other rejects mismatched evidence/new pending then explicitly confirms exact evidence; no reload, writer, SQL or provider"
+                : scenario === "errors"
+                  ? "single synthetic uncertain save; malformed/HTTP/storage/real second-tab-lock/removal errors then exact GET; no reload, writer, SQL or provider"
+                  : "existing synthetic manuscript; persistence failure then single public-evidence save, real reload and tab re-entry, mismatch and exact GET recovery; no writer, SQL or provider",
         scenario,
         commandActions: commands.map((c) => c.action),
         errors,
@@ -978,6 +1141,7 @@ try {
       .catch(() => {});
   throw error;
 } finally {
+  releaseRead?.();
   await context?.close();
   for (const socket of developmentSockets) socket.destroy();
   proxy.closeAllConnections();

@@ -45,7 +45,7 @@ export function PublicEvidencePanel({
   onClose: () => void;
   onSupplement: (sourceId: string, sectionKey: PublicEvidenceDraft["sectionKey"]) => void;
 }) {
-  const [base] = useState(() => ({ id: company.id, revision: company.revision }));
+  const [base, setBase] = useState(() => ({ id: company.id, revision: company.revision }));
   const [draft, setDraft] = useState<PublicEvidenceDraft>({ ...emptyPublicEvidence });
   const [confirmed, setConfirmed] = useState(false),
     [working, setWorking] = useState(false);
@@ -263,6 +263,51 @@ export function PublicEvidencePanel({
       if (mounted.current) setWorking(false);
     }
   }
+  async function resumeDraft() {
+    if (
+      flight.current ||
+      !ready ||
+      blocked ||
+      pending ||
+      saved ||
+      !dirty ||
+      !changed ||
+      company.id !== base.id
+    )
+      return;
+    flight.current = true;
+    setWorking(true);
+    setError("");
+    try {
+      const latest = await journal().refresh(() => currentCompany.current);
+      if (mounted.current) {
+        onCompany(latest);
+        setBase({ id: latest.id, revision: latest.revision });
+        setConfirmed(false);
+        setSubmittedId(null);
+        setNotice(
+          "최신 자료 기준으로 입력을 이어 쓸 수 있습니다. 내용과 출처를 다시 확인하고 보관 동의에 표시해 주세요.",
+        );
+      }
+    } catch (error) {
+      // A request may have appeared while the explicit read was in flight.
+      try {
+        const record = await journal().read();
+        if (mounted.current) {
+          setPending((original) => original ?? record);
+          setError(publicEvidenceRecoveryMessage(error, "refresh"));
+        }
+      } catch (readError) {
+        if (mounted.current) {
+          setReady(false);
+          setError(publicEvidenceRecoveryMessage(readError, "storage"));
+        }
+      }
+    } finally {
+      flight.current = false;
+      if (mounted.current) setWorking(false);
+    }
+  }
   function close() {
     // Keep the original request available until its exact saved source is acknowledged.
     // Closing an uncertain save would discard its identity and permit a duplicate submission.
@@ -313,7 +358,7 @@ export function PublicEvidencePanel({
           {recoveryReadError || error}
         </p>
       )}
-      {notice && (
+      {notice && !pending && ready && (
         <p role="status" className={styles.helper}>
           {notice}
         </p>
@@ -449,10 +494,22 @@ export function PublicEvidencePanel({
                 }}
               />
               {changed && (
-                <p role="alert">
-                  회사 자료가 바뀌어 저장을 멈췄습니다. 입력을 복사한 뒤 최신 자료에서 다시 확인해
-                  주세요.
-                </p>
+                <div className="my-3 space-y-2">
+                  <p role="alert">
+                    회사 자료가 바뀌어 저장을 멈췄습니다. 입력은 그대로 유지됩니다. 미확인 요청을
+                    모두 확인한 뒤 최신 자료로 이어쓰기를 선택해 주세요.
+                  </p>
+                  {dirty && company.id === base.id && (
+                    <button
+                      type="button"
+                      className={styles.link}
+                      disabled={working || blocked || !!pending || !ready}
+                      onClick={() => void resumeDraft()}
+                    >
+                      최신 자료로 입력 이어쓰기
+                    </button>
+                  )}
+                </div>
               )}
               <fieldset
                 disabled={working || blocked || !!pending || changed || !ready}

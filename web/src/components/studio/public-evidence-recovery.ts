@@ -18,6 +18,8 @@ const receiptSchema = z
   .strict();
 export type PublicEvidenceReceipt = z.infer<typeof receiptSchema>;
 const recoveryMessages = {
+  refresh:
+    "최신 회사 자료를 확인하지 못했습니다. 입력을 유지하며 새 저장을 멈춥니다. 다른 요청의 저장 상태를 확인한 뒤 다시 이어쓰기를 선택해 주세요.",
   unconfirmed:
     "저장 여부를 아직 확인하지 못했습니다. 원래 요청을 유지하며 자동으로 다시 저장하지 않습니다. ‘이 자료의 저장 상태 확인’을 눌러 주세요.",
   storage:
@@ -39,6 +41,7 @@ export function publicEvidenceRecoveryMessage(
 ) {
   if (error instanceof PublicEvidenceRecoveryError) {
     switch (error.reason) {
+      case "refresh":
       case "unconfirmed":
       case "storage":
       case "busy":
@@ -176,6 +179,30 @@ export class PublicEvidenceJournal {
       } catch {
         return this.accept(await this.transport(), original, current);
       }
+    });
+  }
+  /** Explicit read-only rebasing of an unsent draft, never an acknowledgement or save. */
+  refresh(current: Current) {
+    return this.lock(this.key, async () => {
+      const before = current();
+      const reject = () => {
+        throw new PublicEvidenceRecoveryError("refresh");
+      };
+      if (before.id !== this.caseId || this.pending()) return reject();
+      const parsed = caseSchema.safeParse(await this.transport());
+      const now = current();
+      if (
+        !parsed.success ||
+        parsed.data.id !== this.caseId ||
+        now.id !== this.caseId ||
+        parsed.data.revision < before.revision ||
+        parsed.data.revision < now.revision ||
+        this.pending()
+      )
+        return reject();
+      // Keep the same browser lock from the pre-read through the final receipt check.
+      // No receipt is created/removed and the caller must explicitly renew its consent.
+      return parsed.data;
     });
   }
   recover(raw: PublicEvidenceReceipt, current: Current) {
