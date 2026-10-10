@@ -4,7 +4,11 @@ import {
   answerWorkflowSource,
   answerQuestion,
 } from "../../../scripts/fixtures/guided-answer-workflow";
-import { savedGuidedAnswer, answerSupplementSelection } from "./guided-answer-supplement";
+import {
+  savedGuidedAnswer,
+  answerSupplementSelection,
+  guidedAnswerSaveResponse,
+} from "./guided-answer-supplement";
 import { guidedQuestionContexts } from "./guided-question-context";
 
 function fixture() {
@@ -94,4 +98,59 @@ describe("저장한 답변에서 항목 수정안으로 이어가기", () => {
     expect(f.save()!.source.text).toHaveLength(60001);
     expect(answerSupplementSelection(f.after, f.save())).toBeNull();
   });
+});
+
+describe("답변 저장 응답의 수락 경계", () => {
+  function pending() {
+    const f = fixture();
+    const request = structuredClone({
+      company: f.before,
+      source: f.source,
+      questions: f.questions,
+      answers: f.answers,
+      links: f.links,
+    });
+    return { ...f, request };
+  }
+  it("정확한 결과에서 원래 질문·항목·자료 식별만 이어 주며 원래 요청을 바꾸지 않는다", () => {
+    const f = pending(),
+      original = structuredClone(f.request);
+    const result = guidedAnswerSaveResponse(f.after, f.before, f.request)!;
+    expect(result.saved.selection).toEqual({
+      sourceId: f.source.id,
+      sectionKey: "development",
+      questionIndex: 1,
+    });
+    expect(result.company.plans).toEqual(f.before.plans);
+    expect(f.request).toEqual(original);
+  });
+  it.each([null, {}, { revision: "invalid" }])(
+    "형식 오류를 업무 화면에 넘기지 않는다: %j",
+    (response) => {
+      const f = pending();
+      expect(guidedAnswerSaveResponse(response, f.before, f.request)).toBeNull();
+    },
+  );
+  it("응답이 정확해도 화면의 회사가 바뀌었다면 거절한다", () => {
+    const f = pending();
+    const current = { ...f.before, id: "c0000000-0000-4000-8000-000000000002" };
+    expect(guidedAnswerSaveResponse(f.after, current, f.request)).toBeNull();
+  });
+  it("현재 화면보다 오래된 응답을 수락하지 않는다", () => {
+    const f = pending();
+    const current = { ...f.before, revision: f.after.revision + 1 };
+    expect(guidedAnswerSaveResponse(f.after, current, f.request)).toBeNull();
+  });
+  it.each(["missing", "body", "foreign", "revision", "duplicate"])(
+    "원래 답변이 확인되지 않은 %s 응답을 수락하지 않는다",
+    (mode) => {
+      const f = pending();
+      if (mode === "missing") f.after.sources = [];
+      if (mode === "body") f.after.sources[0].text = "다른 답변";
+      if (mode === "foreign") f.after.id = "c0000000-0000-4000-8000-000000000002";
+      if (mode === "revision") f.after.revision = f.before.revision;
+      if (mode === "duplicate") f.after.sources.push(structuredClone(f.source));
+      expect(guidedAnswerSaveResponse(f.after, f.before, f.request)).toBeNull();
+    },
+  );
 });

@@ -9,7 +9,8 @@ import { useManualPlanSave } from "./use-manual-plan-save";
 import { guidedDescriptionAcknowledged } from "./guided-description-save";
 import { PlanSupplementPanel } from "./plan-supplement-panel";
 import {
-  savedGuidedAnswer,
+  guidedAnswerSaveResponse,
+  type GuidedAnswerSave,
   answerSupplementSelection,
   type SavedGuidedAnswer,
   type AnswerSupplementSelection,
@@ -151,6 +152,7 @@ export function GuidedWorkspace({
   const [questionAnswers, setQuestionAnswers] = useState<Record<string, string>>({});
   const [answering, setAnswering] = useState(false);
   const [questionLinks, setQuestionLinks] = useState<Record<string, GuidedQuestionLink>>({});
+  const [answerPending, setAnswerPending] = useState<GuidedAnswerSave | null>(null);
   const [answerSaved, setAnswerSaved] = useState<SavedGuidedAnswer | null>(null);
   const [answerContext, setAnswerContext] = useState<{
     revision: number;
@@ -202,6 +204,7 @@ export function GuidedWorkspace({
   const mounted = useRef(true);
   const pendingRequest = useRef<GuidedPreparationRequest | null>(null);
   const editingDirty =
+    !!answerPending ||
     !!confirmationPending ||
     Object.values(questionLinks).some((link) => link.sectionKey || link.sourceIds.length) ||
     sourceReviewDirty ||
@@ -225,7 +228,8 @@ export function GuidedWorkspace({
         intakeUnsettled ||
         sourceReviewUnsettled ||
         manualSaveBlocked ||
-        !!confirmationPending,
+        !!confirmationPending ||
+        !!answerPending,
     );
     return () => onUnsettledChange(false);
   }, [
@@ -237,6 +241,7 @@ export function GuidedWorkspace({
     sourceReviewUnsettled,
     manualSaveBlocked,
     confirmationPending,
+    answerPending,
     onUnsettledChange,
   ]);
   useEffect(() => {
@@ -264,7 +269,8 @@ export function GuidedWorkspace({
     unsettled ||
     sourceReviewUnsettled ||
     manualSaveBlocked ||
-    !!confirmationPending;
+    !!confirmationPending ||
+    !!answerPending;
   const latestPlan = [...company.plans].sort((a, b) => b.version - a.version)[0];
   const lastRun = (company.guidedPreparationRuns ?? []).at(-1);
   const retainedDraft = lastRun?.repair?.initialPlanId === latestPlan?.id && !!latestPlan;
@@ -575,6 +581,7 @@ export function GuidedWorkspace({
     else await preparePreview(next);
   }
   function openAnswers() {
+    if (locked || inFlight.current) return;
     setAnswerSaved(null);
     if (!answerContext) setAnswerContext({ revision: company.revision, questions });
     setAnswering(true);
@@ -610,29 +617,54 @@ export function GuidedWorkspace({
       createdAt: now,
       updatedAt: now,
     };
-    const next = await mutateOnce({ action: "source", source });
-    if (!mounted.current || !next) return;
-    const saved = savedGuidedAnswer(
+    const request = structuredClone({
       company,
-      next,
       source,
-      answerContext?.questions ?? questions,
-      questionAnswers,
-      questionLinks,
-    );
-    if (!saved) {
-      setError(
-        "답변의 저장 결과를 확인하지 못했습니다. 입력을 유지했으니 자료함에서 저장 상태를 확인해 주세요.",
+      questions: answerContext?.questions ?? questions,
+      answers: questionAnswers,
+      links: questionLinks,
+    });
+    setAnswerPending(request);
+    await readOrSaveAnswers(request, true);
+  }
+  async function readOrSaveAnswers(request: GuidedAnswerSave, save: boolean) {
+    if (inFlight.current || busy) return;
+    inFlight.current = true;
+    onBusyChange(save ? "답변을 보관하고 있습니다" : "답변 저장 상태를 확인하고 있습니다");
+    setError("");
+    try {
+      const response = await studioFetch<unknown>(
+        `/api/studio/cases/${request.company.id}`,
+        save
+          ? {
+              method: "PATCH",
+              ...jsonBody({
+                action: "source",
+                source: request.source,
+                revision: request.company.revision,
+              }),
+            }
+          : undefined,
       );
-      return;
-    }
-    {
+      if (!mounted.current) return;
+      const result = guidedAnswerSaveResponse(response, currentCompany.current, request);
+      if (!result) throw new Error("Unconfirmed answer save");
+      onCompany(result.company);
+      setAnswerPending(null);
       setQuestionAnswers({});
       setQuestionLinks({});
       setAnswerContext(null);
       setVisibleQuestionCount(3);
       setAnswering(false);
-      setAnswerSaved(saved);
+      setAnswerSaved(result.saved);
+    } catch {
+      if (mounted.current)
+        setError(
+          "답변의 저장 결과를 확인하지 못했습니다. 입력과 연결 항목을 유지했습니다. 답변 저장 상태를 확인해 주세요.",
+        );
+    } finally {
+      inFlight.current = false;
+      if (mounted.current) onBusyChange("");
     }
   }
   function finishManualSave(next: StudioCase, ownEdit: boolean) {
@@ -1197,6 +1229,22 @@ export function GuidedWorkspace({
                   "아는 내용만 알려 주세요",
                   "처음에는 세 가지를 보여 드립니다. 필요한 질문을 더 열어 이어서 답할 수 있어요.",
                 )}
+                {answerPending && (
+                  <section className={styles.notice} aria-label="답변 저장 확인">
+                    <p>
+                      답변 저장 결과가 미확인입니다. 원래 답변과 연결 항목을 확인할 때까지 이 화면에
+                      보관합니다.
+                    </p>
+                    <button
+                      type="button"
+                      className={styles.primary}
+                      disabled={!!busy}
+                      onClick={() => void readOrSaveAnswers(answerPending, false)}
+                    >
+                      답변 저장 상태 확인
+                    </button>
+                  </section>
+                )}
                 <section className={styles.sheet}>
                   {shownQuestions.map((question, index) => (
                     <div key={question.id} className={index ? styles.answer : undefined}>
@@ -1214,6 +1262,7 @@ export function GuidedWorkspace({
                       />
                       <textarea
                         id={`guided-answer-${index}`}
+                        readOnly={locked}
                         className={styles.textarea}
                         maxLength={5000}
                         placeholder="아는 내용이나 짧은 메모를 남겨 주세요. 모르는 내용은 비워 두어도 됩니다."
@@ -1308,7 +1357,9 @@ export function GuidedWorkspace({
                   <button
                     type="button"
                     className={styles.link}
+                    disabled={locked}
                     onClick={() => {
+                      if (locked || inFlight.current) return;
                       setDeferred(true);
                       setAnswering(false);
                     }}

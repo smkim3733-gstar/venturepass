@@ -1,4 +1,5 @@
 import {
+  caseSchema,
   sectionDefinitions,
   type BusinessPlan,
   type SourceDocument,
@@ -96,4 +97,35 @@ export function answerSupplementSelection(company: StudioCase, saved: SavedGuide
   )
     return null;
   return { ...saved.selection };
+}
+
+export type GuidedAnswerSave = {
+  company: StudioCase;
+  source: SourceDocument;
+  questions: GuidedQuestionContext[];
+  answers: Record<string, string>;
+  links: Record<string, GuidedQuestionLink>;
+};
+/** Validate before accepting the company; recovery uses the original input, never a new source ID. */
+export function guidedAnswerSaveResponse(
+  response: unknown,
+  current: StudioCase,
+  request: GuidedAnswerSave,
+): { company: StudioCase; saved: SavedGuidedAnswer } | null {
+  const parsed = caseSchema.safeParse(response);
+  if (
+    !parsed.success ||
+    current.id !== request.company.id ||
+    parsed.data.revision < current.revision
+  )
+    return null;
+  const saved = savedGuidedAnswer(
+    request.company,
+    parsed.data,
+    request.source,
+    request.questions,
+    request.answers,
+    request.links,
+  );
+  return saved ? { company: parsed.data, saved } : null;
 }
