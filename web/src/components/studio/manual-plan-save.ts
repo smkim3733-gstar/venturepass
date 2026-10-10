@@ -43,3 +43,19 @@ export function manualPlanSaveSnapshot(value: unknown, pending: ManualPlanSave):
     throw mismatch();
   return next;
 }
+
+/** Resolve one section in one unambiguous latest manuscript before opening or saving an edit. */
+export function manualPlanSectionTarget(company: StudioCase, planId: string, sectionKey: string) {
+  const plans = company.plans.filter((plan) => plan.id === planId);
+  if (plans.length !== 1) return null;
+  const plan = plans[0];
+  if (
+    plan.version !== Math.max(0, ...company.plans.map((item) => item.version)) ||
+    company.plans.filter((item) => item.version === plan.version).length !== 1
+  )
+    return null;
+  const sections = plan.content.sections.filter((section) => section.key === sectionKey);
+  return sections.length === 1 ? { plan, section: sections[0] } : null;
+}
+export const manualPlanSectionTargetMessage =
+  "고칠 항목을 하나로 확인하지 못했습니다. 해당 항목은 원문을 읽을 수 있지만 수정할 수 없습니다.";

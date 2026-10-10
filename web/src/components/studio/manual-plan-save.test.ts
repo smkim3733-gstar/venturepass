@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { caseSchema, emptyProfile, type StudioCase } from "@/lib/studio-schema";
-import { manualPlanSaveSnapshot, type ManualPlanSave } from "./manual-plan-save";
+import {
+  manualPlanSaveSnapshot,
+  manualPlanSectionTarget,
+  type ManualPlanSave,
+} from "./manual-plan-save";
 
 const id = "11111111-1111-4111-8111-111111111111";
 const planId = "22222222-2222-4222-8222-222222222222";
@@ -199,5 +203,78 @@ describe("간단 원고 수정본의 저장 상태 대조", () => {
     const { pending, next } = fixture();
     pending.mutation.planId = savedId;
     expect(() => manualPlanSaveSnapshot(next, pending)).toThrow();
+  });
+});
+
+describe("간단 원고의 유일한 항목 편집 대상", () => {
+  it("최신 원고의 정확한 항목을 반환하고 원문과 확인 상태를 바꾸지 않는다", () => {
+    const { pending } = fixture();
+    const before = structuredClone(pending.company);
+    freeze(pending.company);
+    expect(manualPlanSectionTarget(pending.company, planId, "problem")).toEqual({
+      plan: pending.company.plans[0],
+      section: pending.company.plans[0].content.sections[0],
+    });
+    expect(pending.company).toEqual(before);
+  });
+  it.each([
+    [
+      "없는 원고",
+      (c: StudioCase) => {
+        c.plans[0].id = savedId;
+      },
+    ],
+    [
+      "없는 항목",
+      (c: StudioCase) => {
+        c.plans[0].content.sections[0].key = "development";
+      },
+    ],
+    [
+      "같은 키의 다른 본문",
+      (c: StudioCase) => {
+        c.plans[0].content.sections.push({
+          ...structuredClone(c.plans[0].content.sections[0]),
+          title: "다른 제목",
+          content: "다른 본문",
+        });
+      },
+    ],
+    [
+      "같은 원고 ID",
+      (c: StudioCase) => {
+        c.plans.push({ ...structuredClone(c.plans[0]), version: 4 });
+      },
+    ],
+    [
+      "같은 최신 버전",
+      (c: StudioCase) => {
+        c.plans.push({ ...structuredClone(c.plans[0]), id: savedId });
+      },
+    ],
+    [
+      "이전 원고",
+      (c: StudioCase) => {
+        c.plans.push({ ...structuredClone(c.plans[0]), id: savedId, version: 4 });
+      },
+    ],
+  ] as const)("%s에서는 첫 대상을 추정하지 않는다", (_, change) => {
+    const { pending } = fixture();
+    change(pending.company);
+    freeze(pending.company);
+    expect(manualPlanSectionTarget(pending.company, planId, "problem")).toBeNull();
+  });
+  it("다른 키의 중복은 보존하며 유일한 선택 항목만 반환한다", () => {
+    const { pending } = fixture();
+    const section = {
+      ...structuredClone(pending.company.plans[0].content.sections[0]),
+      key: "development",
+    };
+    pending.company.plans[0].content.sections.push(section, structuredClone(section));
+    freeze(pending.company);
+    expect(manualPlanSectionTarget(pending.company, planId, "problem")?.section.key).toBe(
+      "problem",
+    );
+    expect(manualPlanSectionTarget(pending.company, planId, "development")).toBeNull();
   });
 });

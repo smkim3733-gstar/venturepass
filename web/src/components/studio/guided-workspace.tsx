@@ -4,7 +4,11 @@ import {
   planConfirmationMessage,
   type PlanConfirmation,
 } from "./plan-confirmation";
-import type { ManualPlanSave } from "./manual-plan-save";
+import {
+  manualPlanSectionTarget,
+  manualPlanSectionTargetMessage,
+  type ManualPlanSave,
+} from "./manual-plan-save";
 import { useManualPlanSave } from "./use-manual-plan-save";
 import {
   guidedDescriptionSaveResponse,
@@ -324,6 +328,13 @@ export function GuidedWorkspace({
   const editingPlan = company.plans.find((plan) => plan.id === editingPlanId);
   const section = editingPlan?.content.sections.find((item) => item.key === editingSection);
   const editingPlanChanged = editingPlanId !== null && latestPlan?.id !== editingPlanId;
+  const editingSectionTarget =
+    editingPlanId && editingSection
+      ? manualPlanSectionTarget(company, editingPlanId, editingSection)
+      : null;
+  const canEditSection = (key: string) =>
+    !!latestPlan && !!manualPlanSectionTarget(company, latestPlan.id, key);
+
   const existingRunUnknown = lastRun?.status === "running";
   const hasSourceText = company.sources.some(
     (source) => source.extraction !== "pending" && source.text.trim(),
@@ -773,6 +784,10 @@ export function GuidedWorkspace({
       inFlight.current
     )
       return;
+    if (!editingOverview && !editingSectionTarget) {
+      setError(manualPlanSectionTargetMessage);
+      return;
+    }
     const pending: ManualPlanSave = {
       company: structuredClone(company),
       mutation: {
@@ -847,11 +862,14 @@ export function GuidedWorkspace({
   }
   function openSection(key: string) {
     if (locked || editingOverview) return;
-    const target = latestPlan?.content.sections.find((item) => item.key === key);
-    if (!target) return;
+    const target = latestPlan && manualPlanSectionTarget(company, latestPlan.id, key);
+    if (!target) {
+      setError(manualPlanSectionTargetMessage);
+      return;
+    }
     setEditingSection(key);
     setEditingPlanId(latestPlan!.id);
-    setSectionText(target.content);
+    setSectionText(target.section.content);
     setSectionVerified(false);
   }
 
@@ -1289,13 +1307,20 @@ export function GuidedWorkspace({
                   </button>
                   {
                     <PrimaryAction
-                      disabled={locked || editingPlanChanged}
+                      disabled={
+                        locked || editingPlanChanged || (!editingOverview && !editingSectionTarget)
+                      }
                       onClick={() => void saveManualEdit()}
                     >
                       {"수정 반영하기"}
                     </PrimaryAction>
                   }
                 </div>
+                {!editingOverview && !editingPlanChanged && !editingSectionTarget && (
+                  <p className={styles.notice} role="alert">
+                    {manualPlanSectionTargetMessage}
+                  </p>
+                )}
                 {editingPlanChanged && (
                   <section className={styles.sheet}>
                     <p role="alert" className={styles.helper}>
@@ -1555,15 +1580,20 @@ export function GuidedWorkspace({
                   </button>
                   <details className={styles.details}>
                     <summary>전체 사업계획서 읽기</summary>
-                    {latestPlan.content.sections.map((item) => (
-                      <article key={item.key} className="mt-6 border-t pt-5">
+                    {latestPlan.content.sections.some((item) => !canEditSection(item.key)) && (
+                      <p className={styles.notice} role="status">
+                        {manualPlanSectionTargetMessage}
+                      </p>
+                    )}
+                    {latestPlan.content.sections.map((item, index) => (
+                      <article key={item.key + ":" + index} className="mt-6 border-t pt-5">
                         <h4 className={styles.subheading}>{item.title}</h4>
                         <p className={styles.body}>{item.content}</p>
                         <button
                           type="button"
                           className={styles.link}
                           onClick={() => openSection(item.key)}
-                          disabled={locked}
+                          disabled={locked || !canEditSection(item.key)}
                         >
                           이 부분 고치기{item.needsConfirmation ? " · 확인 필요" : ""}
                         </button>
@@ -1754,13 +1784,13 @@ export function GuidedWorkspace({
                     type="button"
                     className={styles.link}
                     onClick={() => openSection(latestPlan.content.sections[0]?.key ?? "")}
-                    disabled={locked}
+                    disabled={locked || !canEditSection(latestPlan.content.sections[0]?.key ?? "")}
                   >
                     내용 고치기
                   </button>
                   {answerSelection ? null : needsReview.length ? (
                     <PrimaryAction
-                      disabled={locked}
+                      disabled={locked || !canEditSection(needsReview[0].key)}
                       onClick={() => openSection(needsReview[0].key)}
                     >
                       {"확인이 필요한 부분 보기"}
