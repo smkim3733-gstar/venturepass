@@ -2,7 +2,11 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import { GuidedWorkspace } from "./guided-workspace";
-import { GuidedPlanReview, guidedReviewTargetCurrent } from "./guided-plan-review";
+import {
+  GuidedPlanReview,
+  GuidedReviewSectionEdit,
+  guidedReviewTargetCurrent,
+} from "./guided-plan-review";
 import { PlanReviewDecisions, planReviewInputFor } from "./plan-review-decisions";
 import { reviewLinkCompany } from "../../../scripts/fixtures/guided-review-link";
 function target(c = reviewLinkCompany()) {
@@ -94,4 +98,56 @@ describe("guided review opinion connection", () => {
     expect(h).not.toContain("검토 마치고 신청 준비");
     expect(c).toEqual(before);
   });
+});
+
+describe("review finding to manuscript editing", () => {
+  function render(c = reviewLinkCompany(), index = 2, reason = "", plan = c.plans[1]) {
+    return renderToStaticMarkup(
+      createElement(GuidedReviewSectionEdit, {
+        company: c,
+        plan,
+        findingIndex: index,
+        onEditSection: vi.fn(),
+        editBlockedReason: reason,
+      }),
+    );
+  }
+  it("distinguishes identical opinion text by original index and names its exact section without changing state", () => {
+    const c = reviewLinkCompany();
+    c.plans[1].review[1].sectionKey = c.plans[1].content.sections[0].key;
+    const before = structuredClone(c);
+    expect(render(c, 1)).toContain("의견 2: " + c.plans[1].content.sections[0].title);
+    expect(render(c, 2)).toContain("의견 3: " + c.plans[1].content.sections[1].title);
+    expect(c).toEqual(before);
+  });
+  it.each(["unlinked", "missing", "ambiguous"])(
+    "does not guess an editing section for %s finding",
+    (change) => {
+      const c = reviewLinkCompany();
+      if (change === "unlinked") c.plans[1].review[2].sectionKey = null;
+      if (change === "missing") c.plans[1].content.sections.splice(1, 1);
+      if (change === "ambiguous")
+        c.plans[1].content.sections.push(structuredClone(c.plans[1].content.sections[1]));
+      const h = render(c);
+      expect(h).not.toContain("<button");
+      expect(h).toContain("전체 원고에서 확인해 주세요.");
+    },
+  );
+  it("retains the existing blocked reason while preventing another edit", () => {
+    const h = render(reviewLinkCompany(), 2, "원래 저장 결과를 확인해 주세요.");
+    expect(h).toMatch(/<button[^>]*disabled=""/);
+    expect(h).toContain('title="원래 저장 결과를 확인해 주세요."');
+  });
+  it.each(["new-version", "changed-content", "duplicate-id"])(
+    "does not offer edits from a stale or ambiguous manuscript: %s",
+    (change) => {
+      const c = reviewLinkCompany(),
+        pinned = structuredClone(c.plans[1]);
+      if (change === "new-version")
+        c.plans.push({ ...structuredClone(pinned), id: "different", version: 3 });
+      if (change === "changed-content") c.plans[1].content.summary += " changed";
+      if (change === "duplicate-id") c.plans[0].id = pinned.id;
+      expect(render(c, 2, "", pinned)).toBe("");
+    },
+  );
 });

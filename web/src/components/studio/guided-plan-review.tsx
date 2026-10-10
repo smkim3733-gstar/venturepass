@@ -116,3 +116,58 @@ export function GuidedReviewDecisionSummary({
     </div>
   );
 }
+
+/** Opens only the unique section explicitly named by this stored review finding. */
+export function GuidedReviewSectionEdit({
+  company,
+  plan,
+  findingIndex,
+  onEditSection,
+  editBlockedReason = "",
+}: {
+  company: StudioCase;
+  plan: BusinessPlan;
+  findingIndex: number;
+  onEditSection: (sectionKey: string) => void;
+  editBlockedReason?: string;
+}) {
+  if (
+    !Number.isInteger(findingIndex) ||
+    findingIndex < 0 ||
+    company.plans.filter((item) => item.id === plan.id).length !== 1 ||
+    !guidedReviewTargetCurrent(company, { companyId: company.id, plan })
+  )
+    return null;
+  const finding = plan.review[findingIndex];
+  if (!finding) return null;
+  const matches = finding.sectionKey
+    ? plan.content.sections.filter((section) => section.key === finding.sectionKey)
+    : [];
+  if (matches.length !== 1)
+    return (
+      <p className="mt-2 text-xs text-muted-foreground">
+        연결된 항목을 특정할 수 없습니다. 전체 원고에서 확인해 주세요.
+      </p>
+    );
+  const section = matches[0];
+  return (
+    <div className="mt-2">
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        disabled={!!editBlockedReason}
+        title={editBlockedReason || undefined}
+        onClick={() => {
+          if (!editBlockedReason) onEditSection(section.key);
+        }}
+      >
+        연결된 원고 항목 고치기
+        <span className="sr-only">
+          {" "}
+          · 의견 {findingIndex + 1}: {section.title}
+        </span>
+      </Button>
+    </div>
+  );
+}

@@ -72,6 +72,7 @@ import { PreparedPackagesPanel } from "./prepared-packages-panel";
 import {
   GuidedPlanReview,
   GuidedReviewDecisionSummary,
+  GuidedReviewSectionEdit,
   type GuidedReviewTarget,
 } from "./guided-plan-review";
 import { PlanComparison } from "./plan-comparison";
@@ -1704,8 +1705,8 @@ export function GuidedWorkspace({
                   <section className={styles.sheet} aria-label="의견별 검토 판단 바로가기">
                     <h3 className={styles.subheading}>검토 의견에 판단 남기기</h3>
                     <p className={styles.helper}>
-                      의견을 선택해 담당자 해결 판단이나 보류 이유를 기록하세요. 원고의 확인 필요
-                      표시는 유지됩니다.
+                      의견에 연결된 원고 항목을 고치거나, 의견을 선택해 담당자 판단을 기록하세요.
+                      편집을 열거나 판단을 남겨도 원고의 확인 필요 표시는 유지됩니다.
                     </p>
                     <ul className={styles.reviewList}>
                       {findingEntries.map(({ finding, findingIndex }) => (
@@ -1718,6 +1719,19 @@ export function GuidedWorkspace({
                           >
                             의견 {findingIndex + 1}: {finding.message}
                           </button>
+                          <GuidedReviewSectionEdit
+                            company={company}
+                            plan={latestPlan}
+                            findingIndex={findingIndex}
+                            onEditSection={openSection}
+                            editBlockedReason={
+                              locked || existingRunUnknown
+                                ? "진행 중인 작업의 상태를 먼저 확인해 주세요."
+                                : editingDirty
+                                  ? "작성 중인 수정을 저장하거나 취소한 뒤 다른 항목을 고쳐 주세요."
+                                  : ""
+                            }
+                          />
                           <GuidedReviewDecisionSummary
                             company={company}
                             plan={latestPlan}
