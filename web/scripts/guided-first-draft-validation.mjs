@@ -281,7 +281,10 @@ try {
         assert.equal(command.profile.technologySummary, fixture.description);
         if (rejectFirstDescription) {
           rejectFirstDescription = false;
-          return reply(company); // Schema-valid old response must not close the typed description.
+          const old = structuredClone(company);
+          company = { ...company, profile: command.profile, revision: 1,
+            updatedAt: "2026-10-09T11:30:01.000Z" };
+          return reply(old); // Keep the original request until an explicit GET confirms this memory save.
         }
         company = { ...company, profile: command.profile, revision: 1,
           updatedAt: "2026-10-09T11:30:01.000Z" };
@@ -338,23 +341,24 @@ try {
   await page.getByRole("button", { name: "이 설명으로 시작하기", exact: true }).click();
   await page.getByRole("alert").filter({hasText:"입력한 회사 설명의 저장 응답을 확인하지 못했습니다."}).waitFor();
   assert.equal(await page.getByLabel("현재 제공하는 서비스·기술과 고객", {exact:true}).inputValue(), fixture.description);
-  assert.equal(company.revision, 0);
+  assert.equal(company.revision, 1); // Synthetic store only; the screen has not accepted it.
   assert.equal(previews.length, 0);
   assert.deepEqual(commands.map(c=>c.action), ["profile"]);
   assert.equal(await page.getByRole("dialog").count(), 0);
   record("old profile acknowledgment retains the complete typed description and blocks preparation");
-  await page.getByRole("button", { name: "이 설명으로 시작하기", exact: true }).click();
+  assert.equal(await page.getByRole("button", { name: "이 설명으로 시작하기", exact: true }).isDisabled(), true);
+  await page.getByRole("button", { name: "회사 설명 저장 상태 확인", exact: true }).click();
   const scope = page.getByRole("dialog", { name: "AI에 사용할 자료 선택", exact: true });
   await scope.waitFor();
   assert.equal(company.revision, 1);
   assert.equal(company.profile.technologySummary, fixture.description);
-  assert.deepEqual(commands.map(c => c.action), ["profile", "profile"]);
+  assert.deepEqual(commands.map(c => c.action), ["profile"]);
   assert.ok((await scope.innerText()).includes("선택 0개"));
   assert.ok((await scope.innerText()).includes("0개를 선택하면 회사 설명만 사용합니다"));
   await scope.getByRole("button", { name: "선택 범위 확인", exact: true }).click();
   const approval = page.getByRole("dialog", { name: "이 자료로 AI가 계획서를 준비할까요?", exact: true });
   await approval.waitFor();
-  assert.deepEqual(commands.map(c => c.action), ["profile", "profile"]);
+  assert.deepEqual(commands.map(c => c.action), ["profile"]);
   assert.ok((await approval.innerText()).includes("전송할 자료 0개 확인"));
   assert.ok((await approval.innerText()).includes("회사 설명·기업정보"));
   assert.deepEqual(company.plans, []);
@@ -406,7 +410,7 @@ try {
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
   await page.waitForFunction(() => [...document.querySelectorAll("[data-sonner-toast]")].every(n => n.getAttribute("data-visible") !== "true"));
   await page.screenshot({ path: path.join(output, "first-draft-mobile.png"), fullPage: true });
-  assert.deepEqual(commands.map(c => c.action), ["profile", "profile", "start", "select-candidate", "continue"]);
+  assert.deepEqual(commands.map(c => c.action), ["profile", "start", "select-candidate", "continue"]);
   assert.deepEqual(previews.map(p => p.sourceIds), previews.map(() => []));
   assert.deepEqual([...new Set(previews.map(p => p.revision))], [1, 3, 7]);
   assert.equal(previews.filter(p => p.revision === 1).length, 1);

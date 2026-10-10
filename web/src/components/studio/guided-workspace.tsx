@@ -6,7 +6,10 @@ import {
 } from "./plan-confirmation";
 import type { ManualPlanSave } from "./manual-plan-save";
 import { useManualPlanSave } from "./use-manual-plan-save";
-import { guidedDescriptionAcknowledged } from "./guided-description-save";
+import {
+  guidedDescriptionSaveResponse,
+  type GuidedDescriptionSave,
+} from "./guided-description-save";
 import { PlanSupplementPanel } from "./plan-supplement-panel";
 import {
   guidedAnswerSaveResponse,
@@ -125,6 +128,7 @@ export function GuidedWorkspace({
   const [describing, setDescribing] = useState(false);
   const [description, setDescription] = useState(company.profile.technologySummary);
   const [descriptionTouched, setDescriptionTouched] = useState(false);
+  const [descriptionPending, setDescriptionPending] = useState<GuidedDescriptionSave | null>(null);
   const [error, setError] = useState("");
   const [confirmationPending, setConfirmationPending] = useState<PlanConfirmation | null>(null);
   const currentCompany = useRef(company);
@@ -204,6 +208,7 @@ export function GuidedWorkspace({
   const mounted = useRef(true);
   const pendingRequest = useRef<GuidedPreparationRequest | null>(null);
   const editingDirty =
+    !!descriptionPending ||
     !!answerPending ||
     !!confirmationPending ||
     Object.values(questionLinks).some((link) => link.sectionKey || link.sourceIds.length) ||
@@ -229,7 +234,8 @@ export function GuidedWorkspace({
         sourceReviewUnsettled ||
         manualSaveBlocked ||
         !!confirmationPending ||
-        !!answerPending,
+        !!answerPending ||
+        !!descriptionPending,
     );
     return () => onUnsettledChange(false);
   }, [
@@ -242,6 +248,7 @@ export function GuidedWorkspace({
     manualSaveBlocked,
     confirmationPending,
     answerPending,
+    descriptionPending,
     onUnsettledChange,
   ]);
   useEffect(() => {
@@ -270,7 +277,8 @@ export function GuidedWorkspace({
     sourceReviewUnsettled ||
     manualSaveBlocked ||
     !!confirmationPending ||
-    !!answerPending;
+    !!answerPending ||
+    !!descriptionPending;
   const latestPlan = [...company.plans].sort((a, b) => b.version - a.version)[0];
   const lastRun = (company.guidedPreparationRuns ?? []).at(-1);
   const retainedDraft = lastRun?.repair?.initialPlanId === latestPlan?.id && !!latestPlan;
@@ -530,21 +538,55 @@ export function GuidedWorkspace({
   }
   async function saveDescription() {
     if (!description.trim() || locked || inFlight.current) return;
-    const submitted = { ...company.profile, technologySummary: description.trim() };
-    const next = await mutateOnce({ action: "profile", profile: submitted });
-    if (!mounted.current) return;
-    if (!guidedDescriptionAcknowledged(next, company, submitted) || !next) {
-      setError(
-        "입력한 회사 설명의 저장 응답을 확인하지 못했습니다. 설명을 유지하며 AI 준비로 넘기지 않았습니다.",
-      );
-      return;
-    }
+    const request = structuredClone({
+      company: { id: company.id, revision: company.revision },
+      profile: { ...company.profile, technologySummary: description.trim() },
+    });
+    setDescriptionPending(request);
+    await readOrSaveDescription(request, true);
+  }
+  async function readOrSaveDescription(request: GuidedDescriptionSave, save: boolean) {
+    if (inFlight.current || busy) return;
+    inFlight.current = true;
+    onBusyChange(
+      save ? "회사 설명을 보관하고 있습니다" : "회사 설명 저장 상태를 확인하고 있습니다",
+    );
     setError("");
-    setDescribing(false);
-    setDescriptionTouched(false);
-    setStep("plan");
-    setDeferred(false);
-    if (status?.aiConfigured) await preparePreview(next);
+    let next: StudioCase | null = null;
+    try {
+      const response = await studioFetch<unknown>(
+        `/api/studio/cases/${request.company.id}`,
+        save
+          ? {
+              method: "PATCH",
+              ...jsonBody({
+                action: "profile",
+                profile: request.profile,
+                revision: request.company.revision,
+              }),
+            }
+          : undefined,
+      );
+      if (!mounted.current) return;
+      next = guidedDescriptionSaveResponse(response, currentCompany.current, request);
+      if (!next) throw new Error("Unconfirmed description save");
+      onCompany(next);
+      setDescriptionPending(null);
+      setDescribing(false);
+      setDescriptionTouched(false);
+      setStep("plan");
+      setDeferred(false);
+    } catch {
+      if (mounted.current)
+        setError(
+          "입력한 회사 설명의 저장 응답을 확인하지 못했습니다. 설명을 유지했습니다. 회사 설명 저장 상태를 확인해 주세요.",
+        );
+    } finally {
+      inFlight.current = false;
+      if (mounted.current) onBusyChange("");
+    }
+    // The original save is settled before the existing read-only scope selection starts.
+    if (next && mounted.current && status?.aiConfigured) await preparePreview(next);
   }
   async function chooseCandidate() {
     if (!candidate || !reason.trim() || locked || inFlight.current) return;
@@ -980,12 +1022,29 @@ export function GuidedWorkspace({
                   "어떤 사업을 하고 계신가요?",
                   "회사 설명부터 시작할 수 있습니다. 없는 실적은 적지 않아도 됩니다.",
                 )}
+                {descriptionPending && (
+                  <section className={styles.notice} aria-label="회사 설명 저장 확인">
+                    <p>
+                      회사 설명 저장 결과가 미확인입니다. 원래 설명이 확인될 때까지 입력을 이 화면에
+                      보관합니다.
+                    </p>
+                    <button
+                      type="button"
+                      className={styles.primary}
+                      disabled={!!busy}
+                      onClick={() => void readOrSaveDescription(descriptionPending, false)}
+                    >
+                      회사 설명 저장 상태 확인
+                    </button>
+                  </section>
+                )}
                 <section className={styles.sheet}>
                   <label className={styles.label} htmlFor="guided-description">
                     현재 제공하는 서비스·기술과 고객
                   </label>
                   <textarea
                     id="guided-description"
+                    readOnly={locked}
                     className={styles.textarea}
                     value={description}
                     onChange={(event) => {
@@ -1000,7 +1059,10 @@ export function GuidedWorkspace({
                   <button
                     type="button"
                     className={styles.link}
-                    onClick={() => setDescribing(false)}
+                    disabled={locked}
+                    onClick={() => {
+                      if (!locked && !inFlight.current) setDescribing(false);
+                    }}
                   >
                     자료 올리기로 돌아가기
                   </button>
