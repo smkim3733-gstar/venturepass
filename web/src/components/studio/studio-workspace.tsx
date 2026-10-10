@@ -54,6 +54,7 @@ import {
   sourceImpactKindLabels,
 } from "@/lib/studio-source-impact";
 import { DiagnosisPanel } from "./diagnosis-panel";
+import { diagnosisAnswersSaveAcknowledged } from "./diagnosis-answers-response";
 import { PreparationPanel } from "./preparation-panel";
 import { PreparationAutomationPanel } from "./preparation-automation-panel";
 import { AnalysisPanel } from "./analysis-panel";
@@ -438,6 +439,16 @@ export function StudioWorkspace() {
       )
         throw new Error(
           "기업정보의 저장 내용을 확인하지 못했습니다. 원래 입력과 회사 정보를 유지했습니다.",
+        );
+      if (
+        mutation.action === "diagnosis-answers" &&
+        !diagnosisAnswersSaveAcknowledged(next, company, {
+          ...mutation,
+          revision: company.revision,
+        })
+      )
+        throw new Error(
+          "기본요건 검토 답변의 저장 내용을 확인하지 못했습니다. 원래 입력과 근거 연결을 유지했습니다.",
         );
       accept(next);
       toast.success("저장했습니다.");

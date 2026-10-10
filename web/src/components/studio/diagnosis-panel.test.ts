@@ -328,3 +328,23 @@ describe("기본요건 검토의 현재 원문 연결", () => {
     }
   });
 });
+
+it("진단 이력이 없는 일반 업무 보유 회사도 답변 화면을 열고 원래 업무를 보존한다", () => {
+  const record = company({
+    tasks: [
+      {
+        id: "55555555-5555-4555-8555-555555555555",
+        title: "일반 자료 확인",
+        category: "evidence",
+        dueDate: "",
+        status: "pending",
+        notes: "원래 담당 업무",
+      },
+    ],
+  });
+  const before = structuredClone(record),
+    html = renderPanel(record);
+  expect(html).toContain("아직 보관한 사전진단이 없습니다");
+  expect(html).toContain("검토 답변 저장");
+  expect(record).toEqual(before);
+});

@@ -463,7 +463,7 @@ export function DiagnosisPanel({
   );
   const registeredActions = new Set(
     company.tasks
-      .filter((task) => task.diagnosisOrigin?.diagnosisId === selected?.id)
+      .filter((task) => selected && task.diagnosisOrigin?.diagnosisId === selected.id)
       .map((task) => task.diagnosisOrigin!.actionId),
   );
   useDirty(answersDirty || selectedActions.length > 0 || !!busy, setDirty);
