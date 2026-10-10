@@ -82,7 +82,7 @@ export function PublicEvidencePanel({
     const c = publicEvidenceSaved(raw, request, currentCompany.current);
     if (!c)
       throw Error(
-        "같은 자료의 저장을 확인하지 못했습니다. 새 요청을 보내지 않고 자료함에서 확인해 주세요.",
+        "같은 자료의 저장을 확인하지 못했습니다. 이 창에서 저장 상태를 다시 확인해 주세요.",
       );
     if (!mounted.current) return;
     onCompany(c);
@@ -148,14 +148,10 @@ export function PublicEvidencePanel({
     }
   }
   function close() {
-    if (flight.current) return;
-    if (
-      (dirty || pending) &&
-      !window.confirm(
-        "입력 중인 내용과 미확인 요청은 이 창을 닫으면 사라집니다. 보관 자료는 자료함에서 확인할 수 있습니다. 닫을까요?",
-      )
-    )
-      return;
+    // Keep the original request available until its exact saved source is acknowledged.
+    // Closing an uncertain save would discard its identity and permit a duplicate submission.
+    if (flight.current || pending) return;
+    if (dirty && !window.confirm("입력 중인 내용은 이 창을 닫으면 사라집니다. 닫을까요?")) return;
     onDirtyChange(false);
     onClose();
   }
@@ -182,7 +178,13 @@ export function PublicEvidencePanel({
     <section className={styles.sheet} aria-label="공개 근거 후보 보관">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h3 className={styles.subheading}>공개 근거 보완</h3>
-        <button type="button" className={styles.link} disabled={working} onClick={close}>
+        <button
+          type="button"
+          className={styles.link}
+          disabled={working || !!pending}
+          aria-describedby={pending ? "public-evidence-pending" : undefined}
+          onClick={close}
+        >
           닫기
         </button>
       </div>
@@ -196,6 +198,12 @@ export function PublicEvidencePanel({
         </p>
       )}
       {working && <p role="status">저장 상태 확인 중</p>}
+      {pending && !working && (
+        <p id="public-evidence-pending" role="status" className={styles.helper}>
+          저장 여부를 확인할 때까지 이 창과 입력을 유지합니다. 아래 ‘이 자료의 저장 상태 확인’을
+          눌러 주세요. 같은 자료를 다시 저장하지 않습니다.
+        </p>
+      )}
       {saved ? (
         <div className="my-4 space-y-3">
           <p role="status">
