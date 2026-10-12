@@ -220,6 +220,52 @@ function Field({
     </div>
   );
 }
+function NumericReferenceText({
+  text,
+  index,
+  id,
+}: {
+  text: string | undefined;
+  index: number;
+  id: string;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const canExpand = !!text && text.length > 20000;
+  return (
+    <>
+      <pre
+        id={id}
+        role="region"
+        aria-label={"관측 수치 " + (index + 1) + " 선택한 등록 본문"}
+        aria-describedby={canExpand ? id + "-status" : undefined}
+        tabIndex={0}
+        className="mt-2 max-h-48 min-w-0 max-w-full overflow-auto whitespace-pre-wrap [overflow-wrap:anywhere] text-xs"
+      >
+        {(expanded ? text : text?.slice(0, 20000)) || "자료·원고 항목을 선택해 주세요."}
+      </pre>
+      {canExpand && (
+        <div className="mt-2 space-y-2">
+          <p id={id + "-status"} role="status" className="text-xs">
+            {expanded
+              ? "전체 " + (text?.length ?? 0).toLocaleString("ko-KR") + "자 표시"
+              : "앞 20,000자만 표시합니다."}
+          </p>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            aria-expanded={expanded}
+            aria-controls={id}
+            onClick={() => setExpanded((value) => !value)}
+          >
+            {expanded ? "앞부분만 보기" : "전체 본문 보기"}
+          </Button>
+        </div>
+      )}
+    </>
+  );
+}
+
 export function NumericObservationEditor({
   company,
   value,
@@ -249,7 +295,7 @@ export function NumericObservationEditor({
       : sections.find((section) => section.key === (ref?.kind === "plan" ? ref.sectionKey : ""))
           ?.content;
   return (
-    <fieldset className="space-y-4 rounded-xl border p-4">
+    <fieldset className="min-w-0 space-y-4 rounded-xl border p-4">
       <legend className="px-2 font-semibold">관측 수치 {index + 1}</legend>
       <div className="grid gap-3 sm:grid-cols-2">
         <div className="space-y-2">
@@ -533,14 +579,18 @@ export function NumericObservationEditor({
         <>
           <details>
             <summary className="cursor-pointer text-xs underline">선택한 등록 원문 보기</summary>
-            <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap text-xs">
-              {originalText?.slice(0, 20000) || "자료·원고 항목을 선택해 주세요."}
-            </pre>
-            {originalText && originalText.length > 20000 && (
-              <p className="text-xs">
-                20,000자 이후는 생략했습니다. 자료함·원고 화면에서 전체 본문을 확인해 주세요.
-              </p>
-            )}
+            <NumericReferenceText
+              key={JSON.stringify([
+                company.id,
+                company.revision,
+                ref.kind,
+                ref.kind === "source" ? ref.sourceId : ref.planId,
+                ref.kind === "source" ? ref.sourceUpdatedAt : ref.sectionKey,
+              ])}
+              id={prefix + "-registered-text"}
+              text={originalText}
+              index={index}
+            />
           </details>
           <Field
             id={`${prefix}-quote`}
