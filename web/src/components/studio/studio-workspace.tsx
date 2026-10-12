@@ -61,6 +61,7 @@ import { companyContactsSaveAcknowledged } from "./company-contacts";
 import { responsePreparationSaveAcknowledged } from "./response-preparation";
 import { visitAnswerSaveAcknowledged } from "./visit-answer-response";
 import { appealPreparationSaveAcknowledged } from "./appeal-preparation-response";
+import { numericCheckSaveAcknowledged } from "./numeric-checks";
 import { PreparationPanel } from "./preparation-panel";
 import { PreparationAutomationPanel } from "./preparation-automation-panel";
 import { AnalysisPanel } from "./analysis-panel";
@@ -510,6 +511,13 @@ export function StudioWorkspace() {
       )
         throw new Error(
           "소명 준비의 저장 기록을 확인하지 못했습니다. 원래 입력과 요청 번호를 유지했습니다.",
+        );
+      if (
+        mutation.action === "append-numeric-check" &&
+        !numericCheckSaveAcknowledged(next, company.id, mutation.clientRequestId, mutation.check)
+      )
+        throw new Error(
+          "수치 대조의 저장 기록을 확인하지 못했습니다. 원래 수치·산식과 요청 번호를 유지했습니다.",
         );
       accept(next);
       toast.success("저장했습니다.");
