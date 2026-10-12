@@ -454,7 +454,18 @@ export function NumericObservationEditor({
           id={`${prefix}-reference-kind`}
           className={selectClass}
           value={ref?.kind ?? ""}
-          onChange={(event) =>
+          onChange={(event) => {
+            if (
+              ref &&
+              (ref.quote ||
+                (ref.kind === "source"
+                  ? ref.sourceId || ref.locator
+                  : ref.planId || ref.sectionKey)) &&
+              !window.confirm(
+                "선택한 근거 연결과 작성한 인용·쪽/위치를 비우고 연결 종류를 변경할까요?",
+              )
+            )
+              return;
             onChange({
               ...value,
               reference:
@@ -463,8 +474,8 @@ export function NumericObservationEditor({
                   : event.target.value === "plan"
                     ? { kind: "plan", planId: "", sectionKey: "", quote: "" }
                     : null,
-            })
-          }
+            });
+          }}
         >
           <option value="">미연결 · 비교 불가로 보관</option>
           <option value="source">등록 자료 본문</option>
@@ -480,6 +491,11 @@ export function NumericObservationEditor({
               className={selectClass}
               value={ref.sourceId}
               onChange={(event) => {
+                if (
+                  (ref.quote || ref.locator) &&
+                  !window.confirm("작성한 인용·쪽/위치를 비우고 연결 자료를 변경할까요?")
+                )
+                  return;
                 const selected = company.sources.find((item) => item.id === event.target.value);
                 onChange({
                   ...value,
@@ -528,7 +544,12 @@ export function NumericObservationEditor({
               id={`${prefix}-plan`}
               className={selectClass}
               value={ref.planId}
-              onChange={(event) =>
+              onChange={(event) => {
+                if (
+                  (ref.sectionKey || ref.quote) &&
+                  !window.confirm("선택한 원고 항목·인용을 비우고 원고 버전을 변경할까요?")
+                )
+                  return;
                 onChange({
                   ...value,
                   reference: {
@@ -537,8 +558,8 @@ export function NumericObservationEditor({
                     sectionKey: "",
                     quote: "",
                   },
-                })
-              }
+                });
+              }}
             >
               <option value="">원고 직접 선택</option>
               {[...company.plans].reverse().map((item, i) => (
@@ -558,12 +579,17 @@ export function NumericObservationEditor({
               id={`${prefix}-section`}
               className={selectClass}
               value={ref.sectionKey}
-              onChange={(event) =>
+              onChange={(event) => {
+                if (
+                  ref.quote &&
+                  !window.confirm("작성한 원고 인용을 비우고 원고 항목을 변경할까요?")
+                )
+                  return;
                 onChange({
                   ...value,
                   reference: { ...ref, sectionKey: event.target.value, quote: "" },
-                })
-              }
+                });
+              }}
             >
               <option value="">고유 항목 직접 선택</option>
               {sections.map((section) => (
