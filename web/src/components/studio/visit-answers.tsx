@@ -310,6 +310,7 @@ function VisitAnswersEditor({
   const inFlight = useRef(false);
   const mounted = useRef(true);
   const nonce = useRef<{ input: string; id: string } | null>(null);
+  const initialEditor = useRef("");
   useEffect(() => {
     mounted.current = true;
     return () => {
@@ -328,6 +329,12 @@ function VisitAnswersEditor({
     (record) =>
       record.planId === selectedPlanId && String(record.questionIndex) === selectedQuestion,
   );
+  function openEditor(input: VisitAnswerInput) {
+    initialEditor.current = JSON.stringify(input);
+    setEditor(input);
+    setError("");
+    nonce.current = null;
+  }
   function edit(next: VisitAnswerInput) {
     if (!editor || inFlight.current || suggestionBusy || blockedReason) return;
     setEditor(resetVisitReviewAfterEdit(editor, next));
@@ -433,9 +440,7 @@ function VisitAnswersEditor({
             disabled={!selectedPlan || selectedQuestion === "" || exists}
             onClick={() => {
               if (selectedPlan && selectedQuestion !== "") {
-                setEditor(visitAnswerInputFor(selectedPlan, Number(selectedQuestion)));
-                setError("");
-                nonce.current = null;
+                openEditor(visitAnswerInputFor(selectedPlan, Number(selectedQuestion)));
               }
             }}
           >
@@ -661,6 +666,11 @@ function VisitAnswersEditor({
               variant="outline"
               onClick={() => {
                 if (!inFlight.current) {
+                  if (
+                    JSON.stringify(editor) !== initialEditor.current &&
+                    !window.confirm("저장하지 않은 실사 모의 답변과 인용·검토 입력을 취소할까요?")
+                  )
+                    return;
                   setEditor(null);
                   setError("");
                   nonce.current = null;
@@ -691,9 +701,7 @@ function VisitAnswersEditor({
                 disabled={blocked || atLimit || editor !== null || !plan}
                 onClick={() => {
                   if (plan) {
-                    setEditor(visitAnswerInputFor(plan, record.questionIndex, record));
-                    nonce.current = null;
-                    setError("");
+                    openEditor(visitAnswerInputFor(plan, record.questionIndex, record));
                   }
                 }}
               >
