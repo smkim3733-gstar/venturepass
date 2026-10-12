@@ -1282,7 +1282,7 @@ export function GuidedWorkspace({
                         (editingOverview
                           ? overviewTitle !== editingPlan.content.title ||
                             overviewSummary !== editingPlan.content.summary
-                          : sectionText !== section?.content) &&
+                          : sectionText !== section?.content || sectionVerified) &&
                         !window.confirm("수정 중인 내용을 취소할까요?")
                       )
                         return;
