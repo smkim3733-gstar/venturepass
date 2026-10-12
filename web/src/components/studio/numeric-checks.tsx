@@ -281,8 +281,10 @@ export function NumericObservationEditor({
 }) {
   const prefix = `numeric-observation-${value.id}`,
     ref = value.reference;
-  const source =
-    ref?.kind === "source" ? company.sources.find((item) => item.id === ref.sourceId) : undefined;
+  const sources =
+    ref?.kind === "source" ? company.sources.filter((item) => item.id === ref.sourceId) : [];
+  const source = sources.length === 1 ? sources[0] : undefined;
+  const sourceUnavailable = ref?.kind === "source" && !!ref.sourceId && !source;
   const plans = ref?.kind === "plan" ? company.plans.filter((item) => item.id === ref.planId) : [];
   const plan = plans.length === 1 ? plans[0] : undefined;
   const sections =
@@ -496,7 +498,13 @@ export function NumericObservationEditor({
                   !window.confirm("작성한 인용·쪽/위치를 비우고 연결 자료를 변경할까요?")
                 )
                   return;
-                const selected = company.sources.find((item) => item.id === event.target.value);
+                const matches = company.sources.filter((item) => item.id === event.target.value);
+                if (
+                  event.target.value &&
+                  (matches.length !== 1 || matches[0].extraction === "pending")
+                )
+                  return;
+                const selected = matches[0];
                 onChange({
                   ...value,
                   reference: {
@@ -510,14 +518,29 @@ export function NumericObservationEditor({
               }}
             >
               <option value="">자료 직접 선택</option>
-              {company.sources.map((item) => (
-                <option key={item.id} value={item.id} disabled={item.extraction === "pending"}>
-                  {item.name}
-                  {item.extraction === "pending" ? " · 본문 미추출 (수치 연결 불가)" : ""}
-                </option>
-              ))}
+              {company.sources.map((item, sourceIndex) => {
+                const ambiguous =
+                  company.sources.filter((entry) => entry.id === item.id).length !== 1;
+                return (
+                  <option
+                    key={item.id + "-" + sourceIndex}
+                    value={item.id}
+                    disabled={ambiguous || item.extraction === "pending"}
+                  >
+                    {item.name}
+                    {ambiguous ? " · 자료 ID 중복 (수치 연결 불가)" : ""}
+                    {item.extraction === "pending" ? " · 본문 미추출 (수치 연결 불가)" : ""}
+                  </option>
+                );
+              })}
             </select>
           </div>
+          {sourceUnavailable && (
+            <p role="alert" className="text-sm text-destructive">
+              연결한 자료를 하나로 확인할 수 없어 본문을 표시하지 않습니다. 자료 연결을 다시 확인해
+              주세요.
+            </p>
+          )}
           {source && source.updatedAt !== ref.sourceUpdatedAt && (
             <Notice tone="warning">
               자료가 변경되었습니다. 인용을 다시 대조한 뒤 자료를 명시적으로 다시 선택해 주세요.
@@ -605,18 +628,20 @@ export function NumericObservationEditor({
         <>
           <details>
             <summary className="cursor-pointer text-xs underline">선택한 등록 원문 보기</summary>
-            <NumericReferenceText
-              key={JSON.stringify([
-                company.id,
-                company.revision,
-                ref.kind,
-                ref.kind === "source" ? ref.sourceId : ref.planId,
-                ref.kind === "source" ? ref.sourceUpdatedAt : ref.sectionKey,
-              ])}
-              id={prefix + "-registered-text"}
-              text={originalText}
-              index={index}
-            />
+            {!sourceUnavailable && (
+              <NumericReferenceText
+                key={JSON.stringify([
+                  company.id,
+                  company.revision,
+                  ref.kind,
+                  ref.kind === "source" ? ref.sourceId : ref.planId,
+                  ref.kind === "source" ? ref.sourceUpdatedAt : ref.sectionKey,
+                ])}
+                id={prefix + "-registered-text"}
+                text={originalText}
+                index={index}
+              />
+            )}
           </details>
           <Field
             id={`${prefix}-quote`}
