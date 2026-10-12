@@ -58,6 +58,7 @@ import { diagnosisAnswersSaveAcknowledged } from "./diagnosis-answers-response";
 import { diagnosisTasksSaveAcknowledged } from "./diagnosis-tasks-response";
 import { certificateTaskSaveAcknowledged } from "./certificate-task-response";
 import { companyContactsSaveAcknowledged } from "./company-contacts";
+import { responsePreparationSaveAcknowledged } from "./response-preparation";
 import { PreparationPanel } from "./preparation-panel";
 import { PreparationAutomationPanel } from "./preparation-automation-panel";
 import { AnalysisPanel } from "./analysis-panel";
@@ -476,6 +477,18 @@ export function StudioWorkspace() {
       )
         throw new Error(
           "연락처·담당 역할의 저장 기록을 확인하지 못했습니다. 원래 입력과 이전 연락 메모를 유지했습니다.",
+        );
+      if (
+        mutation.action === "append-response-preparation" &&
+        !responsePreparationSaveAcknowledged(
+          next,
+          company.id,
+          mutation.clientRequestId,
+          mutation.preparation,
+        )
+      )
+        throw new Error(
+          "보완 답변 준비의 저장 기록을 확인하지 못했습니다. 원래 입력과 요청 번호를 유지했습니다.",
         );
       accept(next);
       toast.success("저장했습니다.");
