@@ -728,6 +728,21 @@ export function SourcesPanel({
                     </Button>
                   </div>
                 </div>
+                {source.extraction !== "pending" && source.text.trim() && (
+                  <details className="mt-3 border-t pt-3">
+                    <summary className="cursor-pointer text-sm font-medium text-primary">
+                      저장된 본문 전체 보기
+                    </summary>
+                    <div
+                      role="region"
+                      aria-label={`${source.name} 저장된 본문`}
+                      tabIndex={0}
+                      className="mt-3 max-h-80 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-muted/30 p-3 text-sm leading-7 focus-visible:outline-2 focus-visible:outline-primary"
+                    >
+                      {source.text}
+                    </div>
+                  </details>
+                )}
                 {source.warnings.length > 0 && (
                   <div className="mt-3">
                     <Notice tone="warning">
