@@ -809,7 +809,7 @@ export function StudioWorkspace() {
   }
   const filteredCases = selectCaseSummaries(cases, {
     query: filter,
-    filter: attentionFilter,
+    filter: guided ? "all" : attentionFilter,
     sort: attentionSort,
     today,
   });
@@ -923,7 +923,7 @@ export function StudioWorkspace() {
                 </Button>
               )}
             </section>
-            {cases.length > 1 && (
+            {(cases.length > 1 || Boolean(filter)) && (
               <Input
                 aria-label="기업명 검색"
                 className="h-11 bg-white"
