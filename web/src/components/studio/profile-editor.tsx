@@ -55,6 +55,11 @@ export function ProfileEditor({ company, mutate, setDirty }: PanelProps) {
   const change = (key: keyof CompanyProfile, value: string) => {
     if (!contactsDirty) setProfile((current) => ({ ...current, [key]: value }));
   };
+  function cancel() {
+    if (!profileDirty || contactsDirty) return;
+    if (!window.confirm("기업정보 수정을 취소하고 화면에 불러온 내용으로 되돌릴까요?")) return;
+    setProfile(company.profile);
+  }
   async function save() {
     if (contactsDirty) return;
     const result = companyProfileSchema.safeParse(profile);
@@ -70,10 +75,15 @@ export function ProfileEditor({ company, mutate, setDirty }: PanelProps) {
         title="우리 기업의 출발점"
         description="기술과 사업의 현재 상황을 알려 주세요. 입력한 내용과 자료함의 증빙을 함께 분석합니다."
         actions={
-          <Button className="h-10" disabled={!profileDirty || contactsDirty} onClick={save}>
-            <Save />
-            기업정보 저장
-          </Button>
+          <div className="flex flex-wrap gap-2">
+            <Button variant="outline" disabled={!profileDirty || contactsDirty} onClick={cancel}>
+              기업정보 수정 취소
+            </Button>
+            <Button className="h-10" disabled={!profileDirty || contactsDirty} onClick={save}>
+              <Save />
+              기업정보 저장
+            </Button>
+          </div>
         }
       />
       <fieldset disabled={contactsDirty} className="min-w-0">
@@ -195,7 +205,10 @@ export function ProfileEditor({ company, mutate, setDirty }: PanelProps) {
             </div>
           ))}
         </div>
-        <div className="mt-6 flex justify-end">
+        <div className="mt-6 flex flex-wrap justify-end gap-2">
+          <Button variant="outline" disabled={!profileDirty || contactsDirty} onClick={cancel}>
+            기업정보 수정 취소
+          </Button>
           <Button disabled={!profileDirty || contactsDirty} onClick={save}>
             <Save />
             기업정보 저장
