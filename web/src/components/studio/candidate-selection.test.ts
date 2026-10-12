@@ -255,7 +255,7 @@ describe("choice reason editor and historical presentation", () => {
     expect(html).toContain("시각 확인 필요");
     expect(html).not.toContain("Invalid Date");
   });
-  it("exposes limit without trimming or losing historical records", () => {
+  it("exposes limit and more history without changing stored records", () => {
     const records = Array.from({ length: 100 }, (_, index) =>
       selection({ id: `00000000-0000-4000-8000-${String(index).padStart(12, "0")}` }),
     );
@@ -265,7 +265,12 @@ describe("choice reason editor and historical presentation", () => {
       }),
     );
     expect(html).toContain("선택 기록 100개 한도");
-    expect((html.match(/<article/g) ?? []).length).toBe(100);
+    expect((html.match(/<article/g) ?? []).length).toBe(5);
+    expect(html).toContain("표시 기록 5 / 전체 100개");
+    expect(html).toContain("이전 기록 더 보기 (95개 남음)");
+    expect(records).toHaveLength(100);
+    expect(records[0].id).toBe("00000000-0000-4000-8000-000000000000");
+    expect(records[99].id).toBe("00000000-0000-4000-8000-000000000099");
   });
   it("keeps the selection history visible when no current analysis exists", () => {
     const mutate = vi.fn();

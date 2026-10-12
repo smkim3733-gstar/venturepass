@@ -315,12 +315,19 @@ function SelectionRecordView({
 export function CandidateSelectionHistory({ company }: { company: StudioCase }) {
   const records = company.candidateSelections ?? [];
   const current = currentCandidateSelection(company);
+  const [visibleRecords, setVisibleRecords] = useState(5);
+  const shownCount = Math.min(visibleRecords, records.length);
   return (
     <section
       aria-label="아이템 선택 이유·변경 이력"
       className="mt-6 space-y-4 rounded-2xl border p-5"
     >
       <h3 className="font-bold">아이템 선택 이유·변경 이력</h3>
+      {records.length > 0 && (
+        <p role="status" className="text-sm text-muted-foreground">
+          표시 기록 {shownCount} / 전체 {records.length}개
+        </p>
+      )}
       {records.length >= candidateSelectionLimits.records && (
         <Notice tone="warning">
           선택 기록 {candidateSelectionLimits.records}개 한도입니다. 기존 기록을 보존하며 새
@@ -335,16 +342,30 @@ export function CandidateSelectionHistory({ company }: { company: StudioCase }) 
       )}
       {records.length ? (
         <div className="space-y-3">
-          {[...records].reverse().map((record) => (
-            <SelectionRecordView
-              key={record.id}
-              record={record}
-              current={current?.id === record.id}
-            />
-          ))}
+          {[...records]
+            .reverse()
+            .slice(0, visibleRecords)
+            .map((record) => (
+              <SelectionRecordView
+                key={record.id}
+                record={record}
+                current={current?.id === record.id}
+              />
+            ))}
         </div>
       ) : (
         <p className="text-sm text-muted-foreground">아직 저장한 선택 이유가 없습니다.</p>
+      )}
+      {records.length > 5 && (
+        <Button
+          type="button"
+          variant="outline"
+          onClick={() => setVisibleRecords((count) => (count >= records.length ? 5 : count + 5))}
+        >
+          {shownCount >= records.length
+            ? "최근 기록만 보기"
+            : `이전 기록 더 보기 (${records.length - shownCount}개 남음)`}
+        </Button>
       )}
       <p className="text-xs leading-6 text-muted-foreground">
         재분석·자료 변경 후에도 당시 선택과 이유를 보존합니다. 새 분석의 후보는 다시 확인하며, 이
