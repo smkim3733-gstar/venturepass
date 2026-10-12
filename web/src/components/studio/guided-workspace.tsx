@@ -1366,6 +1366,7 @@ export function GuidedWorkspace({
                       />
                       <textarea
                         id={`guided-answer-${index}`}
+                        aria-describedby={`guided-answer-${index}-length`}
                         readOnly={locked}
                         className={styles.textarea}
                         maxLength={5000}
@@ -1378,6 +1379,12 @@ export function GuidedWorkspace({
                           }))
                         }
                       />
+                      <p id={`guided-answer-${index}-length`} className={styles.helper}>
+                        답변 {(questionAnswers[question.id] ?? "").length.toLocaleString("ko-KR")} /
+                        5,000자
+                        {(questionAnswers[question.id] ?? "").length >= 5000 &&
+                          " · 입력 한도에 도달했습니다. 내용을 줄이면 더 입력할 수 있습니다."}
+                      </p>
                     </div>
                   ))}
                 </section>
