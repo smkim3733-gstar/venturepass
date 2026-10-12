@@ -283,7 +283,7 @@ export function SourcesPanel({
   async function uploadFile() {
     if (otherEditingBlocked()) return;
     if (!file) return;
-    if (formOpen && (name || text)) {
+    if (formOpen && (editing || name || text || kind !== "consultation")) {
       toast.error("텍스트 자료를 먼저 저장하거나 취소해 주세요.");
       return;
     }
