@@ -64,6 +64,7 @@ import { appealPreparationSaveAcknowledged } from "./appeal-preparation-response
 import { numericCheckSaveAcknowledged } from "./numeric-checks";
 import { claimReviewSaveAcknowledged } from "./claim-reviews";
 import { applicationProcedureSaveAcknowledged } from "./application-procedures-ui";
+import { criteriaSaveAcknowledged } from "./criteria-versions-ui";
 import { PreparationPanel } from "./preparation-panel";
 import { PreparationAutomationPanel } from "./preparation-automation-panel";
 import { AnalysisPanel } from "./analysis-panel";
@@ -539,6 +540,14 @@ export function StudioWorkspace() {
       )
         throw new Error(
           "절차·안내기한의 저장 기록을 확인하지 못했습니다. 원래 회차·기한·근거와 요청 번호를 유지했습니다.",
+        );
+      if (
+        (mutation.action === "append-criteria-version" ||
+          mutation.action === "pin-application-criteria") &&
+        !(await criteriaSaveAcknowledged(next, company, mutation.clientRequestId, mutation))
+      )
+        throw new Error(
+          "기준·회차 연결의 저장 기록을 확인하지 못했습니다. 원래 조건·선택과 요청 번호를 유지했습니다.",
         );
       accept(next);
       toast.success("저장했습니다.");
