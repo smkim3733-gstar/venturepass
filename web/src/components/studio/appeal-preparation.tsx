@@ -327,13 +327,18 @@ export function AppealReasonEditor({
           id={`${prefix}-field`}
           className={selectClass}
           value={reason.noticeField}
-          onChange={(event) =>
+          onChange={(event) => {
+            if (
+              reason.noticeQuote &&
+              !window.confirm("작성한 통보 사유 인용을 비우고 통보 항목을 변경할까요?")
+            )
+              return;
             onChange({
               ...reason,
               noticeField: event.target.value as Reason["noticeField"],
               noticeQuote: "",
-            })
-          }
+            });
+          }}
         >
           <option value="reasons">심사 결과의 사유</option>
           <option value="body">통보 본문</option>
@@ -361,14 +366,19 @@ export function AppealReasonEditor({
           id={`${prefix}-plan`}
           className={selectClass}
           value={reason.planClaim?.planId ?? ""}
-          onChange={(event) =>
+          onChange={(event) => {
+            if (
+              (reason.planClaim?.sectionKey || reason.planClaim?.quote) &&
+              !window.confirm("선택한 원고 항목·인용을 비우고 원고 버전을 변경할까요?")
+            )
+              return;
             onChange({
               ...reason,
               planClaim: event.target.value
                 ? { planId: event.target.value, sectionKey: "", quote: "" }
                 : null,
-            })
-          }
+            });
+          }}
         >
           <option value="">원고 연결 없음</option>
           {[...company.plans].reverse().map((plan) => (
@@ -385,12 +395,17 @@ export function AppealReasonEditor({
             id={`${prefix}-section`}
             className={selectClass}
             value={reason.planClaim.sectionKey}
-            onChange={(event) =>
+            onChange={(event) => {
+              if (
+                reason.planClaim?.quote &&
+                !window.confirm("작성한 원고 인용을 비우고 원고 항목을 변경할까요?")
+              )
+                return;
               onChange({
                 ...reason,
                 planClaim: { ...reason.planClaim!, sectionKey: event.target.value, quote: "" },
-              })
-            }
+              });
+            }}
           >
             <option value="">항목 선택</option>
             {selectedPlan?.content.sections.map((item, i) => (
@@ -444,7 +459,26 @@ export function AppealReasonEditor({
         max={10000}
         onChange={(draft) => onChange({ ...reason, draft })}
       />
-      <Button type="button" variant="outline" size="sm" onClick={onRemove}>
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        onClick={() => {
+          if (
+            (reason.noticeField !== "reasons" ||
+              reason.noticeQuote ||
+              reason.claim ||
+              reason.planClaim ||
+              reason.gap ||
+              reason.evidence.length ||
+              reason.additionalEvidence.length ||
+              reason.draft) &&
+            !window.confirm("작성한 인용·근거 연결과 소명 초안을 포함한 이 사유를 제거할까요?")
+          )
+            return;
+          onRemove();
+        }}
+      >
         이 사유 제거
       </Button>
     </fieldset>
