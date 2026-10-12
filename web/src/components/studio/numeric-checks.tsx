@@ -763,7 +763,8 @@ function NumericChecksEditor({ company, mutate, blockedReason = "", onDirtyChang
     [error, setError] = useState("");
   const inFlight = useRef(false),
     mounted = useRef(true),
-    nonce = useRef<{ input: string; id: string } | null>(null);
+    nonce = useRef<{ input: string; id: string } | null>(null),
+    initialEditor = useRef("");
   useEffect(() => {
     mounted.current = true;
     return () => {
@@ -838,7 +839,9 @@ function NumericChecksEditor({ company, mutate, blockedReason = "", onDirtyChang
           variant="outline"
           disabled={blocked || atLimit}
           onClick={() => {
-            setEditor(numericInputFor());
+            const next = numericInputFor();
+            initialEditor.current = JSON.stringify(next);
+            setEditor(next);
             nonce.current = null;
             setError("");
           }}
@@ -1197,6 +1200,11 @@ function NumericChecksEditor({ company, mutate, blockedReason = "", onDirtyChang
               variant="outline"
               onClick={() => {
                 if (!inFlight.current) {
+                  if (
+                    JSON.stringify(editor) !== initialEditor.current &&
+                    !window.confirm("저장하지 않은 수치·인용·비교쌍·산식과 판단 입력을 취소할까요?")
+                  )
+                    return;
                   setEditor(null);
                   nonce.current = null;
                   setError("");
@@ -1220,7 +1228,9 @@ function NumericChecksEditor({ company, mutate, blockedReason = "", onDirtyChang
                 variant="outline"
                 disabled={blocked || atLimit || editor !== null}
                 onClick={() => {
-                  setEditor(numericInputFor(record));
+                  const next = numericInputFor(record);
+                  initialEditor.current = JSON.stringify(next);
+                  setEditor(next);
                   nonce.current = null;
                   setError("");
                 }}
