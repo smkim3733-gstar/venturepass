@@ -38,6 +38,7 @@ import {
   type PanelProps,
 } from "./shared";
 import { OcrReviewPanel, supportsLocalOcr, validateLocalOcrPreview } from "./ocr-review-panel";
+import { manualSourceSaveAcknowledged } from "./manual-source-response";
 
 type SourceKind = SourceDocument["kind"];
 export type SourceExtractionMode = "extract" | "original-only";
@@ -119,6 +120,8 @@ export function SourcesPanel({
   );
   const [formOpen, setFormOpen] = useState(false);
   const [editing, setEditing] = useState<SourceDocument | null>(null);
+  const draftIdentity = useRef<{ id: string; createdAt: string } | null>(null);
+  const sourceRequest = useRef<SourceDocument | null>(null);
   const [name, setName] = useState("");
   const [kind, setKind] = useState<SourceKind>("consultation");
   const [text, setText] = useState("");
@@ -187,6 +190,11 @@ export function SourcesPanel({
   function openForm(source: SourceDocument | null) {
     if (otherEditingBlocked()) return;
     if (dirty && !window.confirm("저장하지 않은 자료 편집을 취소할까요?")) return;
+    draftIdentity.current = {
+      id: source?.id ?? crypto.randomUUID(),
+      createdAt: source?.createdAt ?? new Date().toISOString(),
+    };
+    sourceRequest.current = null;
     setEditing(source);
     setName(source?.name || "");
     setKind(source?.kind || "consultation");
@@ -205,23 +213,39 @@ export function SourcesPanel({
       toast.error("자료 제목과 내용을 입력해 주세요.");
       return;
     }
+    const identity = draftIdentity.current;
+    if (!identity) return;
+    const previousRequest = sourceRequest.current;
     const now = new Date().toISOString();
-    const source: SourceDocument = {
-      id: editing?.id || crypto.randomUUID(),
-      name: name.trim(),
-      kind,
-      text,
-      originalName: editing?.originalName || null,
-      mimeType: editing?.mimeType || null,
-      extraction: "manual",
-      warnings: editing?.warnings || [],
-      createdAt: editing?.createdAt || now,
-      updatedAt: now,
-    };
+    const source: SourceDocument =
+      previousRequest &&
+      previousRequest.name === name.trim() &&
+      previousRequest.kind === kind &&
+      previousRequest.text === text
+        ? previousRequest
+        : {
+            id: identity.id,
+            name: name.trim(),
+            kind,
+            text,
+            originalName: editing?.originalName || null,
+            mimeType: editing?.mimeType || null,
+            extraction: "manual",
+            warnings: editing?.warnings || [],
+            createdAt: identity.createdAt,
+            updatedAt: now,
+          };
+    sourceRequest.current = source;
     inFlight.current = true;
     setMutationBusy(true);
     try {
-      await mutate({ action: "source", source });
+      const saved = await mutate({ action: "source", source });
+      if (mounted.current && manualSourceSaveAcknowledged(saved, company, source)) {
+        setFormOpen(false);
+        setEditing(null);
+        sourceRequest.current = null;
+        draftIdentity.current = null;
+      }
     } finally {
       inFlight.current = false;
       if (mounted.current) setMutationBusy(false);

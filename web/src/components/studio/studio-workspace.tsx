@@ -87,6 +87,7 @@ import { VentureinPanel } from "./venturein-panel";
 import { GuidedWorkspace } from "./guided-workspace";
 import { studioMutationResponse } from "./studio-mutation-response";
 import { localOcrSaveAcknowledged } from "./local-ocr-response";
+import { manualSourceSaveAcknowledged } from "./manual-source-response";
 import type { GuidedDestination } from "@/lib/studio-guided-flow";
 import {
   validateGuidedWorkflowTarget,
@@ -363,6 +364,13 @@ export function StudioWorkspace() {
         ...jsonBody({ ...mutation, revision: company.revision }),
       });
       const next = studioMutationResponse(raw, company);
+      if (
+        mutation.action === "source" &&
+        !manualSourceSaveAcknowledged(next, company, mutation.source)
+      )
+        throw new Error(
+          "자료의 저장 내용을 확인하지 못했습니다. 원래 제목·분류·본문과 자료 식별자를 유지했습니다.",
+        );
       if (
         mutation.action === "review-local-ocr" &&
         !(await localOcrSaveAcknowledged(next, company, {
