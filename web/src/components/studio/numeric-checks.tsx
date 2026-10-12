@@ -282,13 +282,18 @@ export function NumericObservationEditor({
             id={`${prefix}-unit`}
             className={selectClass}
             value={value.unit}
-            onChange={(event) =>
+            onChange={(event) => {
+              if (
+                value.customUnit &&
+                !window.confirm("작성한 기타 단위명을 비우고 단위를 변경할까요?")
+              )
+                return;
               onChange({
                 ...value,
                 unit: event.target.value as NumericObservation["unit"],
                 customUnit: "",
-              })
-            }
+              });
+            }}
           >
             {Object.entries(numericUnitLabels).map(([key, label]) => (
               <option key={key} value={key}>
@@ -336,7 +341,12 @@ export function NumericObservationEditor({
             id={`${prefix}-period`}
             className={selectClass}
             value={value.period.kind}
-            onChange={(event) =>
+            onChange={(event) => {
+              if (
+                (value.period.start || value.period.end) &&
+                !window.confirm("작성한 날짜를 비우고 기준일·기간 구분을 변경할까요?")
+              )
+                return;
               onChange({
                 ...value,
                 period: {
@@ -344,8 +354,8 @@ export function NumericObservationEditor({
                   start: "",
                   end: "",
                 },
-              })
-            }
+              });
+            }}
           >
             {Object.entries(periodLabels).map(([key, label]) => (
               <option key={key} value={key}>
