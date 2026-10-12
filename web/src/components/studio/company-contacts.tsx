@@ -16,7 +16,7 @@ import {
   type CompanyContactsInput,
   type CompanyContactsRecord,
 } from "@/lib/studio-company-contacts-types";
-import { Notice, formatDate, useDirty, type PanelProps } from "./shared";
+import { Notice, formatDate, selectClass, useDirty, type PanelProps } from "./shared";
 
 export function companyContactsEditorInput(
   record: CompanyContactsRecord | null,
@@ -98,19 +98,100 @@ export function CompanyContactsRecordView({ record }: { record: CompanyContactsR
       <p className="text-xs text-muted-foreground">
         {formatDate(record.recordedAt)} · 담당자 직접 기록 · 연락 가능 여부 미확인
       </p>
-      <dl className="grid gap-4 text-sm sm:grid-cols-2">
+      <dl className="grid min-w-0 gap-4 text-sm sm:grid-cols-2">
         {contactKeys.map((key) => (
-          <div key={key} className={key === "note" ? "sm:col-span-2" : ""}>
+          <div key={key} className={key === "note" ? "min-w-0 sm:col-span-2" : "min-w-0"}>
             <dt className="mb-1 text-xs font-semibold text-muted-foreground">
               {companyContactsLabels[key]}
             </dt>
-            <dd className="whitespace-pre-wrap break-words leading-6">
+            <dd className="whitespace-pre-wrap leading-6 [overflow-wrap:anywhere]">
               {record.contacts[key] || "미확인"}
             </dd>
           </div>
         ))}
       </dl>
     </article>
+  );
+}
+
+function CompanyContactsComparison({ records }: { records: CompanyContactsRecord[] }) {
+  const [selectedId, setSelectedId] = useState("");
+  const prefix = useId();
+  const latest = records.at(-1);
+  if (!latest || records.length < 2) return null;
+  const matches = records.filter((record) => record.id === selectedId);
+  const previous = matches.length === 1 && matches[0] !== latest ? matches[0] : null;
+  const changed = previous
+    ? contactKeys.filter((key) => previous.contacts[key] !== latest.contacts[key])
+    : [];
+  return (
+    <section
+      aria-label="연락 메모 변경 비교"
+      className="mt-3 min-w-0 space-y-3 rounded-xl border p-4"
+    >
+      <h4 className="text-sm font-semibold">저장한 연락 메모 비교</h4>
+      <p id={prefix + "-help"} className="text-xs leading-6 text-muted-foreground">
+        과거 버전을 직접 선택하면 현재 화면의 마지막 저장 버전과 다른 입력만 표시합니다. 편집 중인
+        입력은 포함하지 않습니다.
+      </p>
+      <Label htmlFor={prefix + "-version"}>비교할 과거 연락 메모</Label>
+      <select
+        id={prefix + "-version"}
+        className={selectClass}
+        value={selectedId}
+        aria-describedby={prefix + "-help"}
+        onChange={(event) => setSelectedId(event.target.value)}
+      >
+        <option value="">과거 버전 선택</option>
+        {records
+          .slice(0, -1)
+          .reverse()
+          .map((record, index) => (
+            <option key={record.id + "-" + index} value={record.id}>
+              과거 v{record.version} · {formatDate(record.recordedAt)}
+            </option>
+          ))}
+      </select>
+      {!selectedId ? (
+        <p className="text-sm">비교할 과거 버전을 직접 선택해 주세요.</p>
+      ) : !previous ? (
+        <p role="alert" className="text-sm text-amber-900">
+          선택한 과거 기록을 하나로 확인할 수 없어 비교하지 않았습니다.
+        </p>
+      ) : (
+        <>
+          <p className="text-sm font-medium">
+            v{previous.version} → 마지막 저장 v{latest.version} · 다른 항목 {changed.length} /{" "}
+            {contactKeys.length}개
+          </p>
+          {changed.length === 0 && (
+            <p className="text-sm">{contactKeys.length}개 입력이 모두 같습니다.</p>
+          )}
+          {changed.map((key) => (
+            <article
+              key={key}
+              aria-label={companyContactsLabels[key] + " 변경"}
+              className="min-w-0 space-y-2 rounded-lg bg-muted/30 p-3"
+            >
+              <h5 className="text-sm font-semibold">{companyContactsLabels[key]}</h5>
+              <dl className="grid min-w-0 gap-3 text-sm sm:grid-cols-2">
+                {[
+                  ["과거 v" + previous.version, previous.contacts[key]],
+                  ["마지막 저장 v" + latest.version, latest.contacts[key]],
+                ].map(([label, value]) => (
+                  <div key={label} className="min-w-0">
+                    <dt className="mb-1 text-xs text-muted-foreground">{label}</dt>
+                    <dd className="whitespace-pre-wrap leading-6 [overflow-wrap:anywhere]">
+                      {value === "" ? "기록 없음" : value}
+                    </dd>
+                  </div>
+                ))}
+              </dl>
+            </article>
+          ))}
+        </>
+      )}
+    </section>
   );
 }
 
@@ -123,12 +204,12 @@ export function CompanyContactsFieldsEditor({
 }) {
   const prefix = useId();
   return (
-    <div className="grid gap-4 sm:grid-cols-2">
+    <div className="grid min-w-0 grid-cols-1 gap-4 sm:grid-cols-2">
       {contactKeys.map((key) => {
         const id = `${prefix}-${key}`;
         const maximum = key === "note" ? 2000 : roleKeys.has(key) ? 100 : 500;
         return (
-          <div key={key} className={`space-y-2 ${key === "note" ? "sm:col-span-2" : ""}`}>
+          <div key={key} className={`min-w-0 space-y-2 ${key === "note" ? "sm:col-span-2" : ""}`}>
             <Label htmlFor={id}>{companyContactsLabels[key]} (선택)</Label>
             {roleKeys.has(key) ? (
               <Input
@@ -140,6 +221,7 @@ export function CompanyContactsFieldsEditor({
             ) : (
               <Textarea
                 id={id}
+                className="min-w-0 max-w-full"
                 value={value[key]}
                 maxLength={maximum}
                 onChange={(event) => onChange({ ...value, [key]: event.target.value })}
@@ -267,7 +349,10 @@ function CompanyContactsPanel({ company, mutate, blockedReason = "", onDirtyChan
         </Button>
       )}
       {editor && (
-        <fieldset disabled={blocked} className="space-y-4 rounded-xl border bg-muted/20 p-4">
+        <fieldset
+          disabled={blocked}
+          className="min-w-0 space-y-4 rounded-xl border bg-muted/20 p-4"
+        >
           <legend className="px-2 text-sm font-semibold">
             {latest ? `v${latest.version}의 정정·새 버전` : "첫 연락 메모"}
           </legend>
@@ -330,6 +415,7 @@ function CompanyContactsPanel({ company, mutate, blockedReason = "", onDirtyChan
           <summary className="cursor-pointer text-sm font-semibold">
             과거 연락 메모 {records.length - 1}개 버전
           </summary>
+          <CompanyContactsComparison records={records} />
           <div className="mt-3 space-y-3">
             {records
               .slice(0, -1)
