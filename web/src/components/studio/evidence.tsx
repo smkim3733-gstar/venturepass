@@ -18,7 +18,8 @@ export function EvidenceList({
         </p>
       ) : (
         evidence.map((reference, index) => {
-          const source = company.sources.find((item) => item.id === reference.sourceId);
+          const matches = company.sources.filter((item) => item.id === reference.sourceId);
+          const source = matches.length === 1 ? matches[0] : undefined;
           return (
             <details
               key={`${reference.sourceId}-${index}`}
@@ -30,7 +31,9 @@ export function EvidenceList({
                   <span>
                     {reference.sourceId === "profile"
                       ? "기업정보 · 기업이 제공한 설명"
-                      : source?.name || "원본 자료를 다시 확인해 주세요"}
+                      : matches.length > 1
+                        ? "연결된 자료를 하나로 확인하지 못했습니다."
+                        : source?.name || "원본 자료를 다시 확인해 주세요"}
                     <span className="block font-normal text-muted-foreground">
                       {reference.locator || "연결된 인용문"}
                     </span>

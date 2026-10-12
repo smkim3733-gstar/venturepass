@@ -272,10 +272,19 @@ describe("기본 계획서의 기준·근거 읽기", () => {
 
   it("중복 자료 ID를 확실한 연결로 표시하지 않는다", () => {
     const { company } = fixture();
-    company.sources.push({ ...company.sources[0], text: "다른 합성 원문" });
+    company.sources[0].text = "임의로 선택하면 안 되는 첫 번째 저장 본문";
+    company.sources.push({
+      ...company.sources[0],
+      text: "임의로 선택하면 안 되는 두 번째 저장 본문",
+    });
     const { text } = render(company);
     expect(text).toContain("연결할 자료를 하나로 확인하지 못했어요");
     expect(text).not.toContain("현재 등록본문에 인용문이 있어요");
+    expect(text).toContain("연결된 자료를 하나로 확인하지 못했습니다.");
+    expect(text).toContain(quote);
+    expect(text).not.toContain("저장된 원문 보기");
+    expect(text).not.toContain("임의로 선택하면 안 되는 첫 번째 저장 본문");
+    expect(text).not.toContain("임의로 선택하면 안 되는 두 번째 저장 본문");
   });
 
   it("연결 기준의 출처·기간을 보여도 회사별 적용 확인으로 간주하지 않는다", () => {
