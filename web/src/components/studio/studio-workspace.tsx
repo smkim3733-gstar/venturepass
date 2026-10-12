@@ -99,6 +99,7 @@ import { manualSourceSaveAcknowledged } from "./manual-source-response";
 import { sourceDeleteAcknowledged } from "./source-delete-response";
 import { createdCompanyResponse } from "./company-create-response";
 import { companyDeletionAcknowledged } from "./company-delete-response";
+import { companyListResponse } from "./company-list-response";
 import type { GuidedDestination } from "@/lib/studio-guided-flow";
 import {
   validateGuidedWorkflowTarget,
@@ -161,6 +162,7 @@ export function StudioWorkspace() {
   const editorDirty = panelDirty || intakeDirty || suggestionDirty || guidedDirty;
   const dirty = editorDirty || automationUnsettled || manualPreparationUnsettled || guidedUnsettled;
   const [loading, setLoading] = useState(true);
+  const [listLoaded, setListLoaded] = useState(false);
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
   const [filter, setFilter] = useState("");
@@ -184,10 +186,14 @@ export function StudioWorkspace() {
     try {
       const [available, list] = await Promise.all([
         studioFetch<StudioStatus>("/api/studio/status"),
-        studioFetch<{ cases: CaseSummary[] }>("/api/studio/cases"),
+        studioFetch<unknown>("/api/studio/cases"),
       ]);
+      const summaries = companyListResponse(list);
+      if (!summaries)
+        throw new Error("기업 목록의 형식을 확인하지 못했습니다. 다시 불러와 주세요.");
       setStatus(available);
-      setCases(list.cases);
+      setCases(summaries);
+      setListLoaded(true);
       setError("");
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "작업공간을 불러오지 못했습니다.");
@@ -199,12 +205,16 @@ export function StudioWorkspace() {
     let active = true;
     Promise.all([
       studioFetch<StudioStatus>("/api/studio/status"),
-      studioFetch<{ cases: CaseSummary[] }>("/api/studio/cases"),
+      studioFetch<unknown>("/api/studio/cases"),
     ])
       .then(([available, list]) => {
         if (!active) return;
+        const summaries = companyListResponse(list);
+        if (!summaries)
+          throw new Error("기업 목록의 형식을 확인하지 못했습니다. 다시 불러와 주세요.");
         setStatus(available);
-        setCases(list.cases);
+        setCases(summaries);
+        setListLoaded(true);
       })
       .catch((caught: unknown) => {
         if (active)
@@ -381,8 +391,7 @@ export function StudioWorkspace() {
           { company, planId: mutation.planId },
           { allowHistorical: true },
         );
-      if (mutation.action === "save-plan")
-        manualPlanSaveSnapshot(next, { company, mutation });
+      if (mutation.action === "save-plan") manualPlanSaveSnapshot(next, { company, mutation });
       if (
         mutation.action === "delete-source" &&
         !sourceDeleteAcknowledged(next, company, mutation.sourceId)
@@ -871,7 +880,12 @@ export function StudioWorkspace() {
           <Loading />
         </div>
       ) : !company ? (
-        guided ? (
+        !listLoaded ? (
+          <EmptyPanel
+            title="기업 목록을 확인하지 못했습니다"
+            description="등록된 기업이 없는지 아직 확인되지 않았습니다. 위의 다시 불러오기로 목록을 확인해 주세요."
+          />
+        ) : guided ? (
           <>
             <section className="rounded-xl border border-gold/25 bg-white p-6 sm:p-8">
               <h2 className="text-xl font-semibold leading-relaxed">
