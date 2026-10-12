@@ -176,7 +176,7 @@ export function SourcesPanel({
     (formOpen &&
       (editing
         ? name !== editing.name || kind !== editing.kind || text !== editing.text
-        : !!name || !!text));
+        : !!name || !!text || kind !== "consultation"));
   useDirty(dirty || ocrLocked || mutationBusy, setDirty);
   function otherEditingBlocked() {
     if (blockedReason) {
