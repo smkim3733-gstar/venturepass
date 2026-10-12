@@ -63,6 +63,7 @@ import { visitAnswerSaveAcknowledged } from "./visit-answer-response";
 import { appealPreparationSaveAcknowledged } from "./appeal-preparation-response";
 import { numericCheckSaveAcknowledged } from "./numeric-checks";
 import { claimReviewSaveAcknowledged } from "./claim-reviews";
+import { applicationProcedureSaveAcknowledged } from "./application-procedures-ui";
 import { PreparationPanel } from "./preparation-panel";
 import { PreparationAutomationPanel } from "./preparation-automation-panel";
 import { AnalysisPanel } from "./analysis-panel";
@@ -526,6 +527,18 @@ export function StudioWorkspace() {
       )
         throw new Error(
           "주장·근거 검토의 저장 기록을 확인하지 못했습니다. 원래 인용·판단과 요청 번호를 유지했습니다.",
+        );
+      if (
+        mutation.action === "append-application-procedure" &&
+        !(await applicationProcedureSaveAcknowledged(
+          next,
+          company,
+          mutation.clientRequestId,
+          mutation.procedure,
+        ))
+      )
+        throw new Error(
+          "절차·안내기한의 저장 기록을 확인하지 못했습니다. 원래 회차·기한·근거와 요청 번호를 유지했습니다.",
         );
       accept(next);
       toast.success("저장했습니다.");
