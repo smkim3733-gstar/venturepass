@@ -407,6 +407,8 @@ export function WorkflowPanel({
               variant="outline"
               className="w-fit"
               onClick={() => {
+                if (!window.confirm("저장하지 않은 진행 단계·발생일·변경 근거를 취소할까요?"))
+                  return;
                 setStage(company.stage);
                 setStageNote("");
                 setOccurredOn("");
