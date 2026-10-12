@@ -8,7 +8,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import type { StudioCase } from "@/lib/studio-schema";
+import { sourceKindLabels, type StudioCase } from "@/lib/studio-schema";
 import {
   selectedEvidenceInput,
   selectedEvidenceSnapshot,
@@ -120,7 +120,7 @@ export function GuidedEvidenceSelection({
           </button>
         </div>
         <ul className="max-h-64 overflow-y-auto space-y-2" aria-label="AI 근거 선택 목록">
-          {company.sources.map((source) => (
+          {company.sources.map((source, index) => (
             <li key={source.id} className={styles.file}>
               <label className="flex items-start gap-3 w-full min-w-0">
                 <input
@@ -140,6 +140,10 @@ export function GuidedEvidenceSelection({
                 <span className="min-w-0 break-all">
                   {source.name}
                   <small className="block text-xs text-slate-600">
+                    <span>{sourceKindLabels[source.kind]}</span>
+                    {source.originalName && <span className="block">{source.originalName}</span>}
+                  </small>
+                  <small className="block text-xs text-slate-600">
                     {source.extraction === "pending"
                       ? "판독·본문 채택 전 · 내용 제외"
                       : source.text.trim()
@@ -148,6 +152,25 @@ export function GuidedEvidenceSelection({
                   </small>
                 </span>
               </label>
+              {source.extraction !== "pending" && source.text.trim() && (
+                <details className="w-full min-w-0 text-sm">
+                  <summary className="cursor-pointer text-slate-700">
+                    선택 전 저장 본문 확인
+                  </summary>
+                  <p className="mt-2 text-xs text-slate-600">
+                    펼쳐 읽어도 선택은 바뀌지 않습니다. 현재 저장된 본문이며, 원본 파일이나 사실
+                    여부는 별도로 확인해 주세요.
+                  </p>
+                  <p
+                    role="region"
+                    aria-label={`자료 ${index + 1} 선택 전 저장 본문`}
+                    tabIndex={0}
+                    className="mt-2 max-h-48 overflow-y-auto whitespace-pre-wrap break-words rounded border p-3 text-slate-700"
+                  >
+                    {source.text}
+                  </p>
+                </details>
+              )}
             </li>
           ))}
         </ul>
