@@ -58,7 +58,10 @@ import { diagnosisAnswersSaveAcknowledged } from "./diagnosis-answers-response";
 import { diagnosisTasksSaveAcknowledged } from "./diagnosis-tasks-response";
 import { certificateTaskSaveAcknowledged } from "./certificate-task-response";
 import { companyContactsSaveAcknowledged } from "./company-contacts";
-import { responsePreparationSaveAcknowledged } from "./response-preparation";
+import {
+  responsePreparationSaveAcknowledged,
+  responseRegistrationAcknowledged,
+} from "./response-preparation";
 import { visitAnswerSaveAcknowledged } from "./visit-answer-response";
 import { appealPreparationSaveAcknowledged } from "./appeal-preparation-response";
 import { numericCheckSaveAcknowledged } from "./numeric-checks";
@@ -525,6 +528,26 @@ export function StudioWorkspace() {
         throw new Error(
           "보완 답변 준비의 저장 기록을 확인하지 못했습니다. 원래 입력과 요청 번호를 유지했습니다.",
         );
+      if (mutation.action === "register-prepared-response") {
+        const preparations = company.responsePreparations.filter(
+          (record) =>
+            record.preparationId === mutation.preparationId &&
+            record.id === mutation.preparationVersionId,
+        );
+        if (
+          preparations.length !== 1 ||
+          !responseRegistrationAcknowledged(
+            next,
+            company.id,
+            mutation.clientRequestId,
+            preparations[0],
+            mutation.previousResponseId,
+          )
+        )
+          throw new Error(
+            "준비한 답변의 초안 등록 기록을 확인하지 못했습니다. 원래 준비 버전과 요청 번호를 유지했습니다.",
+          );
+      }
       if (
         mutation.action === "append-visit-answer" &&
         !visitAnswerSaveAcknowledged(next, company, mutation.clientRequestId, mutation.answer)
