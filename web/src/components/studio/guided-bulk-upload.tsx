@@ -190,7 +190,12 @@ function GuidedBulkUploadInner({
   }
   async function upload(files: File[], startNew: boolean) {
     if (inFlight.current || locked || !ready || !files.length) return;
-    const problem = files.map(intakeFileError).find(Boolean);
+    const invalid = files
+      .map((file, index) => ({ file, index, reason: intakeFileError(file) }))
+      .find((item) => item.reason);
+    const problem = invalid
+      ? `선택한 파일 ${invalid.index + 1} (${invalid.file.name}): ${invalid.reason} 이번 선택 파일은 전송하지 않았습니다.`
+      : "";
     if (
       problem ||
       files.length > MAX_COMPANY_SOURCES ||
