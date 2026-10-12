@@ -88,6 +88,7 @@ import { GuidedWorkspace } from "./guided-workspace";
 import { studioMutationResponse } from "./studio-mutation-response";
 import { localOcrSaveAcknowledged } from "./local-ocr-response";
 import { manualSourceSaveAcknowledged } from "./manual-source-response";
+import { sourceDeleteAcknowledged } from "./source-delete-response";
 import type { GuidedDestination } from "@/lib/studio-guided-flow";
 import {
   validateGuidedWorkflowTarget,
@@ -364,6 +365,13 @@ export function StudioWorkspace() {
         ...jsonBody({ ...mutation, revision: company.revision }),
       });
       const next = studioMutationResponse(raw, company);
+      if (
+        mutation.action === "delete-source" &&
+        !sourceDeleteAcknowledged(next, company, mutation.sourceId)
+      )
+        throw new Error(
+          "자료 삭제 결과를 확인하지 못했습니다. 선택한 자료와 나머지 자료 목록을 유지했습니다.",
+        );
       if (
         mutation.action === "source" &&
         !manualSourceSaveAcknowledged(next, company, mutation.source)
