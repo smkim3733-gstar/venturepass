@@ -183,6 +183,7 @@ export function SourcesPanel({
       ))
       ? "기업 또는 자료 버전이 바뀌어 이 초안을 저장할 수 없습니다. 최신 자료에서 다시 준비해 주세요."
       : "";
+  const oversizedFile = Boolean(file && file.size > 12 * 1024 * 1024);
   const invalidOriginalOnlyFile = Boolean(
     originalOnly &&
     file &&
@@ -311,7 +312,7 @@ export function SourcesPanel({
       toast.error("텍스트 자료를 먼저 저장하거나 취소해 주세요.");
       return;
     }
-    if (file.size > 12 * 1024 * 1024) {
+    if (oversizedFile) {
       toast.error("12MB 이하의 파일을 선택해 주세요.");
       return;
     }
@@ -461,6 +462,8 @@ export function SourcesPanel({
           <Input
             ref={fileInput}
             id="source-file"
+            aria-invalid={oversizedFile || undefined}
+            aria-describedby={oversizedFile ? "source-file-size-error" : undefined}
             type="file"
             accept={
               originalOnly
@@ -484,6 +487,15 @@ export function SourcesPanel({
               <X />
               파일 선택 해제
             </Button>
+          )}
+          {oversizedFile && (
+            <p
+              id="source-file-size-error"
+              role="alert"
+              className="mt-2 text-xs leading-6 text-destructive"
+            >
+              파일 크기가 12MB를 초과했습니다. 12MB 이하의 파일을 선택해 주세요.
+            </p>
           )}
           {invalidOriginalOnlyFile && (
             <p role="alert" className="mt-2 text-xs leading-6 text-destructive">
@@ -511,6 +523,7 @@ export function SourcesPanel({
               className="h-10"
               disabled={
                 !file ||
+                oversizedFile ||
                 invalidOriginalOnlyFile ||
                 occupiedSourceSlots(company) >= MAX_COMPANY_SOURCES
               }
