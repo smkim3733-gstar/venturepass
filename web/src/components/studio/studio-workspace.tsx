@@ -703,12 +703,7 @@ export function StudioWorkspace() {
   }
   function closeCreate(open: boolean) {
     if (busy) return;
-    if (
-      !open &&
-      createDirty &&
-      !window.confirm("입력한 새 기업 정보를 취소할까요?")
-    )
-      return;
+    if (!open && createDirty && !window.confirm("입력한 새 기업 정보를 취소할까요?")) return;
     setCreating(open);
   }
   async function createCase(event: React.FormEvent) {
@@ -1352,6 +1347,8 @@ export function StudioWorkspace() {
                       {...panelProps}
                       generate={() => beginGeneration("analyze")}
                       goToPlan={() => switchTab("plan")}
+                      goToProfile={() => switchTab("profile")}
+                      goToSources={() => switchTab("sources")}
                     />
                   )}
                   {panelProps && tab === "plan" && (

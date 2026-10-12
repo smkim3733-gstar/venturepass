@@ -28,7 +28,14 @@ export function AnalysisPanel({
   setDirty,
   generate,
   goToPlan,
-}: PanelProps & { generate: () => void; goToPlan: () => void }) {
+  goToProfile,
+  goToSources,
+}: PanelProps & {
+  generate: () => void;
+  goToPlan: () => void;
+  goToProfile: () => void;
+  goToSources: () => void;
+}) {
   const analysis = company.analysis;
   const [editingCandidateId, setEditingCandidateId] = useState<string | null>(null);
   const editing = editingCandidateId !== null;
@@ -86,6 +93,21 @@ export function AnalysisPanel({
                 ))}
               </ul>
             </Notice>
+          )}
+          {analysis.candidates.length === 0 && (
+            <EmptyPanel
+              title="이번 분석에는 신청 아이템 후보가 없습니다"
+              description="후보가 없다는 결과만으로 신청 가능 여부를 판단할 수는 없습니다. 기술·제품과 고객 설명을 보완하거나 자료를 추가한 뒤, ‘자료 다시 분석’을 눌러 주세요."
+            >
+              <div className="flex flex-wrap justify-center gap-2">
+                <Button variant="outline" disabled={editing} onClick={goToProfile}>
+                  기업정보 보완
+                </Button>
+                <Button disabled={editing} onClick={goToSources}>
+                  자료 추가
+                </Button>
+              </div>
+            </EmptyPanel>
           )}
           <div className="grid gap-4">
             {analysis.candidates.map((candidate, index) => {

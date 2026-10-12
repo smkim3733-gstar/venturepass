@@ -276,6 +276,8 @@ describe("choice reason editor and historical presentation", () => {
         setDirty: vi.fn(),
         generate: vi.fn(),
         goToPlan: vi.fn(),
+        goToProfile: vi.fn(),
+        goToSources: vi.fn(),
       }),
     );
     expect(html).toContain("아이템 선택 이유·변경 이력");
@@ -290,6 +292,8 @@ describe("choice reason editor and historical presentation", () => {
         setDirty: vi.fn(),
         generate: vi.fn(),
         goToPlan: vi.fn(),
+        goToProfile: vi.fn(),
+        goToSources: vi.fn(),
       }),
     );
     expect(html).toContain("선택 이유 기록");
