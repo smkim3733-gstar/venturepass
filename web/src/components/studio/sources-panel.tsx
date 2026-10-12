@@ -453,6 +453,21 @@ export function SourcesPanel({
             className="h-auto min-h-10 bg-white py-2"
             onChange={(event) => setFile(event.target.files?.[0] || null)}
           />
+          {file && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="mt-2"
+              onClick={() => {
+                if (otherEditingBlocked()) return;
+                setFile(null);
+                if (fileInput.current) fileInput.current.value = "";
+              }}
+            >
+              <X />
+              파일 선택 해제
+            </Button>
+          )}
           {invalidOriginalOnlyFile && (
             <p role="alert" className="mt-2 text-xs leading-6 text-destructive">
               원본만 보관은 PDF·PNG·JPG·JPEG·WEBP 파일만 지원합니다. 파일을 바꾸거나 본문 추출
