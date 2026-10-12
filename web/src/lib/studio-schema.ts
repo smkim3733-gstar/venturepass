@@ -319,7 +319,11 @@ export const stageLabels: Record<(typeof stageValues)[number], string> = {
 };
 export const taskSchema = z.object({
   id: z.string().uuid(),
-  title: z.string().trim().min(1).max(300),
+  title: z
+    .string()
+    .trim()
+    .min(1, "업무 제목을 입력해 주세요.")
+    .max(300, "업무 제목은 300자 이하로 입력해 주세요."),
   category: z.enum(["evidence", "payment", "supplement", "visit", "appeal", "other"]),
   dueDate: optionalDate,
   status: z.enum(["pending", "done"]),
