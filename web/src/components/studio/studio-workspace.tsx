@@ -47,6 +47,7 @@ import { ProfileEditor } from "./profile-editor";
 import { guidedDescriptionAcknowledged } from "./guided-description-save";
 import { guidedUploadResult } from "./guided-upload-result";
 import { manualPlanSaveSnapshot } from "./manual-plan-save";
+import { generatedPlanResponse } from "./generated-plan-response";
 import { planConfirmationSnapshot } from "./plan-confirmation";
 import { SourcesPanel, type SourceExtractionMode } from "./sources-panel";
 import { SourceIntakesPanel } from "./source-intakes-panel";
@@ -764,10 +765,11 @@ export function StudioWorkspace() {
     );
     setError("");
     try {
-      const next = await studioFetch<StudioCase>(`/api/studio/cases/${company.id}/generate`, {
+      const response = await studioFetch<StudioCase>(`/api/studio/cases/${company.id}/generate`, {
         method: "POST",
         ...jsonBody({ revision: company.revision, operation, mode }),
       });
+      const next = operation === "plan" ? generatedPlanResponse(response, company, mode) : response;
       accept(next);
       setTab(operation === "analyze" ? "analysis" : "plan");
       toast.success(
