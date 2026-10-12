@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
+import { flushSync } from "react-dom";
 import { ArrowUpRight, Check, Clock3, Pencil, Plus, Save, Trash2, X } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -160,6 +161,8 @@ export function WorkflowPanel({
           entryValid && !targetChanged ? company.revision : guidedTarget.companyRevision,
       })
     : null;
+  const taskFilterId = useId();
+  const [taskFilter, setTaskFilter] = useState<"all" | WorkflowTask["status"]>("all");
   const [stage, setStage] = useState(company.stage);
   const [stageNote, setStageNote] = useState("");
   const [occurredOn, setOccurredOn] = useState("");
@@ -296,8 +299,31 @@ export function WorkflowPanel({
       Number(a.status === "done") - Number(b.status === "done") ||
       (a.dueDate || "9999").localeCompare(b.dueDate || "9999"),
   );
+  const visibleTasks = sortedTasks.filter(
+    (item) => taskFilter === "all" || item.status === taskFilter,
+  );
+  const pendingTaskCount = company.tasks.filter((item) => item.status === "pending").length;
   return (
-    <div>
+    <div
+      onClickCapture={(event) => {
+        if (
+          taskFilter === "all" ||
+          event.button !== 0 ||
+          event.ctrlKey ||
+          event.metaKey ||
+          event.shiftKey ||
+          event.altKey
+        )
+          return;
+        const href =
+          event.target instanceof Element ? event.target.closest("a")?.getAttribute("href") : null;
+        const linkedTask = company.tasks.find((item) => href === `#workflow-task-${item.id}`);
+        if (linkedTask && linkedTask.status !== taskFilter) {
+          // Reveal the target before the browser follows the existing fragment link.
+          flushSync(() => setTaskFilter("all"));
+        }
+      }}
+    >
       {(targetChanged || (targetStatus && !targetStatus.valid)) && (
         <p
           role="alert"
@@ -576,10 +602,7 @@ export function WorkflowPanel({
       />
       <div className="mb-4 mt-7 flex items-center justify-between gap-3">
         <h3 className="font-bold">
-          해야 할 일{" "}
-          <span className="ml-1 text-primary">
-            {company.tasks.filter((item) => item.status === "pending").length}
-          </span>
+          해야 할 일 <span className="ml-1 text-primary">{pendingTaskCount}</span>
         </h3>
         <Button
           variant="outline"
@@ -590,6 +613,24 @@ export function WorkflowPanel({
           업무 추가
         </Button>
       </div>
+      {company.tasks.length > 0 && (
+        <div className="mb-5 space-y-2">
+          <Label htmlFor={taskFilterId}>업무 상태</Label>
+          <select
+            id={taskFilterId}
+            className={selectClass}
+            value={taskFilter}
+            onChange={(event) => setTaskFilter(event.target.value as typeof taskFilter)}
+          >
+            <option value="all">전체 ({company.tasks.length})</option>
+            <option value="pending">미완료 ({pendingTaskCount})</option>
+            <option value="done">완료 ({company.tasks.length - pendingTaskCount})</option>
+          </select>
+          <p role="status" className="text-sm text-muted-foreground">
+            표시 {visibleTasks.length}개 / 전체 {company.tasks.length}개
+          </p>
+        </div>
+      )}
       {task && (
         <section
           id="workflow-task-editor"
@@ -682,14 +723,19 @@ export function WorkflowPanel({
           </div>
         </section>
       )}
-      {sortedTasks.length === 0 ? (
+      {company.tasks.length === 0 ? (
         <EmptyPanel
           title="다음 할 일을 등록하세요"
           description="자료 보강, 납부, 보완 제출, 실사 준비와 이의신청을 기한별로 관리할 수 있습니다."
         />
+      ) : visibleTasks.length === 0 ? (
+        <EmptyPanel
+          title="선택한 상태의 업무가 없습니다"
+          description="업무 상태를 전체로 바꾸면 저장된 모든 업무를 볼 수 있습니다."
+        />
       ) : (
         <div className="space-y-3">
-          {sortedTasks.map((item) => {
+          {visibleTasks.map((item) => {
             const overdue = !!item.dueDate && item.dueDate < today && item.status !== "done";
             return (
               <article
