@@ -136,6 +136,7 @@ function ComparisonSelector({
 
 export function PlanComparisonResult({ result }: { result: StoredPlanComparison }) {
   const [expanded, setExpanded] = useState<string | null>(null);
+  const [changesOnly, setChangesOnly] = useState(false);
   if (result.status !== "ready" || !result.left || !result.right)
     return (
       <Notice tone="warning">
@@ -145,6 +146,9 @@ export function PlanComparisonResult({ result }: { result: StoredPlanComparison 
   const changes = result.items.filter(
     (item) => item.group === "content" && item.state !== "same",
   ).length;
+  const visibleItems = changesOnly
+    ? result.items.filter((item) => item.state !== "same")
+    : result.items;
   const leftLabel = `기준 v${result.left.version}`;
   const rightLabel = `대조 v${result.right.version}`;
   return (
@@ -176,8 +180,29 @@ export function PlanComparisonResult({ result }: { result: StoredPlanComparison 
         확인하세요. 확인 표시의 변화만으로 사실·수치·기관 승인이 확인되지는 않습니다. 실사 질문은
         준비용 질문입니다.
       </p>
+      <div className="space-y-2">
+        <label className="flex items-center gap-2 text-sm">
+          <input
+            type="checkbox"
+            checked={changesOnly}
+            onChange={(event) => setChangesOnly(event.target.checked)}
+          />
+          변경·확인 필요 항목만 보기
+        </label>
+        <p className="text-xs text-muted-foreground">
+          동일한 항목만 숨깁니다. 연결 불명확·일부 비교 생략 항목은 계속 표시합니다.
+        </p>
+        <p className="text-xs text-muted-foreground">
+          표시 {visibleItems.length}개 / 전체 {result.items.length}개
+        </p>
+      </div>
+      {!visibleItems.length && (
+        <p className="text-sm text-muted-foreground">
+          변경·확인 필요 항목이 없습니다. 전체 항목은 선택을 해제해 확인할 수 있습니다.
+        </p>
+      )}
       <div className="divide-y rounded-xl border">
-        {result.items.map((item) => (
+        {visibleItems.map((item) => (
           <div key={item.key} className="p-3">
             <button
               type="button"
