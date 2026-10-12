@@ -179,14 +179,21 @@ export function GuidedEvidenceSelection({
             </li>
           ))}
         </ul>
-        <p
-          role={input?.overInputLimit ? "alert" : undefined}
-          className={input?.overInputLimit ? styles.error : styles.helper}
-        >
-          첫 분석 입력 {input?.inputCharacters.toLocaleString("ko-KR")} / 240,000자
-          {input?.overInputLimit &&
-            ` · 한도 초과 ${(input.inputCharacters - input.inputCharacterLimit).toLocaleString("ko-KR")}자: 선택 자료를 줄이거나 본문을 정리해 주세요. 자동으로 자르지 않습니다.`}
-        </p>
+        {input ? (
+          <p
+            role={input.overInputLimit ? "alert" : undefined}
+            className={input.overInputLimit ? styles.error : styles.helper}
+          >
+            첫 분석 입력 {input.inputCharacters.toLocaleString("ko-KR")} / 240,000자
+            {input.overInputLimit &&
+              ` · 한도 초과 ${(input.inputCharacters - input.inputCharacterLimit).toLocaleString("ko-KR")}자: 선택 자료를 줄이거나 본문을 정리해 주세요. 자동으로 자르지 않습니다.`}
+          </p>
+        ) : (
+          <p role="alert" className={styles.error}>
+            선택한 자료를 현재 목록과 정확히 연결하지 못해 입력량을 계산할 수 없습니다. 창을 닫고
+            자료 목록을 확인한 뒤 다시 선택해 주세요.
+          </p>
+        )}
         <p className={styles.helper}>
           전체 입력에는 기업정보·자료 이름 등도 포함되므로 본문 글자 수의 합계와 다를 수 있습니다.
         </p>
