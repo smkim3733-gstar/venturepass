@@ -244,8 +244,11 @@ export function ResponseItemEditor({
   suggestionContextFingerprint?: string;
 }) {
   const id = `response-item-${item.id}`;
-  const plan = company.plans.find((entry) => entry.id === item.planClaim?.planId);
-  const section = plan?.content.sections.find((entry) => entry.key === item.planClaim?.sectionKey);
+  const plans = company.plans.filter((entry) => entry.id === item.planClaim?.planId);
+  const plan = plans.length === 1 ? plans[0] : undefined;
+  const sections =
+    plan?.content.sections.filter((entry) => entry.key === item.planClaim?.sectionKey) ?? [];
+  const section = sections.length === 1 ? sections[0] : undefined;
   return (
     <fieldset className="space-y-4 rounded-xl border p-4">
       <legend className="px-2 font-semibold">대응 항목 {index + 1}</legend>
@@ -351,11 +354,26 @@ export function ResponseItemEditor({
               </option>
             ))}
           </select>
-          {section && (
-            <pre className="max-h-56 overflow-auto whitespace-pre-wrap text-xs">
+          {item.planClaim.planId && !plan ? (
+            <p role="alert" className="text-xs leading-6 text-amber-900">
+              연결한 원고 버전을 하나로 확인할 수 없어 본문을 표시하지 않습니다. 원고 버전을 다시
+              확인해 주세요.
+            </p>
+          ) : item.planClaim.sectionKey && !section ? (
+            <p role="alert" className="text-xs leading-6 text-amber-900">
+              연결한 원고 항목을 하나로 확인할 수 없어 본문을 표시하지 않습니다. 원고 항목을 다시
+              확인해 주세요.
+            </p>
+          ) : section ? (
+            <div
+              role="region"
+              aria-label={`대응 항목 ${index + 1}의 연결 원고 본문`}
+              tabIndex={0}
+              className="max-h-56 overflow-y-auto whitespace-pre-wrap text-xs leading-6 [overflow-wrap:anywhere] focus-visible:outline-2 focus-visible:outline-primary"
+            >
               {section.content}
-            </pre>
-          )}
+            </div>
+          ) : null}
           <Field
             id={`${id}-plan-quote`}
             label="해당 원고 부분 그대로 인용 *"
