@@ -750,6 +750,36 @@ export function NumericCheckView({
     </article>
   );
 }
+function numericRequiredField(input: NumericCheckInput, path: PropertyKey[], code: string) {
+  if (code !== "too_small") return null;
+  if (path.length === 1 && path[0] === "title")
+    return {
+      label: "대조안 제목",
+      message: "대조안 제목을 입력해 주세요.",
+      fieldId: "numeric-check-title",
+    };
+  if (
+    path.length === 3 &&
+    path[0] === "observations" &&
+    typeof path[1] === "number" &&
+    Number.isInteger(path[1]) &&
+    path[2] === "label"
+  ) {
+    const observation = input.observations[path[1]];
+    if (
+      !observation ||
+      input.observations.filter((item) => item.id === observation.id).length !== 1
+    )
+      return null;
+    const label = "관측 수치 " + (path[1] + 1) + " 이름";
+    return {
+      label,
+      message: label + "을 입력해 주세요.",
+      fieldId: "numeric-observation-" + observation.id + "-label",
+    };
+  }
+  return null;
+}
 type Props = Pick<PanelProps, "company" | "mutate"> & {
   blockedReason?: string;
   onDirtyChange: (dirty: boolean) => void;
@@ -777,6 +807,9 @@ function NumericChecksEditor({ company, mutate, blockedReason = "", onDirtyChang
   const blocked = Boolean(blockedReason) || saving;
   const parsed = editor ? numericCheckInputSchema.safeParse(editor) : null;
   const preview = parsed?.success ? evaluateNumericCheck(parsed.data) : null;
+  const firstIssue = parsed && !parsed.success ? parsed.error.issues[0] : null;
+  const requiredField =
+    editor && firstIssue ? numericRequiredField(editor, firstIssue.path, firstIssue.code) : null;
   function edit(next: NumericCheckInput) {
     if (!editor || inFlight.current) return;
     setEditor(resetNumericJudgementAfterEdit(editor, next));
@@ -786,7 +819,11 @@ function NumericChecksEditor({ company, mutate, blockedReason = "", onDirtyChang
     if (!editor || blocked || inFlight.current) return;
     const result = numericCheckInputSchema.safeParse(editor);
     if (!result.success) {
-      setError(result.error.issues[0]?.message || "수치·인용·비교 대상을 확인해 주세요.");
+      setError(
+        requiredField?.message ||
+          result.error.issues[0]?.message ||
+          "수치·인용·비교 대상을 확인해 주세요.",
+      );
       return;
     }
     const serialized = JSON.stringify(result.data);
@@ -1187,9 +1224,20 @@ function NumericChecksEditor({ company, mutate, blockedReason = "", onDirtyChang
             않습니다. 수치·인용·산식을 수정하면 판단 선택을 미검토로 돌립니다.
           </p>
           {error && (
-            <p role="alert" className="text-sm text-destructive">
-              {error}
-            </p>
+            <div className="space-y-2">
+              <p role="alert" className="text-sm text-destructive">
+                {error}
+              </p>
+              {requiredField && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => document.getElementById(requiredField.fieldId)?.focus()}
+                >
+                  {requiredField.label} 입력으로 이동
+                </Button>
+              )}
+            </div>
           )}
           <div className="flex gap-2">
             <Button type="button" disabled={atLimit} onClick={() => void save()}>
