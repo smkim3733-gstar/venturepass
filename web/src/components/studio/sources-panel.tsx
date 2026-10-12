@@ -119,6 +119,14 @@ export function SourcesPanel({
   const protectedSources = new Set(
     (company.agencyRecords ?? []).flatMap((record) => record.evidence.map((item) => item.sourceId)),
   );
+  const [search, setSearch] = useState("");
+  const searchInput = useRef<HTMLInputElement>(null);
+  const query = search.trim().toLowerCase();
+  const visibleSources = company.sources.filter((source) =>
+    [source.name, source.originalName ?? "", source.text].some((value) =>
+      value.toLowerCase().includes(query),
+    ),
+  );
   const [formOpen, setFormOpen] = useState(false);
   const [editing, setEditing] = useState<SourceDocument | null>(null);
   const draftIdentity = useRef<{ id: string; createdAt: string } | null>(null);
@@ -639,14 +647,49 @@ export function SourcesPanel({
         </section>
       )}
       <div className="mt-6">
+        {company.sources.length > 0 && (
+          <div className="mb-4 space-y-2">
+            <Label htmlFor="source-search">자료 검색</Label>
+            <div className="flex items-center gap-2">
+              <Input
+                ref={searchInput}
+                id="source-search"
+                type="search"
+                placeholder="자료 제목·파일명·본문 검색"
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+              />
+              {search && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => {
+                    setSearch("");
+                    searchInput.current?.focus();
+                  }}
+                >
+                  검색어 지우기
+                </Button>
+              )}
+            </div>
+            <p className="text-sm text-muted-foreground" role="status">
+              표시 자료 {visibleSources.length} / 전체 {company.sources.length}개
+            </p>
+          </div>
+        )}
         {company.sources.length === 0 ? (
           <EmptyPanel
             title="아직 등록한 자료가 없습니다"
             description="특허 원문, 제품설명서 또는 상담 녹취부터 시작하세요. 자료가 추가될수록 회사에 맞는 아이템과 사업계획서를 구체화할 수 있습니다."
           />
+        ) : visibleSources.length === 0 ? (
+          <EmptyPanel
+            title="검색에 맞는 자료가 없습니다"
+            description="저장된 자료 제목·원본 파일명·본문에서 찾습니다. 검색어를 바꾸거나 지워 전체 자료를 확인하세요."
+          />
         ) : (
           <div className="space-y-3">
-            {company.sources.map((source) => (
+            {visibleSources.map((source) => (
               <article key={source.id} className="rounded-xl border bg-white p-4">
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div className="min-w-0 flex-1">
