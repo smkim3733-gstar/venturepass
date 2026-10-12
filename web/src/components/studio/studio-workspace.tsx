@@ -47,6 +47,7 @@ import { ProfileEditor } from "./profile-editor";
 import { guidedDescriptionAcknowledged } from "./guided-description-save";
 import { guidedUploadResult } from "./guided-upload-result";
 import { manualPlanSaveSnapshot } from "./manual-plan-save";
+import { planConfirmationSnapshot } from "./plan-confirmation";
 import { SourcesPanel, type SourceExtractionMode } from "./sources-panel";
 import { SourceIntakesPanel } from "./source-intakes-panel";
 import { SourceSuggestionsPanel } from "./source-suggestions-panel";
@@ -372,6 +373,12 @@ export function StudioWorkspace() {
         ...jsonBody({ ...mutation, revision: company.revision }),
       });
       const next = studioMutationResponse(raw, company);
+      if (mutation.action === "confirm-plan")
+        planConfirmationSnapshot(
+          next,
+          { company, planId: mutation.planId },
+          { allowHistorical: true },
+        );
       if (mutation.action === "save-plan")
         manualPlanSaveSnapshot(next, { company, mutation });
       if (

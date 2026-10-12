@@ -7,7 +7,11 @@ export const planConfirmationMessage =
 /** Match the reviewed manuscript, not a generic company response or success flag.
  * This confirms stored content/status, not attribution to a server request receipt.
  */
-export function planConfirmationSnapshot(value: unknown, pending: PlanConfirmation): StudioCase {
+export function planConfirmationSnapshot(
+  value: unknown,
+  pending: PlanConfirmation,
+  options: { allowHistorical?: boolean } = {},
+): StudioCase {
   const mismatch = () => new Error(planConfirmationMessage);
   const parsed = caseSchema.safeParse(value);
   const base = pending.company;
@@ -17,7 +21,13 @@ export function planConfirmationSnapshot(value: unknown, pending: PlanConfirmati
   const targets = base.plans.filter((plan) => plan.id === pending.planId);
   if (targets.length !== 1) throw mismatch();
   const target = targets[0];
-  if (target.confirmedAt || target.version !== Math.max(...base.plans.map((plan) => plan.version)))
+  // Detailed tools may explicitly review an older selected manuscript. Guided recovery
+  // keeps its latest-only default; all content, history and evidence checks still apply.
+  if (
+    target.confirmedAt ||
+    (!options.allowHistorical &&
+      target.version !== Math.max(...base.plans.map((plan) => plan.version)))
+  )
     throw mismatch();
   // Review recalculation and its completion time may change. The reviewed content,
   // manuscript identity/history and evidence context must not silently change.
