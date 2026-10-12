@@ -89,6 +89,7 @@ import { studioMutationResponse } from "./studio-mutation-response";
 import { localOcrSaveAcknowledged } from "./local-ocr-response";
 import { manualSourceSaveAcknowledged } from "./manual-source-response";
 import { sourceDeleteAcknowledged } from "./source-delete-response";
+import { createdCompanyResponse } from "./company-create-response";
 import type { GuidedDestination } from "@/lib/studio-guided-flow";
 import {
   validateGuidedWorkflowTarget,
@@ -646,18 +647,23 @@ export function StudioWorkspace() {
     if (!createName.trim() || busy) return;
     setBusy("기업 작업공간을 만드는 중입니다");
     setError("");
+    const profile: CompanyProfile = {
+      ...emptyProfile(),
+      companyName: createName.trim(),
+      industry: createIndustry.trim(),
+      applicationKind: createKind,
+    };
+    const existingIds = cases.map((item) => item.id);
     try {
-      const next = await studioFetch<StudioCase>("/api/studio/cases", {
+      const raw = await studioFetch<unknown>("/api/studio/cases", {
         method: "POST",
-        ...jsonBody({
-          profile: {
-            ...emptyProfile(),
-            companyName: createName.trim(),
-            industry: createIndustry.trim(),
-            applicationKind: createKind,
-          },
-        }),
+        ...jsonBody({ profile }),
       });
+      const next = createdCompanyResponse(raw, profile, existingIds);
+      if (!next)
+        throw new Error(
+          "새 기업의 저장 내용을 확인하지 못했습니다. 입력한 기업명·업종·신청 구분을 유지했습니다.",
+        );
       accept(next);
       setTab("profile");
       setGuided(true);
