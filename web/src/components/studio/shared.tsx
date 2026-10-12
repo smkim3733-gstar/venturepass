@@ -109,15 +109,24 @@ export function formatDate(value: string) {
 }
 export async function studioFetch<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, { ...init, cache: "no-store" });
-  const body = await response
+  const body: unknown = await response
     .json()
     .catch(() => ({ error: "서버 응답을 확인하지 못했습니다. 잠시 후 다시 시도해 주세요." }));
-  if (!response.ok)
+  if (!response.ok) {
+    const failure =
+      body !== null && typeof body === "object" && !Array.isArray(body)
+        ? (body as Record<string, unknown>)
+        : {};
     throw new StudioApiError(
-      body.error || "요청을 처리하지 못했습니다.",
+      typeof failure.error === "string" && failure.error.trim()
+        ? failure.error
+        : "요청을 처리하지 못했습니다.",
       response.status,
-      typeof body.code === "string" && /^[A-Z0-9_]{1,100}$/.test(body.code) ? body.code : undefined,
+      typeof failure.code === "string" && /^[A-Z0-9_]{1,100}$/.test(failure.code)
+        ? failure.code
+        : undefined,
     );
+  }
   return body as T;
 }
 export class StudioApiError extends Error {
