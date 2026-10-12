@@ -72,7 +72,8 @@ export function workflowTaskDirty(task: WorkflowTask | null, savedTask?: Workflo
     !!task &&
     (savedTask
       ? JSON.stringify(task) !== JSON.stringify(savedTask)
-      : !!task.title ||
+      : task.category !== "evidence" ||
+        !!task.title ||
         !!task.notes ||
         !!task.dueDate ||
         Object.values(task.owners ?? {}).some(Boolean) ||
