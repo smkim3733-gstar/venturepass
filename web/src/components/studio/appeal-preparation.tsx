@@ -271,7 +271,14 @@ export function AppealEvidenceEditor({
               type="button"
               size="sm"
               variant="outline"
-              onClick={() => onChange(references.filter((_, i) => i !== index))}
+              onClick={() => {
+                if (
+                  (ref.quote || ref.locator) &&
+                  !window.confirm("작성한 인용·쪽/위치 입력과 이 자료 연결을 해제할까요?")
+                )
+                  return;
+                onChange(references.filter((_, i) => i !== index));
+              }}
             >
               이 자료 연결 해제
             </Button>
