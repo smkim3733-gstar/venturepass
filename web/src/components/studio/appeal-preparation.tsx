@@ -308,10 +308,12 @@ export function AppealReasonEditor({
   onRemove: () => void;
 }) {
   const prefix = `appeal-reason-${reason.id}`;
-  const selectedPlan = company.plans.find((plan) => plan.id === reason.planClaim?.planId);
-  const section = selectedPlan?.content.sections.find(
-    (item) => item.key === reason.planClaim?.sectionKey,
-  );
+  const plans = company.plans.filter((plan) => plan.id === reason.planClaim?.planId);
+  const selectedPlan = plans.length === 1 ? plans[0] : undefined;
+  const sections =
+    selectedPlan?.content.sections.filter((item) => item.key === reason.planClaim?.sectionKey) ??
+    [];
+  const section = sections.length === 1 ? sections[0] : undefined;
   const noticeText =
     reason.noticeField === "body"
       ? notice.body
@@ -414,11 +416,26 @@ export function AppealReasonEditor({
               </option>
             ))}
           </select>
-          {section && (
-            <pre className="max-h-44 overflow-auto whitespace-pre-wrap text-xs">
+          {reason.planClaim.planId && !selectedPlan ? (
+            <p role="alert" className="text-xs leading-6 text-amber-900">
+              연결한 원고 버전을 하나로 확인할 수 없어 본문을 표시하지 않습니다. 원고 버전을 다시
+              확인해 주세요.
+            </p>
+          ) : reason.planClaim.sectionKey && !section ? (
+            <p role="alert" className="text-xs leading-6 text-amber-900">
+              연결한 원고 항목을 하나로 확인할 수 없어 본문을 표시하지 않습니다. 원고 항목을 다시
+              확인해 주세요.
+            </p>
+          ) : section ? (
+            <div
+              role="region"
+              aria-label={`소명 사유 ${index + 1}의 연결 원고 본문`}
+              tabIndex={0}
+              className="max-h-44 overflow-y-auto whitespace-pre-wrap text-xs leading-6 [overflow-wrap:anywhere] focus-visible:outline-2 focus-visible:outline-primary"
+            >
               {section.content}
-            </pre>
-          )}
+            </div>
+          ) : null}
           <TextField
             id={`${prefix}-plan-quote`}
             label="선택 원고의 해당 부분 그대로 인용 *"
