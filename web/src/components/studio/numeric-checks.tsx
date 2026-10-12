@@ -875,18 +875,33 @@ function NumericChecksEditor({ company, mutate, blockedReason = "", onDirtyChang
                   ),
                 })
               }
-              onRemove={() =>
+              onRemove={() => {
+                if (blocked || inFlight.current) return;
+                const comparisons = editor.comparisons.filter(
+                  (item) => item.leftId !== value.id && item.rightId !== value.id,
+                );
+                const formulas = editor.formulas.filter(
+                  (item) => item.expectedId !== value.id && !item.operandIds.includes(value.id),
+                );
+                if (
+                  !window.confirm(
+                    "관측 수치 " +
+                      (index + 1) +
+                      "과 연결된 비교쌍 " +
+                      (editor.comparisons.length - comparisons.length) +
+                      "개·산식 " +
+                      (editor.formulas.length - formulas.length) +
+                      "개를 삭제할까요?",
+                  )
+                )
+                  return;
                 edit({
                   ...editor,
                   observations: editor.observations.filter((item) => item.id !== value.id),
-                  comparisons: editor.comparisons.filter(
-                    (item) => item.leftId !== value.id && item.rightId !== value.id,
-                  ),
-                  formulas: editor.formulas.filter(
-                    (item) => item.expectedId !== value.id && !item.operandIds.includes(value.id),
-                  ),
-                })
-              }
+                  comparisons,
+                  formulas,
+                });
+              }}
             />
           ))}
           <Button
