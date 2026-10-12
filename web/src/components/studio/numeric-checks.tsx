@@ -998,12 +998,17 @@ function NumericChecksEditor({ company, mutate, blockedReason = "", onDirtyChang
                 type="button"
                 size="sm"
                 variant="outline"
-                onClick={() =>
+                onClick={() => {
+                  if (
+                    (pair.leftId || pair.rightId) &&
+                    !window.confirm("선택한 수치 연결이 있는 이 비교쌍을 삭제할까요?")
+                  )
+                    return;
                   edit({
                     ...editor,
                     comparisons: editor.comparisons.filter((item) => item.id !== pair.id),
-                  })
-                }
+                  });
+                }}
               >
                 비교쌍 삭제
               </Button>
@@ -1043,13 +1048,18 @@ function NumericChecksEditor({ company, mutate, blockedReason = "", onDirtyChang
                     id={`numeric-formula-${formula.id}-operation`}
                     className={selectClass}
                     value={formula.operation}
-                    onChange={(event) =>
+                    onChange={(event) => {
+                      if (
+                        formula.operandIds.some(Boolean) &&
+                        !window.confirm("선택한 피연산값을 비우고 산식의 연산을 변경할까요?")
+                      )
+                        return;
                       update({
                         ...formula,
                         operation: event.target.value as NumericFormula["operation"],
                         operandIds: ["", ""],
-                      })
-                    }
+                      });
+                    }}
                   >
                     {Object.entries(numericOperationLabels).map(([key, label]) => (
                       <option key={key} value={key}>
@@ -1097,9 +1107,14 @@ function NumericChecksEditor({ company, mutate, blockedReason = "", onDirtyChang
                       size="sm"
                       variant="outline"
                       disabled={formula.operandIds.length <= 2}
-                      onClick={() =>
-                        update({ ...formula, operandIds: formula.operandIds.slice(0, -1) })
-                      }
+                      onClick={() => {
+                        if (
+                          formula.operandIds.at(-1) &&
+                          !window.confirm("선택한 수치 연결이 있는 마지막 합계 항을 삭제할까요?")
+                        )
+                          return;
+                        update({ ...formula, operandIds: formula.operandIds.slice(0, -1) });
+                      }}
                     >
                       마지막 합계 항 삭제
                     </Button>
@@ -1117,12 +1132,19 @@ function NumericChecksEditor({ company, mutate, blockedReason = "", onDirtyChang
                   type="button"
                   size="sm"
                   variant="outline"
-                  onClick={() =>
+                  onClick={() => {
+                    if (
+                      (formula.operation !== "sum" ||
+                        formula.operandIds.some(Boolean) ||
+                        formula.expectedId) &&
+                      !window.confirm("선택한 연산·수치 연결을 포함한 이 산식을 삭제할까요?")
+                    )
+                      return;
                     edit({
                       ...editor,
                       formulas: editor.formulas.filter((item) => item.id !== formula.id),
-                    })
-                  }
+                    });
+                  }}
                 >
                   산식 삭제
                 </Button>
