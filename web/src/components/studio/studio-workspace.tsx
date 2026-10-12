@@ -90,6 +90,7 @@ import { localOcrSaveAcknowledged } from "./local-ocr-response";
 import { manualSourceSaveAcknowledged } from "./manual-source-response";
 import { sourceDeleteAcknowledged } from "./source-delete-response";
 import { createdCompanyResponse } from "./company-create-response";
+import { companyDeletionAcknowledged } from "./company-delete-response";
 import type { GuidedDestination } from "@/lib/studio-guided-flow";
 import {
   validateGuidedWorkflowTarget,
@@ -687,10 +688,12 @@ export function StudioWorkspace() {
       return;
     setBusy("기업 작업공간을 삭제하는 중입니다");
     try {
-      await studioFetch<{ ok: boolean }>(`/api/studio/cases/${company.id}`, {
+      const result = await studioFetch<unknown>(`/api/studio/cases/${company.id}`, {
         method: "DELETE",
         ...jsonBody({ revision: company.revision }),
       });
+      if (!companyDeletionAcknowledged(result))
+        throw new Error("기업 삭제 완료를 확인하지 못했습니다. 현재 기업과 목록을 유지했습니다.");
       setCases((current) => current.filter((item) => item.id !== company.id));
       setCompany(null);
       setDirty(false);
