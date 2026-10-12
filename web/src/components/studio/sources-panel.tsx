@@ -219,6 +219,13 @@ export function SourcesPanel({
     }
     const identity = draftIdentity.current;
     if (!identity) return;
+    if (
+      file &&
+      !window.confirm(
+        "선택한 파일은 업로드하지 않고, 저장이 완료되면 파일 선택을 해제합니다. 텍스트 자료만 저장할까요?",
+      )
+    )
+      return;
     const previousRequest = sourceRequest.current;
     const now = new Date().toISOString();
     const source: SourceDocument =
