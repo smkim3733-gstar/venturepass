@@ -171,6 +171,7 @@ export function StudioWorkspace() {
   const [attentionSort, setAttentionSort] = useState<CaseAttentionSort>("due-date");
   const today = useLocalDay();
   const openRequest = useRef(0);
+  const refreshRequest = useRef(0);
   const [creating, setCreating] = useState(false);
   const [createName, setCreateName] = useState("");
   const [createIndustry, setCreateIndustry] = useState("");
@@ -185,11 +186,13 @@ export function StudioWorkspace() {
     };
   }, []);
   const refresh = useCallback(async () => {
+    const request = ++refreshRequest.current;
     try {
       const [available, list] = await Promise.all([
         studioFetch<unknown>("/api/studio/status"),
         studioFetch<unknown>("/api/studio/cases"),
       ]);
+      if (request !== refreshRequest.current) return;
       const connection = studioStatusResponse(available);
       if (!connection)
         throw new Error("AI 연결 및 지원 형식 상태를 확인하지 못했습니다. 다시 불러와 주세요.");
@@ -201,20 +204,23 @@ export function StudioWorkspace() {
       setListLoaded(true);
       setError("");
     } catch (caught) {
-      setStatus(null);
-      setError(caught instanceof Error ? caught.message : "작업공간을 불러오지 못했습니다.");
+      if (request === refreshRequest.current) {
+        setStatus(null);
+        setError(caught instanceof Error ? caught.message : "작업공간을 불러오지 못했습니다.");
+      }
     } finally {
-      setLoading(false);
+      if (request === refreshRequest.current) setLoading(false);
     }
   }, []);
   useEffect(() => {
     let active = true;
+    const request = ++refreshRequest.current;
     Promise.all([
       studioFetch<unknown>("/api/studio/status"),
       studioFetch<unknown>("/api/studio/cases"),
     ])
       .then(([available, list]) => {
-        if (!active) return;
+        if (!active || request !== refreshRequest.current) return;
         const connection = studioStatusResponse(available);
         if (!connection)
           throw new Error("AI 연결 및 지원 형식 상태를 확인하지 못했습니다. 다시 불러와 주세요.");
@@ -226,16 +232,17 @@ export function StudioWorkspace() {
         setListLoaded(true);
       })
       .catch((caught: unknown) => {
-        if (active) {
+        if (active && request === refreshRequest.current) {
           setStatus(null);
           setError(caught instanceof Error ? caught.message : "작업공간을 불러오지 못했습니다.");
         }
       })
       .finally(() => {
-        if (active) setLoading(false);
+        if (active && request === refreshRequest.current) setLoading(false);
       });
     return () => {
       active = false;
+      refreshRequest.current += 1;
     };
   }, []);
   useEffect(() => {
