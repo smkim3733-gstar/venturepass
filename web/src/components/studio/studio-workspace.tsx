@@ -46,6 +46,7 @@ import { cn } from "@/lib/utils";
 import { ProfileEditor } from "./profile-editor";
 import { guidedDescriptionAcknowledged } from "./guided-description-save";
 import { guidedUploadResult } from "./guided-upload-result";
+import { manualPlanSaveSnapshot } from "./manual-plan-save";
 import { SourcesPanel, type SourceExtractionMode } from "./sources-panel";
 import { SourceIntakesPanel } from "./source-intakes-panel";
 import { SourceSuggestionsPanel } from "./source-suggestions-panel";
@@ -371,6 +372,8 @@ export function StudioWorkspace() {
         ...jsonBody({ ...mutation, revision: company.revision }),
       });
       const next = studioMutationResponse(raw, company);
+      if (mutation.action === "save-plan")
+        manualPlanSaveSnapshot(next, { company, mutation });
       if (
         mutation.action === "delete-source" &&
         !sourceDeleteAcknowledged(next, company, mutation.sourceId)
