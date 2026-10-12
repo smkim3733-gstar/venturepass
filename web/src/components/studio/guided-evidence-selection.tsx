@@ -1,6 +1,8 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import {
   Dialog,
   DialogContent,
@@ -33,6 +35,14 @@ export function GuidedEvidenceSelection({
   onConfirm: (value: SelectedEvidenceSnapshot) => void;
 }) {
   const [ids, setIds] = useState(sourceIds);
+  const [search, setSearch] = useState("");
+  const searchInput = useRef<HTMLInputElement>(null);
+  const query = search.trim().toLowerCase();
+  const visibleSources = company.sources
+    .map((source, index) => ({ source, index }))
+    .filter(({ source }) =>
+      [source.name, source.originalName ?? ""].some((value) => value.toLowerCase().includes(query)),
+    );
   const [checking, setChecking] = useState(false);
   const [error, setError] = useState("");
   const inFlight = useRef(false),
@@ -119,8 +129,48 @@ export function GuidedEvidenceSelection({
             회사 설명만 사용
           </button>
         </div>
+        {company.sources.length > 0 && (
+          <div className="space-y-2">
+            <Label htmlFor="guided-evidence-search">자료 이름·파일명 검색</Label>
+            <div className="flex items-center gap-2">
+              <Input
+                ref={searchInput}
+                id="guided-evidence-search"
+                type="search"
+                value={search}
+                disabled={disabled}
+                aria-describedby="guided-evidence-search-help"
+                onChange={(event) => setSearch(event.target.value)}
+              />
+              {search && (
+                <button
+                  type="button"
+                  className={styles.link + " shrink-0"}
+                  disabled={disabled}
+                  onClick={() => {
+                    setSearch("");
+                    searchInput.current?.focus();
+                  }}
+                >
+                  검색어 지우기
+                </button>
+              )}
+            </div>
+            <p id="guided-evidence-search-help" className={styles.helper}>
+              검색은 목록만 좁힙니다. 보이지 않는 선택 자료도 함께 사용합니다.
+            </p>
+            <p role="status" className={styles.helper}>
+              표시 {visibleSources.length} / 전체 {company.sources.length}개
+            </p>
+          </div>
+        )}
+        {company.sources.length > 0 && visibleSources.length === 0 && (
+          <p className={styles.helper}>
+            검색에 맞는 자료가 없습니다. 검색어를 바꾸거나 지워 전체 자료를 확인하세요.
+          </p>
+        )}
         <ul className="max-h-64 overflow-y-auto space-y-2" aria-label="AI 근거 선택 목록">
-          {company.sources.map((source, index) => (
+          {visibleSources.map(({ source, index }) => (
             <li key={source.id} className={styles.file}>
               <label className="flex items-start gap-3 w-full min-w-0">
                 <input
