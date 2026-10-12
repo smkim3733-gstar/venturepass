@@ -86,6 +86,7 @@ import { readVentureOverview, type VentureOverview } from "@/lib/venturein-overv
 import { VentureinPanel } from "./venturein-panel";
 import { GuidedWorkspace } from "./guided-workspace";
 import { studioMutationResponse } from "./studio-mutation-response";
+import { localOcrSaveAcknowledged } from "./local-ocr-response";
 import type { GuidedDestination } from "@/lib/studio-guided-flow";
 import {
   validateGuidedWorkflowTarget,
@@ -362,6 +363,16 @@ export function StudioWorkspace() {
         ...jsonBody({ ...mutation, revision: company.revision }),
       });
       const next = studioMutationResponse(raw, company);
+      if (
+        mutation.action === "review-local-ocr" &&
+        !(await localOcrSaveAcknowledged(next, company, {
+          ...mutation,
+          revision: company.revision,
+        }))
+      )
+        throw new Error(
+          "교정 본문의 저장 기록을 확인하지 못했습니다. 원래 교정 내용과 확인 상태·요청 번호를 유지했습니다.",
+        );
       // Keep the original editor/request until the current selection receipt matches.
       if (
         mutation.action === "select-candidate" &&
