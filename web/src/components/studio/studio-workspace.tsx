@@ -45,6 +45,7 @@ import { summarizeCase } from "@/lib/studio-case-summary";
 import { cn } from "@/lib/utils";
 import { ProfileEditor } from "./profile-editor";
 import { guidedDescriptionAcknowledged } from "./guided-description-save";
+import { guidedUploadResult } from "./guided-upload-result";
 import { SourcesPanel, type SourceExtractionMode } from "./sources-panel";
 import { SourceIntakesPanel } from "./source-intakes-panel";
 import { SourceSuggestionsPanel } from "./source-suggestions-panel";
@@ -631,10 +632,15 @@ export function StudioWorkspace() {
     body.append("allowAi", String(extractionMode === "original-only" ? false : allowAi));
     body.append("extractionMode", extractionMode);
     try {
-      const next = await studioFetch<StudioCase>(`/api/studio/cases/${company.id}/sources`, {
+      const raw = await studioFetch<unknown>(`/api/studio/cases/${company.id}/sources`, {
         method: "POST",
         body,
       });
+      const next = studioMutationResponse(raw, company);
+      if (!guidedUploadResult(next, company, file.name))
+        throw new Error(
+          "요청한 파일의 추가 결과를 확인하지 못했습니다. 선택한 파일과 자료 목록을 유지했습니다.",
+        );
       accept(next);
       toast.success(
         extractionMode === "original-only"
