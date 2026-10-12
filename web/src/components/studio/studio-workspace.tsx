@@ -48,6 +48,7 @@ import { guidedDescriptionAcknowledged } from "./guided-description-save";
 import { guidedUploadResult } from "./guided-upload-result";
 import { manualPlanSaveSnapshot } from "./manual-plan-save";
 import { generatedPlanResponse } from "./generated-plan-response";
+import { analysisResultResponse } from "./analysis-result-response";
 import { planConfirmationSnapshot } from "./plan-confirmation";
 import { SourcesPanel, type SourceExtractionMode } from "./sources-panel";
 import { SourceIntakesPanel } from "./source-intakes-panel";
@@ -769,7 +770,10 @@ export function StudioWorkspace() {
         method: "POST",
         ...jsonBody({ revision: company.revision, operation, mode }),
       });
-      const next = operation === "plan" ? generatedPlanResponse(response, company, mode) : response;
+      const next =
+        operation === "plan"
+          ? generatedPlanResponse(response, company, mode)
+          : analysisResultResponse(response, company, mode);
       accept(next);
       setTab(operation === "analyze" ? "analysis" : "plan");
       toast.success(
