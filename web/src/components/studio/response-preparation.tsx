@@ -303,14 +303,19 @@ export function ResponseItemEditor({
           id={`${id}-plan`}
           className={selectClass}
           value={item.planClaim?.planId ?? ""}
-          onChange={(event) =>
+          onChange={(event) => {
+            if (
+              (item.planClaim?.sectionKey || item.planClaim?.quote) &&
+              !window.confirm("선택한 원고 항목·인용을 비우고 원고 버전을 변경할까요?")
+            )
+              return;
             onChange({
               ...item,
               planClaim: event.target.value
                 ? { planId: event.target.value, sectionKey: "", quote: "" }
                 : null,
-            })
-          }
+            });
+          }}
         >
           <option value="">원고 연결 없음</option>
           {[...company.plans].reverse().map((entry) => (
@@ -327,12 +332,17 @@ export function ResponseItemEditor({
             id={`${id}-section`}
             className={selectClass}
             value={item.planClaim.sectionKey}
-            onChange={(event) =>
+            onChange={(event) => {
+              if (
+                item.planClaim?.quote &&
+                !window.confirm("작성한 원고 인용을 비우고 원고 항목을 변경할까요?")
+              )
+                return;
               onChange({
                 ...item,
                 planClaim: { ...item.planClaim!, sectionKey: event.target.value, quote: "" },
-              })
-            }
+              });
+            }}
           >
             <option value="">항목 선택</option>
             {plan?.content.sections.map((entry, i) => (
@@ -396,7 +406,26 @@ export function ResponseItemEditor({
         max={responsePreparationLimits.body}
         onChange={(draft) => onChange({ ...item, draft })}
       />
-      <Button type="button" variant="outline" size="sm" onClick={onRemove}>
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        onClick={() => {
+          if (
+            (item.requestQuote ||
+              item.summary ||
+              item.planClaim ||
+              item.evidence.length ||
+              item.gap ||
+              item.draft) &&
+            !window.confirm(
+              "작성한 요청·원고 인용과 근거 연결·답변 초안을 포함한 이 대응 항목을 제거할까요?",
+            )
+          )
+            return;
+          onRemove();
+        }}
+      >
         이 대응 항목 제거
       </Button>
     </fieldset>
