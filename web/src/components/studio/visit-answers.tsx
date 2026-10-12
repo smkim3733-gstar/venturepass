@@ -186,14 +186,19 @@ export function VisitAnswerPairEditor({
           id={`${prefix}-section`}
           className={selectClass}
           value={pair.planReference?.sectionKey ?? ""}
-          onChange={(event) =>
+          onChange={(event) => {
+            if (
+              pair.planReference?.quote &&
+              !window.confirm("작성한 원고 인용을 비우고 연결 항목을 변경할까요?")
+            )
+              return;
             onChange({
               ...pair,
               planReference: event.target.value
                 ? { sectionKey: event.target.value, quote: "" }
                 : null,
-            })
-          }
+            });
+          }}
         >
           <option value="">원고 항목 미연결</option>
           {sections.map((section) => (
@@ -232,7 +237,22 @@ export function VisitAnswerPairEditor({
         value={pair.contextNote}
         onChange={(contextNote) => onChange({ ...pair, contextNote })}
       />
-      <Button type="button" variant="outline" size="sm" onClick={onRemove}>
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        onClick={() => {
+          if (
+            (pair.answerQuote ||
+              pair.planReference ||
+              pair.sources.length > 0 ||
+              pair.contextNote) &&
+            !window.confirm("작성한 답변·원고·자료 인용과 메모를 포함한 이 대조 항목을 삭제할까요?")
+          )
+            return;
+          onRemove();
+        }}
+      >
         이 대조 항목 삭제
       </Button>
     </fieldset>
