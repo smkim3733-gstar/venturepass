@@ -72,6 +72,7 @@ export function GuidedStoredPlan({
   planId: string;
   blockedReason?: string;
 }) {
+  const sectionId = useId();
   if (blockedReason) return <p className={styles.notice}>{blockedReason}</p>;
   if (!planId) return <p className={styles.helper}>아직 읽을 원고를 선택하지 않았습니다.</p>;
   const matches = company.plans.filter((plan) => plan.id === planId);
@@ -116,12 +117,31 @@ export function GuidedStoredPlan({
         <h4 className={styles.subheading}>핵심 요약</h4>
         <p className={styles.body}>{plan.content.summary}</p>
       </div>
+      {plan.content.sections.length > 0 && (
+        <nav aria-label="저장 원고 항목 바로가기" className="space-y-2">
+          <h4 className={styles.subheading}>항목 바로가기</h4>
+          <div className="flex flex-wrap gap-x-6 gap-y-1">
+            {plan.content.sections.map((section, index) => (
+              <button
+                key={index}
+                type="button"
+                className={styles.link}
+                onClick={() => document.getElementById(`${sectionId}-${index}`)?.focus()}
+              >
+                {index + 1}. {section.title}
+              </button>
+            ))}
+          </div>
+        </nav>
+      )}
       {plan.content.sections.map((section, index) => (
         <section
           key={`${section.key}:${index}`}
           aria-label={`저장 항목 ${index + 1}: ${section.title}`}
         >
-          <h4 className={styles.subheading}>{section.title}</h4>
+          <h4 id={`${sectionId}-${index}`} tabIndex={-1} className={styles.subheading}>
+            {section.title}
+          </h4>
           <p className={styles.helper}>
             {section.needsConfirmation ? "항목 확인 필요" : "저장된 항목 확인 표시 있음"}
           </p>
