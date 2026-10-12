@@ -19,6 +19,7 @@ import {
 } from "@/lib/studio-visit-answer-types";
 import { AppealEvidenceEditor } from "./appeal-preparation";
 import { AnswerSuggestionsPanel } from "./answer-suggestions-panel";
+import { visitAnswerSaveAcknowledged } from "./visit-answer-response";
 import { applyVisitAnswerSuggestions } from "./answer-suggestions-ui";
 import { Notice, selectClass, useDirty, type PanelProps } from "./shared";
 
@@ -352,10 +353,7 @@ function VisitAnswersEditor({
         answer: parsed.data,
       });
       if (!mounted.current) return;
-      if (
-        result?.id === company.id &&
-        result.visitAnswers.some((record) => record.clientRequestId === nonce.current?.id)
-      ) {
+      if (visitAnswerSaveAcknowledged(result, company, nonce.current.id, parsed.data)) {
         setEditor(null);
         nonce.current = null;
       } else

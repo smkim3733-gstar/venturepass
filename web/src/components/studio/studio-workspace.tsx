@@ -59,6 +59,7 @@ import { diagnosisTasksSaveAcknowledged } from "./diagnosis-tasks-response";
 import { certificateTaskSaveAcknowledged } from "./certificate-task-response";
 import { companyContactsSaveAcknowledged } from "./company-contacts";
 import { responsePreparationSaveAcknowledged } from "./response-preparation";
+import { visitAnswerSaveAcknowledged } from "./visit-answer-response";
 import { PreparationPanel } from "./preparation-panel";
 import { PreparationAutomationPanel } from "./preparation-automation-panel";
 import { AnalysisPanel } from "./analysis-panel";
@@ -489,6 +490,13 @@ export function StudioWorkspace() {
       )
         throw new Error(
           "보완 답변 준비의 저장 기록을 확인하지 못했습니다. 원래 입력과 요청 번호를 유지했습니다.",
+        );
+      if (
+        mutation.action === "append-visit-answer" &&
+        !visitAnswerSaveAcknowledged(next, company, mutation.clientRequestId, mutation.answer)
+      )
+        throw new Error(
+          "실사 답변의 저장 기록을 확인하지 못했습니다. 원래 답변과 요청 번호를 유지했습니다.",
         );
       accept(next);
       toast.success("저장했습니다.");
