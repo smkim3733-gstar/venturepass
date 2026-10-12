@@ -39,6 +39,7 @@ import {
 } from "./shared";
 import { OcrReviewPanel, supportsLocalOcr, validateLocalOcrPreview } from "./ocr-review-panel";
 import { manualSourceSaveAcknowledged } from "./manual-source-response";
+import { localOcrRequestIdentity, type LocalOcrRequestIdentity } from "./local-ocr-request";
 
 type SourceKind = SourceDocument["kind"];
 export type SourceExtractionMode = "extract" | "original-only";
@@ -134,8 +135,9 @@ export function SourcesPanel({
     source: SourceDocument;
     preview: LocalOcrPreview;
     binding: string;
-    clientRequestId: string;
+    editorId: string;
   } | null>(null);
+  const ocrRequest = useRef<LocalOcrRequestIdentity | null>(null);
   const [ocrBusy, setOcrBusy] = useState<"reading" | "saving" | null>(null);
   const [ocrError, setOcrError] = useState("");
   const [mutationBusy, setMutationBusy] = useState(false);
@@ -328,12 +330,13 @@ export function SourcesPanel({
       );
       if (!mounted.current || context.current !== binding) return;
       const preview = validateLocalOcrPreview(response, source, company.revision);
+      ocrRequest.current = null;
       setOcrDraft({
         caseId: company.id,
         source,
         preview,
         binding,
-        clientRequestId: crypto.randomUUID(),
+        editorId: crypto.randomUUID(),
       });
     } catch (caught) {
       if (mounted.current && context.current === binding)
@@ -354,6 +357,7 @@ export function SourcesPanel({
       !window.confirm("저장하지 않은 글자 읽기 초안과 교정 내용을 닫을까요? 원본은 보관됩니다.")
     )
       return;
+    ocrRequest.current = null;
     setOcrDraft(null);
     setOcrError("");
   }
@@ -365,18 +369,24 @@ export function SourcesPanel({
     setOcrBusy("saving");
     setOcrError("");
     try {
+      const request = localOcrRequestIdentity(ocrRequest.current, correctedText, () =>
+        crypto.randomUUID(),
+      );
+      ocrRequest.current = request;
       const saved = await mutate({
         action: "review-local-ocr",
-        clientRequestId: ocrDraft.clientRequestId,
+        clientRequestId: request.clientRequestId,
         sourceId: ocrDraft.source.id,
         sourceUpdatedAt: ocrDraft.preview.sourceUpdatedAt,
         originalSha256: ocrDraft.preview.original.sha256,
-        text: correctedText,
+        text: request.text,
         reviewed: true,
       });
       if (mounted.current && context.current === binding) {
-        if (saved) setOcrDraft(null);
-        else
+        if (saved) {
+          ocrRequest.current = null;
+          setOcrDraft(null);
+        } else
           setOcrError(
             "본문을 저장하지 못했습니다. 교정 내용과 확인 상태는 유지했습니다. 오류 안내와 최신 저장 상태를 확인해 주세요.",
           );
@@ -515,7 +525,7 @@ export function SourcesPanel({
       )}
       {ocrDraft && (
         <OcrReviewPanel
-          key={ocrDraft.clientRequestId}
+          key={ocrDraft.editorId}
           caseId={ocrDraft.caseId}
           source={ocrDraft.source}
           preview={ocrDraft.preview}
