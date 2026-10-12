@@ -174,6 +174,7 @@ export function StudioWorkspace() {
   const [createName, setCreateName] = useState("");
   const [createIndustry, setCreateIndustry] = useState("");
   const [createKind, setCreateKind] = useState<CompanyProfile["applicationKind"]>("new");
+  const createDirty = creating && Boolean(createName || createIndustry || createKind !== "new");
   const [settings, setSettings] = useState(false);
   const [generation, setGeneration] = useState<GenerationOperation | null>(null);
   const [mode, setMode] = useState<"ai" | "assisted" | null>(null);
@@ -229,7 +230,7 @@ export function StudioWorkspace() {
   }, []);
   useEffect(() => {
     function unload(event: BeforeUnloadEvent) {
-      if (dirty || busy || (creating && (createName || createIndustry))) {
+      if (dirty || busy || createDirty) {
         event.preventDefault();
         event.returnValue = "";
       }
@@ -262,7 +263,7 @@ export function StudioWorkspace() {
       window.removeEventListener("beforeunload", unload);
       document.removeEventListener("click", navigate, true);
     };
-  }, [dirty, busy, creating, createName, createIndustry]);
+  }, [dirty, busy, createDirty]);
   function mayLeave() {
     if (busy) return false;
     return !dirty || window.confirm("저장하지 않은 편집을 취소하고 이동할까요?");
@@ -687,7 +688,7 @@ export function StudioWorkspace() {
     if (busy) return;
     if (
       !open &&
-      (createName || createIndustry) &&
+      createDirty &&
       !window.confirm("입력한 새 기업 정보를 취소할까요?")
     )
       return;
