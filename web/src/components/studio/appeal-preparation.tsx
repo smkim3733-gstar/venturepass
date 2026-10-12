@@ -13,7 +13,7 @@ import {
   type AppealPreparationInput,
   type AppealReference,
 } from "@/lib/studio-appeal-types";
-import type { StudioCase } from "@/lib/studio-schema";
+import { sourceKindLabels, type StudioCase } from "@/lib/studio-schema";
 import { Notice, selectClass, useDirty, type PanelProps } from "./shared";
 import { appealPreparationSaveAcknowledged } from "./appeal-preparation-response";
 
@@ -188,7 +188,7 @@ export function AppealEvidenceEditor({
     (source) => source.originalName || source.extraction !== "pending",
   );
   return (
-    <fieldset className="space-y-3 rounded-xl border p-3">
+    <fieldset className="min-w-0 space-y-3 rounded-xl border p-3">
       <legend className="px-1 text-sm font-semibold">{label}</legend>
       <Label htmlFor={`${prefix}-add`}>연결할 자료</Label>
       <select
@@ -217,7 +217,8 @@ export function AppealEvidenceEditor({
             value={source.id}
             disabled={references.some((ref) => ref.sourceId === source.id)}
           >
-            {source.name}
+            {source.name} · {sourceKindLabels[source.kind]} ·{" "}
+            {source.originalName || "원본 파일명 없음"}
           </option>
         ))}
       </select>
@@ -229,6 +230,11 @@ export function AppealEvidenceEditor({
         return (
           <div key={ref.sourceId} className="space-y-2 rounded-lg bg-muted/30 p-3">
             <p className="text-sm font-medium">{source?.name || "자료를 찾지 못했습니다"}</p>
+            {source && (
+              <p className="text-xs text-muted-foreground [overflow-wrap:anywhere]">
+                {sourceKindLabels[source.kind]} · {source.originalName || "원본 파일명 없음"}
+              </p>
+            )}
             {stale && (
               <p className="text-xs text-amber-900">
                 연결 뒤 자료가 변경되었습니다. 원문을 대조한 뒤 이 연결을 제거하고 다시 선택해
