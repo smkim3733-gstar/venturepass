@@ -106,6 +106,13 @@ export function PlanReviewDecisions({
   const history = records.filter((entry) => entry.planId === plan.id);
   const atLimit = records.length >= planReviewLimits.records;
   const blocked = !!blockedReason || saving;
+  const targetSections =
+    form && form.binding === binding && form.input.planVersion === plan.version
+      ? plan.content.sections
+          .map((section, index) => ({ section, index }))
+          .filter(({ section }) => section.key === form.input.finding.sectionKey)
+      : [];
+  const targetSection = targetSections.length === 1 ? targetSections[0] : null;
   function choose(value: string) {
     if (blocked || (dirty && !window.confirm("저장하지 않은 검토 판단 작성을 취소할까요?"))) return;
     const input = value === "" ? null : planReviewInputFor(company, plan, Number(value));
@@ -203,6 +210,32 @@ export function PlanReviewDecisions({
           <p className="whitespace-pre-wrap text-xs text-muted-foreground">
             권고된 조치: {form.input.finding.action}
           </p>
+          {targetSection ? (
+            <details key={form.input.findingIndex} className="rounded-xl border p-3">
+              <summary className="cursor-pointer text-sm font-semibold">
+                판단 대상 원고 본문 확인
+              </summary>
+              <p className="mt-3 text-sm font-semibold">
+                원고 v{plan.version} · 항목 {targetSection.index + 1}: {targetSection.section.title}
+              </p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                현재 화면에 불러온 저장 본문입니다. 읽기만으로 검토 판단이나 원고 확인 표시가 바뀌지
+                않습니다.
+              </p>
+              <div
+                role="region"
+                aria-label="판단 대상 저장 본문"
+                tabIndex={0}
+                className="mt-3 max-h-64 overflow-y-auto whitespace-pre-wrap rounded-lg bg-muted/30 p-3 text-sm leading-7 [overflow-wrap:anywhere] focus-visible:outline-2 focus-visible:outline-primary"
+              >
+                {targetSection.section.content}
+              </div>
+            </details>
+          ) : (
+            <p className="text-xs text-muted-foreground">
+              이 의견의 원고 항목을 하나로 확인하지 못했습니다. 전체 원고에서 확인해 주세요.
+            </p>
+          )}
           <div className="grid gap-3 sm:grid-cols-2">
             <div className="space-y-2">
               <Label htmlFor="plan-review-status">처리 상태</Label>
