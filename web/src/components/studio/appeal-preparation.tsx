@@ -15,6 +15,7 @@ import {
 } from "@/lib/studio-appeal-types";
 import type { StudioCase } from "@/lib/studio-schema";
 import { Notice, selectClass, useDirty, type PanelProps } from "./shared";
+import { appealPreparationSaveAcknowledged } from "./appeal-preparation-response";
 
 type Reason = AppealPreparationInput["reasons"][number];
 const intentLabels = {
@@ -575,7 +576,8 @@ export function AppealPreparations({ company, mutate, blockedReason, onDirtyChan
         preparation: parsed.data,
       });
       if (mounted.current && context.current === binding) {
-        if (saved) setForm(null);
+        if (appealPreparationSaveAcknowledged(saved, company, form.nonce, parsed.data))
+          setForm(null);
         else
           setError(
             "저장하지 못했습니다. 편집 내용은 유지했습니다. 오류 안내와 최신 저장 상태를 확인해 주세요.",
