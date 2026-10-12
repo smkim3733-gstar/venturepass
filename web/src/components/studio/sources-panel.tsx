@@ -126,6 +126,7 @@ export function SourcesPanel({
   const [name, setName] = useState("");
   const [kind, setKind] = useState<SourceKind>("consultation");
   const [text, setText] = useState("");
+  const fileInput = useRef<HTMLInputElement>(null);
   const [file, setFile] = useState<File | null>(null);
   const [fileKind, setFileKind] = useState<SourceKind>("technology");
   const [allowAi, setAllowAi] = useState(false);
@@ -203,6 +204,7 @@ export function SourcesPanel({
     setText(source?.text || "");
     setFormOpen(true);
     setFile(null);
+    if (fileInput.current) fileInput.current.value = "";
   }
   function closeForm() {
     if (dirty && !window.confirm("저장하지 않은 자료 편집을 취소할까요?")) return;
@@ -433,6 +435,7 @@ export function SourcesPanel({
             · 파일당 최대 12MB
           </Label>
           <Input
+            ref={fileInput}
             id="source-file"
             type="file"
             accept={
