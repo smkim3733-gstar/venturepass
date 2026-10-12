@@ -100,6 +100,7 @@ import { sourceDeleteAcknowledged } from "./source-delete-response";
 import { createdCompanyResponse } from "./company-create-response";
 import { companyDeletionAcknowledged } from "./company-delete-response";
 import { companyListResponse } from "./company-list-response";
+import { studioStatusResponse } from "./studio-status-response";
 import type { GuidedDestination } from "@/lib/studio-guided-flow";
 import {
   validateGuidedWorkflowTarget,
@@ -186,17 +187,21 @@ export function StudioWorkspace() {
   const refresh = useCallback(async () => {
     try {
       const [available, list] = await Promise.all([
-        studioFetch<StudioStatus>("/api/studio/status"),
+        studioFetch<unknown>("/api/studio/status"),
         studioFetch<unknown>("/api/studio/cases"),
       ]);
+      const connection = studioStatusResponse(available);
+      if (!connection)
+        throw new Error("AI 연결 및 지원 형식 상태를 확인하지 못했습니다. 다시 불러와 주세요.");
       const summaries = companyListResponse(list);
       if (!summaries)
         throw new Error("기업 목록의 형식을 확인하지 못했습니다. 다시 불러와 주세요.");
-      setStatus(available);
+      setStatus(connection);
       setCases(summaries);
       setListLoaded(true);
       setError("");
     } catch (caught) {
+      setStatus(null);
       setError(caught instanceof Error ? caught.message : "작업공간을 불러오지 못했습니다.");
     } finally {
       setLoading(false);
@@ -205,21 +210,26 @@ export function StudioWorkspace() {
   useEffect(() => {
     let active = true;
     Promise.all([
-      studioFetch<StudioStatus>("/api/studio/status"),
+      studioFetch<unknown>("/api/studio/status"),
       studioFetch<unknown>("/api/studio/cases"),
     ])
       .then(([available, list]) => {
         if (!active) return;
+        const connection = studioStatusResponse(available);
+        if (!connection)
+          throw new Error("AI 연결 및 지원 형식 상태를 확인하지 못했습니다. 다시 불러와 주세요.");
         const summaries = companyListResponse(list);
         if (!summaries)
           throw new Error("기업 목록의 형식을 확인하지 못했습니다. 다시 불러와 주세요.");
-        setStatus(available);
+        setStatus(connection);
         setCases(summaries);
         setListLoaded(true);
       })
       .catch((caught: unknown) => {
-        if (active)
+        if (active) {
+          setStatus(null);
           setError(caught instanceof Error ? caught.message : "작업공간을 불러오지 못했습니다.");
+        }
       })
       .finally(() => {
         if (active) setLoading(false);
@@ -1460,14 +1470,18 @@ export function StudioWorkspace() {
                 ) : (
                   <Circle className="size-4 text-amber-600" />
                 )}
-                {status?.aiConfigured
-                  ? "AI 서비스가 연결되어 있습니다."
-                  : "AI 서비스를 아직 연결하지 않았습니다."}
+                {!status
+                  ? "AI 연결 상태를 확인하지 못했습니다."
+                  : status.aiConfigured
+                    ? "AI 서비스가 연결되어 있습니다."
+                    : "AI 서비스를 아직 연결하지 않았습니다."}
               </div>
               <p className="mt-2 text-xs leading-6 text-muted-foreground">
-                {status?.aiConfigured
-                  ? "분석·작성 전에 전송 범위를 확인받고, 허용한 회사 자료를 AI 서비스로 전달합니다."
-                  : "운영자가 AI 서비스 연결을 마치면 보관한 자료로 자동 작성을 이어갈 수 있습니다."}
+                {!status
+                  ? "설정 창을 닫고 ‘다시 불러오기’로 연결 상태를 확인해 주세요."
+                  : status.aiConfigured
+                    ? "분석·작성 전에 전송 범위를 확인받고, 허용한 회사 자료를 AI 서비스로 전달합니다."
+                    : "운영자가 AI 서비스 연결을 마치면 보관한 자료로 자동 작성을 이어갈 수 있습니다."}
               </p>
             </div>
             <Notice>
@@ -1531,7 +1545,7 @@ export function StudioWorkspace() {
                 AI 분석·자동 작성
                 {!status?.aiConfigured && (
                   <Badge variant="outline" className="ml-auto text-xs">
-                    연결 필요
+                    {status ? "연결 필요" : "상태 확인 필요"}
                   </Badge>
                 )}
               </div>
