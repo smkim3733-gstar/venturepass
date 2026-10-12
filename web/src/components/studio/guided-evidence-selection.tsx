@@ -150,6 +150,11 @@ export function GuidedEvidenceSelection({
                         ? "저장된 본문 사용 · 사실 확인은 별도"
                         : "빈 본문 · 기본 정보만 사용"}
                   </small>
+                  {source.extraction !== "pending" && (
+                    <small className="block text-xs text-slate-600">
+                      저장 본문 {source.text.length.toLocaleString("ko-KR")}자
+                    </small>
+                  )}
                 </span>
               </label>
               {source.extraction !== "pending" && source.text.trim() && (
@@ -180,7 +185,10 @@ export function GuidedEvidenceSelection({
         >
           첫 분석 입력 {input?.inputCharacters.toLocaleString("ko-KR")} / 240,000자
           {input?.overInputLimit &&
-            " · 한도 초과: 선택 자료를 줄이거나 본문을 정리해 주세요. 자동으로 자르지 않습니다."}
+            ` · 한도 초과 ${(input.inputCharacters - input.inputCharacterLimit).toLocaleString("ko-KR")}자: 선택 자료를 줄이거나 본문을 정리해 주세요. 자동으로 자르지 않습니다.`}
+        </p>
+        <p className={styles.helper}>
+          전체 입력에는 기업정보·자료 이름 등도 포함되므로 본문 글자 수의 합계와 다를 수 있습니다.
         </p>
         <p className={styles.helper}>
           0개를 선택하면 회사 설명만 사용합니다. 근거가 부족한 사실은 확인이 필요합니다. 원본
