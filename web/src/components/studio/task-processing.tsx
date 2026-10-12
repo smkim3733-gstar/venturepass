@@ -114,7 +114,11 @@ export function TaskProcessingEditor({
                   size="sm"
                   aria-label={`원고 연결 ${index + 1} 제거`}
                   onClick={() => {
-                    if (processing)
+                    if (
+                      processing &&
+                      (!reference.quote ||
+                        window.confirm("작성 중인 인용과 이 원고 연결을 제거할까요?"))
+                    )
                       onChange({
                         ...processing,
                         planRefs: processing.planRefs.filter((_, i) => i !== index),
