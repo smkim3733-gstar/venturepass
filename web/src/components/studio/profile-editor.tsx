@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Save } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -49,28 +49,47 @@ const narrativeFields: { key: keyof CompanyProfile; label: string; placeholder: 
 export function ProfileEditor({ company, mutate, setDirty }: PanelProps) {
   const [profile, setProfile] = useState(company.profile);
   const [contactsDirty, setContactsDirty] = useState(false);
+  const editor = useRef<HTMLDivElement>(null);
+  const [validation, setValidation] = useState<{ field: string; message: string } | null>(null);
+  const fieldProps = (key: keyof CompanyProfile, help?: string) => ({
+    "data-profile-field": key,
+    "aria-invalid": validation?.field === key || undefined,
+    "aria-describedby":
+      [help, validation?.field === key ? "profile-validation-error" : ""]
+        .filter(Boolean)
+        .join(" ") || undefined,
+  });
   const profileDirty = JSON.stringify(profile) !== JSON.stringify(company.profile);
   const dirty = profileDirty || contactsDirty;
   useDirty(dirty, setDirty);
   const change = (key: keyof CompanyProfile, value: string) => {
-    if (!contactsDirty) setProfile((current) => ({ ...current, [key]: value }));
+    if (contactsDirty) return;
+    setProfile((current) => ({ ...current, [key]: value }));
+    setValidation((current) => (current?.field === key ? null : current));
   };
   function cancel() {
     if (!profileDirty || contactsDirty) return;
     if (!window.confirm("기업정보 수정을 취소하고 화면에 불러온 내용으로 되돌릴까요?")) return;
     setProfile(company.profile);
+    setValidation(null);
   }
   async function save() {
     if (contactsDirty) return;
     const result = companyProfileSchema.safeParse(profile);
     if (!result.success) {
-      toast.error(result.error.issues[0]?.message || "기업정보를 확인해 주세요.");
+      const issue = result.error.issues[0];
+      const field = typeof issue?.path[0] === "string" ? issue.path[0] : "";
+      const message = issue?.message || "기업정보를 확인해 주세요.";
+      setValidation({ field, message });
+      editor.current?.querySelector<HTMLElement>(`[data-profile-field="${field}"]`)?.focus();
+      toast.error(message);
       return;
     }
+    setValidation(null);
     await mutate({ action: "profile", profile: result.data });
   }
   return (
-    <div>
+    <div ref={editor}>
       <PanelHeading
         title="우리 기업의 출발점"
         description="기술과 사업의 현재 상황을 알려 주세요. 입력한 내용과 자료함의 증빙을 함께 분석합니다."
@@ -86,12 +105,22 @@ export function ProfileEditor({ company, mutate, setDirty }: PanelProps) {
           </div>
         }
       />
+      {validation && (
+        <p
+          id="profile-validation-error"
+          role="alert"
+          className="mb-5 rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-900"
+        >
+          {validation.message}
+        </p>
+      )}
       <fieldset disabled={contactsDirty} className="min-w-0">
         <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
           <div className="space-y-2">
             <Label htmlFor="company-name">기업명 *</Label>
             <Input
               id="company-name"
+              {...fieldProps("companyName")}
               maxLength={100}
               value={profile.companyName}
               onChange={(event) => change("companyName", event.target.value)}
@@ -101,6 +130,7 @@ export function ProfileEditor({ company, mutate, setDirty }: PanelProps) {
             <Label htmlFor="business-number">사업자등록번호</Label>
             <Input
               id="business-number"
+              {...fieldProps("businessNumber")}
               maxLength={30}
               placeholder="000-00-00000"
               value={profile.businessNumber}
@@ -111,6 +141,7 @@ export function ProfileEditor({ company, mutate, setDirty }: PanelProps) {
             <Label htmlFor="industry">업종</Label>
             <Input
               id="industry"
+              {...fieldProps("industry")}
               maxLength={100}
               placeholder="예: 산업용 장비 제조"
               value={profile.industry}
@@ -121,6 +152,7 @@ export function ProfileEditor({ company, mutate, setDirty }: PanelProps) {
             <Label htmlFor="founded-on">설립일</Label>
             <Input
               id="founded-on"
+              {...fieldProps("foundedOn")}
               type="date"
               value={profile.foundedOn}
               onInput={(event) => change("foundedOn", event.currentTarget.value)}
@@ -131,10 +163,10 @@ export function ProfileEditor({ company, mutate, setDirty }: PanelProps) {
             <Label htmlFor="paid-in-capital">납입자본금(원)</Label>
             <Input
               id="paid-in-capital"
+              {...fieldProps("paidInCapital", "paid-in-capital-help")}
               inputMode="numeric"
               maxLength={16}
               placeholder="예: 10000000"
-              aria-describedby="paid-in-capital-help"
               value={profile.paidInCapital ?? ""}
               onChange={(event) => change("paidInCapital", event.target.value)}
             />
@@ -146,6 +178,7 @@ export function ProfileEditor({ company, mutate, setDirty }: PanelProps) {
             <Label htmlFor="closing-month">결산월</Label>
             <select
               id="closing-month"
+              {...fieldProps("closingMonth")}
               className={selectClass}
               value={profile.closingMonth ?? ""}
               onChange={(event) => change("closingMonth", event.target.value)}
@@ -162,6 +195,7 @@ export function ProfileEditor({ company, mutate, setDirty }: PanelProps) {
             <Label htmlFor="application-date">신청 예정일</Label>
             <Input
               id="application-date"
+              {...fieldProps("applicationDate")}
               type="date"
               value={profile.applicationDate}
               onInput={(event) => change("applicationDate", event.currentTarget.value)}
@@ -172,6 +206,7 @@ export function ProfileEditor({ company, mutate, setDirty }: PanelProps) {
             <Label htmlFor="application-kind">신청 구분</Label>
             <select
               id="application-kind"
+              {...fieldProps("applicationKind")}
               className={selectClass}
               value={profile.applicationKind}
               onChange={(event) => change("applicationKind", event.target.value)}
@@ -193,6 +228,7 @@ export function ProfileEditor({ company, mutate, setDirty }: PanelProps) {
               <Label htmlFor={`profile-${key}`}>{label}</Label>
               <Textarea
                 id={`profile-${key}`}
+                {...fieldProps(key)}
                 className="min-h-36 resize-y bg-white leading-7"
                 value={profile[key]}
                 maxLength={10000}
