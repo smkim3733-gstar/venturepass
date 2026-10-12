@@ -86,6 +86,8 @@ export function PlanReviewDecisions({
       : null;
   });
   const [selected, setSelected] = useState(() => (form ? String(form.input.findingIndex) : ""));
+  const [historyStatus, setHistoryStatus] = useState("");
+  const historyFilterRef = useRef<HTMLSelectElement>(null);
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
   const pending = useRef(false);
@@ -104,6 +106,9 @@ export function PlanReviewDecisions({
   useDirty(dirty || saving, onDirtyChange);
   const records = company.planReviewDecisions ?? [];
   const history = records.filter((entry) => entry.planId === plan.id);
+  const filteredHistory = history.filter(
+    (entry) => !historyStatus || entry.status === historyStatus,
+  );
   const atLimit = records.length >= planReviewLimits.records;
   const blocked = !!blockedReason || saving;
   const targetSections =
@@ -299,7 +304,50 @@ export function PlanReviewDecisions({
           <summary className="cursor-pointer text-sm font-semibold">
             원고 v{plan.version}의 판단 이력 {history.length}개
           </summary>
-          {[...history].reverse().map((record) => (
+          <div className="mt-4 min-w-0 space-y-2">
+            <Label htmlFor="plan-review-history-status">저장 당시 처리 상태로 이력 보기</Label>
+            <select
+              ref={historyFilterRef}
+              id="plan-review-history-status"
+              className={selectClass}
+              value={historyStatus}
+              aria-describedby="plan-review-history-help"
+              onChange={(event) => setHistoryStatus(event.target.value)}
+            >
+              <option value="">모든 상태</option>
+              {Object.entries(planReviewStatusLabels).map(([value, label]) => (
+                <option key={value} value={value}>
+                  {label}
+                </option>
+              ))}
+            </select>
+            <p id="plan-review-history-help" className="text-xs text-muted-foreground">
+              저장 당시 상태로 목록만 좁힙니다. 과거 버전도 포함하며 작성 중인 판단은 바뀌지
+              않습니다.
+            </p>
+            <p role="status" className="text-sm">
+              표시 {filteredHistory.length} / 전체 {history.length}개
+            </p>
+            {historyStatus && (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  setHistoryStatus("");
+                  historyFilterRef.current?.focus();
+                }}
+              >
+                모든 상태 보기
+              </Button>
+            )}
+          </div>
+          {!filteredHistory.length && (
+            <p className="mt-4 text-sm text-muted-foreground">
+              이 상태로 저장된 판단 이력이 없습니다.
+            </p>
+          )}
+          {[...filteredHistory].reverse().map((record) => (
             <article key={record.id} className="mt-4 space-y-2 border-t pt-3 text-sm">
               <h4 className="font-semibold">
                 {planReviewStatusLabels[record.status]} · 판단 v{record.version}
