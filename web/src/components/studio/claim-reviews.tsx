@@ -159,6 +159,13 @@ export function ClaimReviewFields({
             className={selectClass}
             value={value.planId}
             onChange={(event) => {
+              if (
+                (value.claimQuote || value.planReviewReferences.length > 0) &&
+                !window.confirm(
+                  "작성한 주장 인용과 원고 검토 연결을 비우고 원고 버전을 변경할까요?",
+                )
+              )
+                return;
               const matches = company.plans.filter((item) => item.id === event.target.value);
               const chosen = matches.length === 1 ? matches[0] : null;
               onChange({
@@ -195,9 +202,14 @@ export function ClaimReviewFields({
             className={selectClass}
             value={value.sectionKey}
             disabled={fixedSection}
-            onChange={(event) =>
-              onChange({ ...value, sectionKey: event.target.value, claimQuote: "" })
-            }
+            onChange={(event) => {
+              if (
+                value.claimQuote &&
+                !window.confirm("작성한 주장 인용을 비우고 원고 항목을 변경할까요?")
+              )
+                return;
+              onChange({ ...value, sectionKey: event.target.value, claimQuote: "" });
+            }}
           >
             <option value="">항목 직접 선택</option>
             {sections.map((item) => (
