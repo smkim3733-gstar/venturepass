@@ -127,6 +127,14 @@ export function SourcesPanel({
       value.toLowerCase().includes(query),
     ),
   );
+  const editorRegion = useRef<HTMLElement>(null);
+  const [editorFocus, setEditorFocus] = useState<{ field: "name" | "text" } | null>(null);
+  useEffect(() => {
+    if (editorFocus)
+      editorRegion.current
+        ?.querySelector<HTMLInputElement | HTMLTextAreaElement>(`#source-${editorFocus.field}`)
+        ?.focus();
+  }, [editorFocus]);
   const [formOpen, setFormOpen] = useState(false);
   const [editing, setEditing] = useState<SourceDocument | null>(null);
   const draftIdentity = useRef<{ id: string; createdAt: string } | null>(null);
@@ -211,6 +219,7 @@ export function SourcesPanel({
     setKind(source?.kind || "consultation");
     setText(source?.text || "");
     setFormOpen(true);
+    setEditorFocus({ field: source?.extraction === "pending" ? "text" : "name" });
     setFile(null);
     if (fileInput.current) fileInput.current.value = "";
   }
@@ -571,6 +580,7 @@ export function SourcesPanel({
       )}
       {formOpen && (
         <section
+          ref={editorRegion}
           className="mt-5 rounded-2xl border border-primary/30 bg-primary/[.025] p-5"
           aria-label="자료 편집"
         >
