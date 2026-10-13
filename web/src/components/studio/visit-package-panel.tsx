@@ -199,7 +199,19 @@ export function VisitPackageChoices({
             id={`${prefix}-mode`}
             className={selectClass}
             value={selection.mode}
-            onChange={(event) => onChange(changeVisitPackageBasis(event.target.value as Mode | ""))}
+            onChange={(event) => {
+              if (disabled) return;
+              if (
+                (selection.basisId ||
+                  selection.answerVersionIds.length ||
+                  selection.sourceIds.length) &&
+                !window.confirm(
+                  "선택한 원고·제출 기준과 답변·원본을 비우고 출력 기준을 변경할까요?",
+                )
+              )
+                return;
+              onChange(changeVisitPackageBasis(event.target.value as Mode | ""));
+            }}
           >
             <option value="">기준 선택</option>
             <option value="draft">정확한 저장 원고 · DRAFT</option>
@@ -217,9 +229,15 @@ export function VisitPackageChoices({
             className={selectClass}
             disabled={!selection.mode}
             value={selection.basisId}
-            onChange={(event) =>
-              onChange(changeVisitPackageBasis(selection.mode, event.target.value))
-            }
+            onChange={(event) => {
+              if (disabled) return;
+              if (
+                (selection.answerVersionIds.length || selection.sourceIds.length) &&
+                !window.confirm("선택한 답변·원본을 비우고 기준 버전을 변경할까요?")
+              )
+                return;
+              onChange(changeVisitPackageBasis(selection.mode, event.target.value));
+            }}
           >
             <option value="">직접 선택 · 최신 자동 선택 없음</option>
             {selection.mode === "draft"
@@ -332,6 +350,11 @@ export function VisitPackageChoices({
                       }
                       onChange={(event) => {
                         if (!eligible || disabled) return;
+                        if (
+                          selection.sourceIds.length &&
+                          !window.confirm("선택한 원본을 비우고 답변 선택을 변경할까요?")
+                        )
+                          return;
                         onChange({
                           ...selection,
                           answerVersionIds: event.target.checked
@@ -608,6 +631,13 @@ function VisitPackagePanelInner({ company, blockedReason = "", onBusyChange }: P
           disabled={disabled || !selection.mode}
           onClick={() => {
             if (disabled || inFlight.current) return;
+            if (
+              (selection.basisId ||
+                selection.answerVersionIds.length ||
+                selection.sourceIds.length) &&
+              !window.confirm("선택한 기준과 답변·원본의 출력 선택을 초기화할까요?")
+            )
+              return;
             setSelection(emptyVisitPackageSelection());
             setError("");
             setMessage("");
