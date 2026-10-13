@@ -184,6 +184,9 @@ export function AppealEvidenceEditor({
   onChange: (references: AppealReference[]) => void;
   maxReferences?: number;
 }) {
+  const sourceCounts = new Map<string, number>();
+  for (const source of company.sources)
+    sourceCounts.set(source.id, (sourceCounts.get(source.id) ?? 0) + 1);
   const available = company.sources.filter(
     (source) => source.originalName || source.extraction !== "pending",
   );
@@ -200,6 +203,7 @@ export function AppealEvidenceEditor({
           const source = available.find((item) => item.id === event.target.value);
           if (
             !source ||
+            sourceCounts.get(source.id) !== 1 ||
             references.length >= maxReferences ||
             references.some((item) => item.sourceId === source.id)
           )
@@ -211,28 +215,39 @@ export function AppealEvidenceEditor({
         }}
       >
         <option value="">자료 선택</option>
-        {available.map((source) => (
+        {available.map((source, index) => (
           <option
-            key={source.id}
+            key={`${source.id}:${index}`}
             value={source.id}
-            disabled={references.some((ref) => ref.sourceId === source.id)}
+            disabled={
+              sourceCounts.get(source.id) !== 1 ||
+              references.some((ref) => ref.sourceId === source.id)
+            }
           >
             {source.name} · {sourceKindLabels[source.kind]} ·{" "}
             {source.originalName || "원본 파일명 없음"}
+            {sourceCounts.get(source.id) !== 1 && " · 자료 ID 중복 · 선택 불가"}
           </option>
         ))}
       </select>
       {references.map((ref, index) => {
-        const source = company.sources.find((item) => item.id === ref.sourceId);
-        const stale = !source || source.updatedAt !== ref.sourceUpdatedAt;
+        const matches = company.sources.filter((item) => item.id === ref.sourceId);
+        const source = matches.length === 1 ? matches[0] : undefined;
+        const stale = source && source.updatedAt !== ref.sourceUpdatedAt;
         const update = (patch: Partial<AppealReference>) =>
           onChange(references.map((item, i) => (i === index ? { ...item, ...patch } : item)));
         return (
-          <div key={ref.sourceId} className="space-y-2 rounded-lg bg-muted/30 p-3">
-            <p className="text-sm font-medium">{source?.name || "자료를 찾지 못했습니다"}</p>
+          <div key={`${ref.sourceId}:${index}`} className="space-y-2 rounded-lg bg-muted/30 p-3">
+            <p className="text-sm font-medium">{source?.name || "자료 연결 확인 필요"}</p>
             {source && (
               <p className="text-xs text-muted-foreground [overflow-wrap:anywhere]">
                 {sourceKindLabels[source.kind]} · {source.originalName || "원본 파일명 없음"}
+              </p>
+            )}
+            {!source && (
+              <p role="alert" className="text-xs leading-6 text-amber-900">
+                연결한 자료를 하나로 확인할 수 없어 본문을 표시하지 않습니다. 자료 연결을 다시
+                확인해 주세요.
               </p>
             )}
             {stale && (
