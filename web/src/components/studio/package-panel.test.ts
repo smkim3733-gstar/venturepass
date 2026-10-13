@@ -116,6 +116,23 @@ describe("preparation ZIP source selection", () => {
       selectedPackageSources(company({ sources: [source(), source()] }), [sourceId]),
     ).toBeNull();
   });
+  it("rejects an original ID shared by a hidden no-original source regardless of order", () => {
+    const original = source();
+    const hidden = source({ originalName: null, extraction: "manual", text: "직접 입력" });
+    const unique = source({ id: planId });
+    for (const sources of [
+      [original, hidden, unique],
+      [hidden, original, unique],
+    ]) {
+      const record = company({ sources });
+      const before = structuredClone(record);
+      expect(packageSources(record).map((item) => item.id)).toEqual([sourceId, planId]);
+      expect(selectedPackageSources(record, [sourceId])).toBeNull();
+      expect(selectedPackageSources(record, [planId])).toEqual([planId]);
+      expect(selectedPackageSources(record, [])).toEqual([]);
+      expect(record).toEqual(before);
+    }
+  });
   it("enforces ten explicitly selected originals without picking any automatically", () => {
     const originals = Array.from({ length: 11 }, (_, index) =>
       source({ id: `33333333-3333-4333-8333-${String(index).padStart(12, "0")}` }),

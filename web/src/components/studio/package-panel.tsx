@@ -21,11 +21,13 @@ export function packageSources(company: StudioCase): SourceDocument[] {
 }
 
 export function selectedPackageSources(company: StudioCase, selected: string[]): string[] | null {
-  const available = packageSources(company);
   if (
     selected.length > packageLimits.files ||
     new Set(selected).size !== selected.length ||
-    selected.some((id) => available.filter((source) => source.id === id).length !== 1)
+    selected.some((id) => {
+      const matches = company.sources.filter((source) => source.id === id);
+      return matches.length !== 1 || !matches[0].originalName;
+    })
   )
     return null;
   return [...selected];
@@ -145,6 +147,9 @@ export function PackagePanel({
   }, [binding]);
   const stale = binding !== initialBinding;
   const sources = packageSources(company);
+  const sourceIdCounts = new Map<string, number>();
+  for (const source of company.sources)
+    sourceIdCounts.set(source.id, (sourceIdCounts.get(source.id) ?? 0) + 1);
   const latestVersion = Math.max(...company.plans.map((item) => item.version));
   const needsReview =
     latestVersion !== plan.version ||
@@ -167,6 +172,7 @@ export function PackagePanel({
     );
   function toggle(id: string, checked: boolean) {
     if (busy || dirty || stale || inFlight.current) return;
+    if (checked && selectedPackageSources(company, [id]) === null) return;
     setSelected((previous) =>
       checked
         ? previous.includes(id) || previous.length >= packageLimits.files
@@ -290,10 +296,10 @@ export function PackagePanel({
         </p>
         {sources.length ? (
           <div className="max-h-64 space-y-2 overflow-y-auto">
-            {sources.map((source) => (
+            {sources.map((source, index) => (
               <label
                 className="flex items-start gap-3 rounded-lg border p-3 text-sm"
-                key={source.id}
+                key={`${source.id}-${index}`}
               >
                 <input
                   type="checkbox"
@@ -303,13 +309,21 @@ export function PackagePanel({
                     busy ||
                     dirty ||
                     stale ||
-                    (!selected.includes(source.id) && selected.length >= packageLimits.files)
+                    (!selected.includes(source.id) &&
+                      (sourceIdCounts.get(source.id) !== 1 ||
+                        selected.length >= packageLimits.files))
                   }
                   onChange={(event) => toggle(source.id, event.target.checked)}
                 />
                 <span className="min-w-0 break-words">
                   <span className="block font-medium">{source.name}</span>
                   <span className="block text-xs text-muted-foreground">{source.originalName}</span>
+                  {sourceIdCounts.get(source.id) !== 1 && (
+                    <span className="mt-1 block text-xs text-amber-900">
+                      자료를 하나로 확인할 수 없어 새로 선택할 수 없습니다. 선택한 자료는 해제할 수
+                      있습니다.
+                    </span>
+                  )}
                   {source.extraction === "pending" && (
                     <Badge className="mt-2" variant="outline">
                       본문 확인 필요 · 원본만 포함
