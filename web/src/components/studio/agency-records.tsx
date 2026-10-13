@@ -864,10 +864,32 @@ export function AgencyRecords({ company, mutate, blockedReason, onDirtyChange }:
           </div>
           <fieldset disabled={!!form?.attempted} aria-label="기관 기록 입력" className="space-y-4">
             {requestContext && (
-              <p className="text-xs leading-6 text-muted-foreground">
-                기준 요청: {requestContext.title} · {requestContext.institution} · 요청 v
-                {requestContext.version}
-              </p>
+              <>
+                <p className="text-xs leading-6 text-muted-foreground">
+                  기준 요청: {requestContext.title} · {requestContext.institution} · 요청 v
+                  {requestContext.version}
+                </p>
+                <details
+                  key={`${input.kind}:${requestContext.id}`}
+                  className="min-w-0 space-y-2 rounded-xl border p-3"
+                >
+                  <summary className="cursor-pointer text-sm font-semibold">
+                    기준 요청 원문 보기
+                  </summary>
+                  <p className="text-xs leading-6 text-muted-foreground">
+                    현재 화면에 불러온 요청 v{requestContext.version}의 저장 원문입니다. 읽기만으로
+                    작성 중인 답변·정정 내용이나 기관 기록은 바뀌지 않습니다.
+                  </p>
+                  <div
+                    role="region"
+                    aria-label="기준 요청 저장 원문"
+                    tabIndex={0}
+                    className="min-w-0 max-w-full max-h-64 overflow-y-auto whitespace-pre-wrap rounded-lg bg-muted/30 p-3 text-sm leading-7 [overflow-wrap:anywhere] focus-visible:outline-2 focus-visible:outline-primary"
+                  >
+                    {requestContext.body}
+                  </div>
+                </details>
+              </>
             )}
             {noticeContext && (
               <p className="text-xs leading-6 text-muted-foreground">
