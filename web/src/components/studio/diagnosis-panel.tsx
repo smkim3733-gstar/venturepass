@@ -537,7 +537,27 @@ export function DiagnosisPanel({
   function saveAnswers() {
     const parsed = diagnosisAnswersSchema.safeParse(answers);
     if (!parsed.success) {
-      setError(parsed.error.issues[0]?.message || "검토 답변과 원문 근거를 확인해 주세요.");
+      const issue = parsed.error.issues[0];
+      const [key, field, index, referenceField] = issue?.path ?? [];
+      const title =
+        key === "sme"
+          ? "중소기업 해당 여부"
+          : key === "industryEligibility"
+            ? "신청 제외업종 해당 여부"
+            : "";
+      const referenceMessages: Record<string, string> = {
+        sourceId: "현재 기업의 자료를 선택해 주세요. 이전 연결이면 자료 연결을 다시 확인해 주세요.",
+        sourceUpdatedAt: "자료 연결의 갱신 정보를 확인해 주세요. 현재 자료와 다시 대조해 주세요.",
+        quote: "현재 본문의 정확한 원문 인용을 1~1,500자로 입력해 주세요.",
+        locator: "원문 위치를 1~150자로 입력해 주세요.",
+      };
+      setError(
+        title && field === "evidence" && typeof index === "number"
+          ? `${title} · 근거 ${index + 1}: ${referenceMessages[String(referenceField)] ?? "자료·원문 인용·위치를 확인해 주세요."}`
+          : issue?.code === "custom"
+            ? `${title ? title + ": " : ""}${issue.message}`
+            : "검토 답변의 필수 항목과 입력 형식을 확인해 주세요.",
+      );
       return;
     }
     void run(
