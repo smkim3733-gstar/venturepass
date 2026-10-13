@@ -163,6 +163,7 @@ export function WorkflowPanel({
     : null;
   const taskFilterId = useId();
   const [taskFilter, setTaskFilter] = useState<"all" | WorkflowTask["status"]>("all");
+  const [taskSearch, setTaskSearch] = useState("");
   const [stage, setStage] = useState(company.stage);
   const [stageNote, setStageNote] = useState("");
   const [occurredOn, setOccurredOn] = useState("");
@@ -299,15 +300,21 @@ export function WorkflowPanel({
       Number(a.status === "done") - Number(b.status === "done") ||
       (a.dueDate || "9999").localeCompare(b.dueDate || "9999"),
   );
+  const taskSearchTerm = taskSearch.trim().toLowerCase();
   const visibleTasks = sortedTasks.filter(
-    (item) => taskFilter === "all" || item.status === taskFilter,
+    (item) =>
+      (taskFilter === "all" || item.status === taskFilter) &&
+      (!taskSearchTerm ||
+        [item.title, item.notes, ...Object.values(item.owners ?? {})].some((value) =>
+          value.toLowerCase().includes(taskSearchTerm),
+        )),
   );
   const pendingTaskCount = company.tasks.filter((item) => item.status === "pending").length;
   return (
     <div
       onClickCapture={(event) => {
         if (
-          taskFilter === "all" ||
+          (taskFilter === "all" && !taskSearchTerm) ||
           event.button !== 0 ||
           event.ctrlKey ||
           event.metaKey ||
@@ -318,9 +325,12 @@ export function WorkflowPanel({
         const href =
           event.target instanceof Element ? event.target.closest("a")?.getAttribute("href") : null;
         const linkedTask = company.tasks.find((item) => href === `#workflow-task-${item.id}`);
-        if (linkedTask && linkedTask.status !== taskFilter) {
+        if (linkedTask && !visibleTasks.some((item) => item.id === linkedTask.id)) {
           // Reveal the target before the browser follows the existing fragment link.
-          flushSync(() => setTaskFilter("all"));
+          flushSync(() => {
+            setTaskFilter("all");
+            setTaskSearch("");
+          });
         }
       }}
     >
@@ -617,6 +627,35 @@ export function WorkflowPanel({
       </div>
       {company.tasks.length > 0 && (
         <div className="mb-5 space-y-2">
+          <div className="min-w-0 space-y-2">
+            <Label htmlFor={`${taskFilterId}-search`}>업무 검색</Label>
+            <Input
+              id={`${taskFilterId}-search`}
+              type="search"
+              maxLength={300}
+              autoComplete="off"
+              value={taskSearch}
+              aria-describedby={`${taskFilterId}-search-help`}
+              onChange={(event) => setTaskSearch(event.target.value)}
+              placeholder="제목·메모·담당자 이름"
+            />
+            <p id={`${taskFilterId}-search-help`} className="text-xs text-muted-foreground">
+              저장된 업무 제목·요청 내용·메모·담당자 이름에서 찾습니다. 작성 중인 입력은 검색하지
+              않습니다.
+            </p>
+            {taskSearch && (
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => {
+                  setTaskSearch("");
+                  document.getElementById(`${taskFilterId}-search`)?.focus();
+                }}
+              >
+                검색 지우기
+              </Button>
+            )}
+          </div>
           <Label htmlFor={taskFilterId}>업무 상태</Label>
           <select
             id={taskFilterId}
@@ -732,8 +771,14 @@ export function WorkflowPanel({
         />
       ) : visibleTasks.length === 0 ? (
         <EmptyPanel
-          title="선택한 상태의 업무가 없습니다"
-          description="업무 상태를 전체로 바꾸면 저장된 모든 업무를 볼 수 있습니다."
+          title={
+            taskSearchTerm ? "검색 조건에 맞는 업무가 없습니다" : "선택한 상태의 업무가 없습니다"
+          }
+          description={
+            taskSearchTerm
+              ? "검색어를 지우거나 업무 상태를 바꿔 주세요."
+              : "업무 상태를 전체로 바꾸면 저장된 모든 업무를 볼 수 있습니다."
+          }
         />
       ) : (
         <div className="space-y-3">
