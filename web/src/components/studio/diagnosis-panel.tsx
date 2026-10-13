@@ -142,12 +142,22 @@ export function DiagnosisAssessmentEditor({
                 variant="ghost"
                 size="sm"
                 aria-label={`${title} 근거 ${index + 1} 삭제`}
-                onClick={() =>
+                onClick={() => {
+                  if (
+                    (reference.sourceId ||
+                      reference.sourceUpdatedAt ||
+                      reference.quote ||
+                      reference.locator) &&
+                    !window.confirm(
+                      "선택한 자료와 작성한 인용·원문 위치를 포함한 이 근거를 삭제할까요?",
+                    )
+                  )
+                    return;
                   change({
                     ...value,
                     evidence: value.evidence.filter((_, position) => position !== index),
-                  })
-                }
+                  });
+                }}
               >
                 <Trash2 />
                 근거 삭제
@@ -158,15 +168,20 @@ export function DiagnosisAssessmentEditor({
               id={`${prefix}-source-${index}`}
               className={selectClass}
               value={reference.sourceId}
-              onChange={(event) =>
+              onChange={(event) => {
+                if (
+                  (reference.quote || reference.locator) &&
+                  !window.confirm("작성한 인용·원문 위치를 비우고 근거 자료를 변경할까요?")
+                )
+                  return;
                 changeReference({
                   sourceId: event.target.value,
                   sourceUpdatedAt:
                     sources.find((item) => item.id === event.target.value)?.updatedAt ?? "",
                   quote: "",
                   locator: "",
-                })
-              }
+                });
+              }}
             >
               <option value="">자료 선택</option>
               {reference.sourceId && !source && (
