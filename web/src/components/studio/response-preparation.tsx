@@ -200,12 +200,14 @@ function Field({
   value,
   max = 2000,
   onChange,
+  describedBy,
 }: {
   id: string;
   label: string;
   value: string;
   max?: number;
   onChange: (value: string) => void;
+  describedBy?: string;
 }) {
   return (
     <div className="space-y-2">
@@ -214,6 +216,7 @@ function Field({
         id={id}
         value={value}
         maxLength={max}
+        aria-describedby={describedBy}
         onChange={(event) => onChange(event.target.value)}
       />
     </div>
@@ -263,8 +266,19 @@ export function ResponseItemEditor({
         label="대응할 요청 부분을 원문 그대로 인용 *"
         value={item.requestQuote}
         max={1500}
+        describedBy={`${id}-request-match ${id}-request-comparison-note`}
         onChange={(requestQuote) => onChange({ ...item, requestQuote })}
       />
+      <p id={`${id}-request-match`} role="status" className="text-xs leading-6">
+        {!item.requestQuote.trim()
+          ? "기준 요청 원문에서 대응할 부분을 공백·줄바꿈까지 그대로 옮겨 주세요."
+          : request.body.includes(item.requestQuote)
+            ? "입력한 인용이 현재 편집 기준 요청 원문에 있습니다."
+            : "입력한 인용을 현재 편집 기준 요청 원문에서 찾지 못했습니다. 공백·줄바꿈까지 확인해 주세요."}
+      </p>
+      <p id={`${id}-request-comparison-note`} className="text-xs text-muted-foreground">
+        현재 받은 원문과의 문자 대조이며, 기관 사실이나 답변 내용의 적절성을 확인한 결과는 아닙니다.
+      </p>
       <AnswerSuggestionsPanel
         company={company}
         scope={{
