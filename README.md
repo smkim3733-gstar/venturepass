@@ -2,12 +2,16 @@
 
 벤처기업확인 **혁신성장유형 전용** 신청 준비 앱입니다. 회사 자료를 모아 아이템 분석, 사업계획서 작성·검토, 증빙 관리, 신청 진행 관리로 연결합니다.
 
+## 다른 PC에서 개발 이어가기 (2026-10-13)
+
+최신 개발은 **codex/continue-development** 브랜치입니다. [새 PC 시작·개발 인계](기획/개발환경인계/20261013_다른PC에서_이어가기.md)를 먼저 읽어 주세요. 소스·기획·보존 변경과 상위 폴더의 인계 기록을 포함하며, 실제 키·고객 자료·운영 DB·임시 빌드는 포함하지 않습니다.
+
 ## 시작하기
 
 Node.js 24와 pnpm 11.19.0을 사용합니다.
 
 ```sh
-git clone https://github.com/smkim3733-gstar/venturepass.git
+git clone --branch codex/continue-development https://github.com/smkim3733-gstar/venturepass.git
 cd venturepass/web
 pnpm install --frozen-lockfile
 pnpm dev

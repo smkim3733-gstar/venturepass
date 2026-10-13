@@ -27,7 +27,8 @@ const bundle = await rolldown({
   platform: "browser",
   tsconfig: path.join(app, "tsconfig.json"),
   resolve: { alias: { "@": path.join(app, "src") } },
-  transform: { define: { "process.env.NODE_ENV": '"production"' }, jsx: { runtime: "automatic" } },
+  // React's duplicate-key diagnostics are disabled in production builds.
+  transform: { define: { "process.env.NODE_ENV": '"development"' }, jsx: { runtime: "automatic" } },
 });
 try {
   await bundle.write({ file: path.join(output, "harness.js"), format: "iife" });
@@ -73,6 +74,7 @@ let browser;
 const checks = [];
 const blockedNetwork = [];
 const errors = [];
+const consoleDiagnostics = [];
 const record = (name) => checks.push({ name, passed: true });
 try {
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -109,6 +111,10 @@ try {
   });
   const page = await browser.newPage();
   page.on("pageerror", (error) => errors.push(error.message));
+  page.on("console", (message) => {
+    if (message.type() === "error" || message.type() === "warning")
+      consoleDiagnostics.push({ type: message.type(), text: message.text() });
+  });
   await page.goto(origin);
   await page.locator("#plan-summary").waitFor();
 
@@ -127,6 +133,50 @@ try {
       document.querySelector("#plan-summary")?.value.includes("current"),
     );
   };
+  // One plan is sufficient to expose a key collision between different sibling panels.
+  await page.locator("#single-plan").click();
+  await page.waitForFunction(() => document.querySelectorAll("#plan-version option").length === 1);
+  assert.equal((await saved()).plans.length, 1);
+  const packagePanel = page.getByRole("region", { name: "제출 준비 묶음", exact: true });
+  const decisionsPanel = page.getByRole("region", { name: "검토 의견 처리 이력", exact: true });
+  const assertPanelIdentity = async () => {
+    assert.equal(await packagePanel.count(), 1);
+    assert.equal(await decisionsPanel.count(), 1);
+    assert.deepEqual(
+      consoleDiagnostics,
+      [],
+      "Development React must emit no console warnings or errors",
+    );
+  };
+  await assertPanelIdentity();
+  await reset();
+  const uniquePlans = (await saved()).plans;
+  assert.equal(uniquePlans.length, 2);
+  assert.equal(new Set(uniquePlans.map((plan) => plan.id)).size, 2);
+  await assertPanelIdentity();
+  record(
+    "Single and multiple unique plans each render one package and one review panel without React key warnings",
+  );
+
+  await page.locator("#plan-review-finding").selectOption("0");
+  await go("unknown 자금 계획", "plan-section");
+  assert.equal(await page.locator("#plan-review-finding").inputValue(), "0");
+  await page.locator("#plan-version").selectOption(uniquePlans[0].id);
+  assert.equal(await page.locator("#plan-review-finding").inputValue(), "");
+  await assertPanelIdentity();
+  await page.locator("#plan-version").selectOption(uniquePlans[1].id);
+  await page.locator("#plan-review-finding").selectOption("0");
+  const revision = (await saved()).revision;
+  await page.locator("#revision-only").click();
+  await page.waitForFunction(() => document.querySelector("#plan-review-finding")?.value === "");
+  assert.equal((await saved()).revision, revision + 1);
+  assert.deepEqual((await saved()).plans, uniquePlans);
+  await assertPanelIdentity();
+  assert.deepEqual(await requests(), []);
+  record(
+    "Same-binding rerenders retain panel state; plan and revision changes reset it without duplicates",
+  );
+  await reset();
   const original = await saved();
   const originalPlan = original.plans.find((p) => p.version === 2);
   assert.equal(await language.locator("li").count(), 10);
@@ -266,6 +316,7 @@ try {
   record("Narrow-screen advice opens and focuses the question editor");
   assert.deepEqual(blockedNetwork, []);
   assert.deepEqual(errors, []);
+  await assertPanelIdentity();
   await writeFile(
     path.join(output, "report.json"),
     JSON.stringify(
@@ -277,6 +328,8 @@ try {
         checks,
         blockedNetwork,
         errors,
+        reactMode: "development",
+        consoleDiagnostics,
       },
       null,
       2,

@@ -59,6 +59,24 @@ function Harness() {
       >
         시험 초기화
       </button>
+      <button
+        id="single-plan"
+        onClick={() => {
+          const next = structuredClone(baseline);
+          next.plans = next.plans.filter((plan) => plan.version === 2);
+          setCompany(next);
+          setDirty(false);
+          setEpoch((previous) => previous + 1);
+        }}
+      >
+        원고 한 개만 표시
+      </button>
+      <button
+        id="revision-only"
+        onClick={() => setCompany((previous) => ({ ...previous, revision: previous.revision + 1 }))}
+      >
+        기업 버전만 갱신
+      </button>
       <select id="ack" value={ack} onChange={(e) => setAck(e.target.value)}>
         <option value="missing">저장 응답 없음</option>
         <option value="saved">저장 응답 반환</option>

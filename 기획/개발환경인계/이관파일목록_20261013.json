@@ -1,0 +1,97 @@
+{
+  "date": "2026-10-13",
+  "completedFeatureCommit": "39f689d8d40bd621cf610f0b98c847c0cb0c5f3c",
+  "note": "SHA-256 is the original local bytes before Git text line-ending normalization. No customer data, credentials, operational ledgers, logs or temporary builds are included.",
+  "preservedFiles": [
+    {
+      "source": "previous-parent/AGENTS.md",
+      "destination": "기획/개발환경인계/이전PC_인계원본/AGENTS-이전PC.md",
+      "bytes": 1701497,
+      "sha256": "599ca727cd46096a576d44364acfd687374fb428cae84bdf4fb85f11794bf96c"
+    },
+    {
+      "source": "previous-parent/CONTINUOUS_DEVELOPMENT.md",
+      "destination": "기획/개발환경인계/이전PC_인계원본/CONTINUOUS_DEVELOPMENT.md",
+      "bytes": 2468352,
+      "sha256": "756d3ce0a877cb98a0f337ccd06122f1367f17c32be44f02d5e0694426278226"
+    },
+    {
+      "source": "previous-parent/LOCAL_SETUP.md",
+      "destination": "기획/개발환경인계/이전PC_인계원본/LOCAL_SETUP.md",
+      "bytes": 1900867,
+      "sha256": "31d9eacdf518d370ccd04aa4737408d670620ff5a66e9224311df40441e62b3f"
+    },
+    {
+      "source": "previous-parent/OPERATIONAL_VALIDATION.md",
+      "destination": "기획/개발환경인계/이전PC_인계원본/OPERATIONAL_VALIDATION.md",
+      "bytes": 19081,
+      "sha256": "535988d3dfd0082d7526013eec29ddc1ca39aca42f5c1800feb3a1fc32a0e2fe"
+    },
+    {
+      "source": "previous-parent/README.md",
+      "destination": "기획/개발환경인계/이전PC_인계원본/README.md",
+      "bytes": 3361,
+      "sha256": "98f9a4038c6212bede3a5f0cbd6cc14851f966f95cfddc4d9cf313941bc47620"
+    },
+    {
+      "source": "previous-parent/analysis_audit.py",
+      "destination": "기획/개발환경인계/이전PC_인계원본/analysis_audit.py",
+      "bytes": 3776,
+      "sha256": "820967f3cf544306d775ee0cdfc75c6b16fd2d4b3f6d9d6dcb72f9e9ffa706eb"
+    },
+    {
+      "source": "previous-parent/analysis_report_audit.py",
+      "destination": "기획/개발환경인계/이전PC_인계원본/analysis_report_audit.py",
+      "bytes": 2586,
+      "sha256": "db5922bf3715f8a409e283ad1d86a2862fe4265d45c77d14856c7f23cfdf540e"
+    },
+    {
+      "source": "README-DESKTOP-KEVE.md",
+      "destination": "기획/개발환경인계/이전PC_인계원본/README-DESKTOP-KEVE.md",
+      "bytes": 5271,
+      "sha256": "79d03bc5b90791ad3aac44e39579dad89e013d56785a51f3fdbe40973695cf3a"
+    },
+    {
+      "source": "web/scripts/plan-editor-browser.tsx",
+      "destination": "web/scripts/plan-editor-browser.tsx",
+      "bytes": 4532,
+      "sha256": "82ad483240e6248d33c51fcace87e0b1bbd817fbbb664b9b441938c5515541c5"
+    },
+    {
+      "source": "web/scripts/plan-editor-validation.mjs",
+      "destination": "web/scripts/plan-editor-validation.mjs",
+      "bytes": 16028,
+      "sha256": "5ae52bff0e848e61015f129fcc0dcffee5f6396351f132676160857821e83040"
+    },
+    {
+      "source": "web/src/components/studio/plan-editor.tsx",
+      "destination": "web/src/components/studio/plan-editor.tsx",
+      "bytes": 26089,
+      "sha256": "1d0771a38c26a8c8faa5e691507dd7a3dc87259d0854d031290462faaf0ce157"
+    },
+    {
+      "source": "web/VALIDATION-DESKTOP-KEVE.md",
+      "destination": "web/VALIDATION-DESKTOP-KEVE.md",
+      "bytes": 150212,
+      "sha256": "dd58896c418eda8203687493078f1e9297f204c0b398c1340f226dc8da140c5e"
+    },
+    {
+      "source": "기획/3단계_기획반영_개발현황-DESKTOP-KEVE.md",
+      "destination": "기획/3단계_기획반영_개발현황-DESKTOP-KEVE.md",
+      "bytes": 43033,
+      "sha256": "9620af14d2b086771d985ffe00edb3cea9c4954b6f4727cc9ff50a5d2eff7754"
+    },
+    {
+      "source": "기획/연속개발_작업대장-DESKTOP-KEVE.md",
+      "destination": "기획/연속개발_작업대장-DESKTOP-KEVE.md",
+      "bytes": 100091,
+      "sha256": "3aa5058fe18903d5bebb52b506ec76dc946a6e8c1ff3f3fed89b0a63aff2382a"
+    },
+    {
+      "source": "기획/품질평가_운영승인_실행연결_후속설계.md",
+      "destination": "기획/품질평가_운영승인_실행연결_후속설계.md",
+      "bytes": 23399,
+      "sha256": "4727cd66e933da5d232c57938dd584361de9a67234d6d4a97912b26073083469"
+    }
+  ]
+}
