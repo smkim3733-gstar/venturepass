@@ -709,16 +709,27 @@ function VisitAnswersEditor({
       )}
       <div className="space-y-4">
         {latest.map((record) => {
-          const plan = company.plans.find((item) => item.id === record.planId);
+          const plans = company.plans.filter((item) => item.id === record.planId);
+          const plan = plans.length === 1 ? plans[0] : undefined;
+          const bindingMessageId = `visit-answer-${record.answerId}-plan-binding`;
           const history = company.visitAnswers.filter((item) => item.answerId === record.answerId);
           return (
             <div key={record.answerId} className="space-y-3">
               <VisitAnswerView company={company} record={record} />
+              {!plan && (
+                <div id={bindingMessageId}>
+                  <Notice tone="warning">
+                    기준 원고를 하나로 확인할 수 없어 새 버전을 열 수 없습니다. 원고 연결을 확인해
+                    주세요.
+                  </Notice>
+                </div>
+              )}
               <Button
                 type="button"
                 variant="outline"
                 size="sm"
                 disabled={blocked || atLimit || editor !== null || !plan}
+                aria-describedby={!plan ? bindingMessageId : undefined}
                 onClick={() => {
                   if (plan) {
                     openEditor(visitAnswerInputFor(plan, record.questionIndex, record));
