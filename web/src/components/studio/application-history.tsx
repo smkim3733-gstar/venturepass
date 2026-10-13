@@ -483,6 +483,10 @@ function ApplicationHistoryEditor({ company, mutate, blockedReason, onDirtyChang
   const isSubmission =
     input?.action === "record-application-submission" ||
     input?.action === "correct-application-submission";
+  const submissionPlans = isSubmission
+    ? company.plans.filter((plan) => plan.id === input.planId)
+    : [];
+  const submissionPlan = submissionPlans.length === 1 ? submissionPlans[0] : undefined;
   const isLink =
     input?.action === "link-application-agency" ||
     input?.action === "correct-application-agency-link";
@@ -669,6 +673,39 @@ function ApplicationHistoryEditor({ company, mutate, blockedReason, onDirtyChang
                     ))}
                   </select>
                 </div>
+                {input.planId && !submissionPlan && (
+                  <p role="alert" className="text-sm text-amber-900">
+                    선택한 원고 버전을 하나로 확인할 수 없어 본문을 표시하지 않습니다. 원고 버전을
+                    다시 확인해 주세요.
+                  </p>
+                )}
+                {submissionPlan && (
+                  <details
+                    key={form.clientRequestId + ":" + submissionPlan.id}
+                    className="min-w-0 space-y-2 rounded-xl border p-3"
+                  >
+                    <summary className="cursor-pointer text-sm font-medium">
+                      선택한 원고 본문 보기
+                    </summary>
+                    <p className="text-xs leading-6 text-muted-foreground">
+                      현재 선택한 저장 원고 v{submissionPlan.version}입니다. 읽기만으로 제출·검토
+                      상태가 바뀌지 않습니다.
+                    </p>
+                    <div
+                      role="region"
+                      aria-label="선택한 제출 원고 저장 본문"
+                      tabIndex={0}
+                      className="max-h-64 min-w-0 space-y-4 overflow-auto rounded-lg bg-muted/30 p-3 text-sm leading-6 [overflow-wrap:anywhere]"
+                    >
+                      {submissionPlan.content.sections.map((section, index) => (
+                        <div key={section.key + ":" + index}>
+                          <h5 className="font-semibold">{section.title}</h5>
+                          <p className="whitespace-pre-wrap">{section.content}</p>
+                        </div>
+                      ))}
+                    </div>
+                  </details>
+                )}
                 <AgencySourcePicker
                   sources={company.sources}
                   selected={input.sourceIds}
