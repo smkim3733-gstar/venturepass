@@ -256,6 +256,10 @@ export function AgencySourcePicker({
   selected: string[];
   onChange: (sourceIds: string[]) => void;
 }) {
+  const sourceCounts = new Map<string, number>();
+  for (const source of sources) {
+    sourceCounts.set(source.id, (sourceCounts.get(source.id) ?? 0) + 1);
+  }
   const originals = sources.filter((source) => source.originalName);
   return (
     <fieldset className="space-y-3 rounded-xl border p-4">
@@ -269,30 +273,41 @@ export function AgencySourcePicker({
           연결할 원본이 없습니다. 자료함에서 원본을 먼저 보관하거나 증빙 없이 기록할 수 있습니다.
         </p>
       )}
-      {originals.map((source) => (
-        <label key={source.id} className="flex items-start gap-2 text-sm leading-6">
-          <input
-            type="checkbox"
-            className="mt-1 accent-primary"
-            checked={selected.includes(source.id)}
-            disabled={selected.length >= 10 && !selected.includes(source.id)}
-            onChange={(event) =>
-              onChange(
-                event.target.checked
-                  ? [...selected, source.id]
-                  : selected.filter((id) => id !== source.id),
-              )
-            }
-          />
-          <span className="min-w-0 break-words">
-            {source.name}
-            <span className="block text-xs text-muted-foreground">{source.originalName}</span>
-            {source.extraction === "pending" && (
-              <Badge variant="outline">본문 미추출 · 분석 완료 아님</Badge>
-            )}
-          </span>
-        </label>
-      ))}
+      {originals.map((source, index) => {
+        const selectedSource = selected.includes(source.id);
+        const ambiguous = sourceCounts.get(source.id) !== 1;
+        return (
+          <label key={source.id + ":" + index} className="flex items-start gap-2 text-sm leading-6">
+            <input
+              type="checkbox"
+              className="mt-1 accent-primary"
+              checked={selectedSource}
+              disabled={!selectedSource && (ambiguous || selected.length >= 10)}
+              onChange={(event) => {
+                if (event.target.checked) {
+                  if (ambiguous || selectedSource || selected.length >= 10) return;
+                  onChange([...selected, source.id]);
+                } else {
+                  onChange(selected.filter((id) => id !== source.id));
+                }
+              }}
+            />
+            <span className="min-w-0 break-words">
+              {source.name}
+              <span className="block text-xs text-muted-foreground">{source.originalName}</span>
+              {ambiguous && (
+                <span className="block text-xs text-amber-900">
+                  자료를 하나로 확인할 수 없어 새로 선택할 수 없습니다. 선택한 자료는 해제할 수
+                  있습니다.
+                </span>
+              )}
+              {source.extraction === "pending" && (
+                <Badge variant="outline">본문 미추출 · 분석 완료 아님</Badge>
+              )}
+            </span>
+          </label>
+        );
+      })}
     </fieldset>
   );
 }
