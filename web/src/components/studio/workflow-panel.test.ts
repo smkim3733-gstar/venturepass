@@ -3,7 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import { caseSchema, emptyProfile, type StudioCase, type WorkflowTask } from "@/lib/studio-schema";
 import type { AgencyRequestRecord } from "@/lib/studio-agency-records";
-import { AgencyTaskReference, WorkflowPanel } from "./workflow-panel";
+import { AgencyTaskReference, WorkflowPanel, workflowTaskMatchesDueFilter } from "./workflow-panel";
 import { AgencyRequestTasks } from "./agency-records";
 
 const now = "2026-09-25T00:00:00.000Z";
@@ -220,4 +220,56 @@ describe("기본 후속 업무의 상세 진입", () => {
     expect(html).not.toContain('id="workflow-task-editor"');
     expect(html).toContain("현재 안내를 다시 확인");
   });
+});
+
+describe("저장 업무의 기한 필터", () => {
+  it("날짜 경계와 완료·미입력 업무를 구분하며 저장 입력을 바꾸지 않는다", () => {
+    const tasks = [
+      task({ title: "overdue", status: "pending", dueDate: "2026-10-12" }),
+      task({ title: "today", status: "pending", dueDate: "2026-10-13" }),
+      task({ title: "seventh", status: "pending", dueDate: "2026-10-20" }),
+      task({ title: "eighth", status: "pending", dueDate: "2026-10-21" }),
+      task({ title: "undated", status: "pending", dueDate: "" }),
+      task({ title: "done-overdue", status: "done", dueDate: "2026-10-12" }),
+      task({ title: "done-soon", status: "done", dueDate: "2026-10-20" }),
+      task({ title: "done-undated", status: "done", dueDate: "" }),
+    ];
+    const before = structuredClone(tasks);
+    const selected = (filter: Parameters<typeof workflowTaskMatchesDueFilter>[1]) =>
+      tasks
+        .filter((t) => workflowTaskMatchesDueFilter(t, filter, "2026-10-13"))
+        .map((t) => t.title);
+    expect(selected("all")).toEqual(tasks.map((t) => t.title));
+    expect(selected("overdue")).toEqual(["overdue"]);
+    expect(selected("due-soon")).toEqual(["today", "seventh"]);
+    expect(selected("undated")).toEqual(["undated"]);
+    expect(tasks).toEqual(before);
+  });
+  it.each([
+    ["2026-12-28", "2027-01-04", "2027-01-05"],
+    ["2028-02-25", "2028-03-03", "2028-03-04"],
+  ])("%s의 7일 범위는 연도·윤년 경계를 달력 날짜로 넘긴다", (today, seventh, eighth) => {
+    expect(
+      workflowTaskMatchesDueFilter(
+        task({ status: "pending", dueDate: seventh }),
+        "due-soon",
+        today,
+      ),
+    ).toBe(true);
+    expect(
+      workflowTaskMatchesDueFilter(task({ status: "pending", dueDate: eighth }), "due-soon", today),
+    ).toBe(false);
+  });
+  it.each(["", "not-a-date", "2026-02-30"])(
+    "유효하지 않은 기준일 %s에서 기한 경과·임박을 단정하지 않는다",
+    (today) => {
+      const dated = task({ status: "pending", dueDate: "2026-01-01" });
+      expect(workflowTaskMatchesDueFilter(dated, "overdue", today)).toBe(false);
+      expect(workflowTaskMatchesDueFilter(dated, "due-soon", today)).toBe(false);
+      expect(workflowTaskMatchesDueFilter(dated, "all", today)).toBe(true);
+      expect(
+        workflowTaskMatchesDueFilter(task({ status: "pending", dueDate: "" }), "undated", today),
+      ).toBe(true);
+    },
+  );
 });

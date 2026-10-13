@@ -35,6 +35,7 @@ import { ResponsePreparations } from "./response-preparation";
 import { VisitAnswers } from "./visit-answers";
 import { CertificateRenewal, CertificateTaskReference } from "./certificate-renewal";
 import { VisitPackagePanel } from "./visit-package-panel";
+import { useLocalDay } from "./case-attention";
 
 const categoryLabels = {
   evidence: "자료 준비",
@@ -58,6 +59,27 @@ const stageHelp: Record<(typeof stageValues)[number], string> = {
   confirmed: "공식 사이트의 확인서 발급 결과와 유효기간을 확인하세요.",
   closed: "진행 결과와 후속 개선 과제를 남겨 주세요.",
 };
+type WorkflowTaskDueFilter = "all" | "overdue" | "due-soon" | "undated";
+
+export function workflowTaskMatchesDueFilter(
+  task: WorkflowTask,
+  filter: WorkflowTaskDueFilter,
+  today: string,
+) {
+  if (filter === "all") return true;
+  if (task.status !== "pending") return false;
+  if (filter === "undated") return !task.dueDate;
+  const validDay =
+    /^\d{4}-\d{2}-\d{2}$/.test(today) &&
+    Number.isFinite(Date.parse(today + "T00:00:00.000Z")) &&
+    new Date(today + "T00:00:00.000Z").toISOString().slice(0, 10) === today;
+  if (!validDay || !task.dueDate) return false;
+  if (filter === "overdue") return task.dueDate < today;
+  const end = new Date(today + "T00:00:00.000Z");
+  end.setUTCDate(end.getUTCDate() + 7);
+  return task.dueDate >= today && task.dueDate <= end.toISOString().slice(0, 10);
+}
+
 function newTask(): WorkflowTask {
   return {
     id: crypto.randomUUID(),
@@ -164,6 +186,7 @@ export function WorkflowPanel({
   const taskFilterId = useId();
   const [taskFilter, setTaskFilter] = useState<"all" | WorkflowTask["status"]>("all");
   const [taskSearch, setTaskSearch] = useState("");
+  const [taskDueFilter, setTaskDueFilter] = useState<WorkflowTaskDueFilter>("all");
   const [stage, setStage] = useState(company.stage);
   const [stageNote, setStageNote] = useState("");
   const [occurredOn, setOccurredOn] = useState("");
@@ -294,7 +317,7 @@ export function WorkflowPanel({
       task: { ...item, status: item.status === "done" ? "pending" : "done" },
     });
   }
-  const today = new Date().toLocaleDateString("sv-SE");
+  const today = useLocalDay();
   const sortedTasks = [...company.tasks].sort(
     (a, b) =>
       Number(a.status === "done") - Number(b.status === "done") ||
@@ -304,6 +327,7 @@ export function WorkflowPanel({
   const visibleTasks = sortedTasks.filter(
     (item) =>
       (taskFilter === "all" || item.status === taskFilter) &&
+      workflowTaskMatchesDueFilter(item, taskDueFilter, today) &&
       (!taskSearchTerm ||
         [item.title, item.notes, ...Object.values(item.owners ?? {})].some((value) =>
           value.toLowerCase().includes(taskSearchTerm),
@@ -314,7 +338,7 @@ export function WorkflowPanel({
     <div
       onClickCapture={(event) => {
         if (
-          (taskFilter === "all" && !taskSearchTerm) ||
+          (taskFilter === "all" && taskDueFilter === "all" && !taskSearchTerm) ||
           event.button !== 0 ||
           event.ctrlKey ||
           event.metaKey ||
@@ -330,6 +354,7 @@ export function WorkflowPanel({
           flushSync(() => {
             setTaskFilter("all");
             setTaskSearch("");
+            setTaskDueFilter("all");
           });
         }
       }}
@@ -667,6 +692,24 @@ export function WorkflowPanel({
             <option value="pending">미완료 ({pendingTaskCount})</option>
             <option value="done">완료 ({company.tasks.length - pendingTaskCount})</option>
           </select>
+          <Label htmlFor={`${taskFilterId}-due`}>업무 기한</Label>
+          <select
+            id={`${taskFilterId}-due`}
+            className={selectClass}
+            value={taskDueFilter}
+            disabled={!today}
+            aria-describedby={`${taskFilterId}-due-help`}
+            onChange={(event) => setTaskDueFilter(event.target.value as WorkflowTaskDueFilter)}
+          >
+            <option value="all">전체 기한</option>
+            <option value="overdue">기한 경과 · 미완료</option>
+            <option value="due-soon">오늘~7일 내 · 미완료</option>
+            <option value="undated">기한 미입력 · 미완료</option>
+          </select>
+          <p id={`${taskFilterId}-due-help`} className="text-xs leading-6 text-muted-foreground">
+            PC 기준일 {today || "확인 중"}. 기한별 선택은 저장된 미완료 업무에 적용하며, 오늘~7일은
+            오늘과 7일 뒤 날짜를 포함합니다. 날짜 구분은 60초마다 갱신합니다.
+          </p>
           <p role="status" className="text-sm text-muted-foreground">
             표시 {visibleTasks.length}개 / 전체 {company.tasks.length}개
           </p>
@@ -772,12 +815,18 @@ export function WorkflowPanel({
       ) : visibleTasks.length === 0 ? (
         <EmptyPanel
           title={
-            taskSearchTerm ? "검색 조건에 맞는 업무가 없습니다" : "선택한 상태의 업무가 없습니다"
+            taskSearchTerm
+              ? "검색 조건에 맞는 업무가 없습니다"
+              : taskDueFilter !== "all"
+                ? "선택한 조건의 업무가 없습니다"
+                : "선택한 상태의 업무가 없습니다"
           }
           description={
             taskSearchTerm
-              ? "검색어를 지우거나 업무 상태를 바꿔 주세요."
-              : "업무 상태를 전체로 바꾸면 저장된 모든 업무를 볼 수 있습니다."
+              ? "검색어를 지우거나 업무 상태·기한을 바꿔 주세요."
+              : taskDueFilter !== "all"
+                ? "업무 기한을 전체로 바꾸거나 업무 상태를 조정해 주세요. 기한별 선택은 미완료 업무만 표시합니다."
+                : "업무 상태를 전체로 바꾸면 저장된 모든 업무를 볼 수 있습니다."
           }
         />
       ) : (
