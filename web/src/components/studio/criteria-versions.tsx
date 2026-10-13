@@ -437,12 +437,15 @@ function CriteriaVersionsBody({ company, mutate, blockedReason, onDirtyChange }:
     bindings = company.applicationCriteriaBindings ?? [],
     latest = latestCriteriaVersions(company);
   const input = form?.input;
-  const selectedVersion =
+  const companyVersions = versions.filter((record) => record.caseId === company.id);
+  const versionIdCounts = new Map<string, number>();
+  for (const record of companyVersions)
+    versionIdCounts.set(record.id, (versionIdCounts.get(record.id) ?? 0) + 1);
+  const selectedVersions =
     input?.action === "pin-application-criteria"
-      ? versions.find(
-          (record) => record.caseId === company.id && record.id === input.criteriaVersionId,
-        )
-      : null;
+      ? companyVersions.filter((record) => record.id === input.criteriaVersionId)
+      : [];
+  const selectedVersion = selectedVersions.length === 1 ? selectedVersions[0] : null;
   function open(command: CriteriaCommand) {
     if (
       blocked ||
@@ -654,9 +657,11 @@ function CriteriaVersionsBody({ company, mutate, blockedReason, onDirtyChange }:
                     value={input.criteriaVersionId}
                     disabled={!input.applicationId}
                     onChange={(event) => {
-                      const record = versions.find(
-                        (item) => item.id === event.target.value && item.caseId === company.id,
+                      const matches = companyVersions.filter(
+                        (item) => item.id === event.target.value,
                       );
+                      if (event.target.value && matches.length !== 1) return;
+                      const record = matches[0];
                       edit({
                         ...input,
                         criteriaVersionId: record?.id ?? "",
@@ -665,17 +670,27 @@ function CriteriaVersionsBody({ company, mutate, blockedReason, onDirtyChange }:
                     }}
                   >
                     <option value="">기준 버전을 직접 선택하세요</option>
-                    {versions
-                      .filter((record) => record.caseId === company.id)
-                      .map((record) => (
-                        <option key={record.id} value={record.id}>
-                          {record.details.title} · v{record.version} · {record.details.versionLabel}
-                          {latest.some((item) => item.id === record.id) ? "" : " · 과거 버전"}
-                        </option>
-                      ))}
+                    {companyVersions.map((record, index) => (
+                      <option
+                        key={`${record.id}-${index}`}
+                        value={record.id}
+                        disabled={versionIdCounts.get(record.id) !== 1}
+                      >
+                        {record.details.title} · v{record.version} · {record.details.versionLabel}
+                        {latest.some((item) => item.id === record.id) ? "" : " · 과거 버전"}
+                        {versionIdCounts.get(record.id) !== 1 ? " · 기준 ID 중복 · 선택 불가" : ""}
+                      </option>
+                    ))}
                   </select>
                 </div>
+                {input.criteriaVersionId && !selectedVersion && (
+                  <p role="alert" className="text-sm text-amber-800">
+                    선택한 기준 버전을 하나로 확인할 수 없어 내용을 표시하지 않습니다. 기준 연결을
+                    다시 확인해 주세요.
+                  </p>
+                )}
                 {selectedVersion && <CriteriaVersionView record={selectedVersion} anchor={false} />}
+
                 <p className="text-xs text-muted-foreground">
                   이 버전의 모든 조건과 내용 식별값을 회차에 고정합니다. 기존 연결은 별도 이력으로
                   보존됩니다. 기준 연결만으로 신청·제출·검토를 완료하지 않습니다.
