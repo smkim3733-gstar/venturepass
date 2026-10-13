@@ -482,6 +482,14 @@ function ApplicationProceduresBody({ company, mutate, blockedReason, onDirtyChan
                 className={selectClass}
                 value={form.input.applicationMetadataVersionId ? form.input.applicationId : ""}
                 onChange={(event) => {
+                  if (blocked || inFlight.current || form.attempted) return;
+                  if (
+                    (form.input.agencyVersionId || form.input.expectedLinkEventId) &&
+                    !window.confirm(
+                      "선택한 기관 원문 연결을 해제하고 신청 회차를 변경할까요? 기입한 날짜·근거와 추가 증빙은 유지됩니다.",
+                    )
+                  )
+                    return;
                   const cycle = applicationMetadata(company, event.target.value);
                   edit({
                     ...form.input,
