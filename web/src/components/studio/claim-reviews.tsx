@@ -721,6 +721,12 @@ function ClaimReviewsPanel({
   blockedReason = "",
   onDirtyChange,
 }: ClaimReviewsProps) {
+  const filterId = useId();
+  const filterRef = useRef<HTMLSelectElement>(null);
+  const [judgementFilter, setJudgementFilter] = useState<
+    "all" | ClaimReviewRecord["judgement"]["state"]
+  >("all");
+  const [recheckOnly, setRecheckOnly] = useState(false);
   const [editor, setEditor] = useState<ClaimReviewInput | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
@@ -738,6 +744,11 @@ function ClaimReviewsPanel({
   const records = company.claimReviews ?? [];
   const latest = latestClaimReviews(company);
   const older = records.filter((record) => !latest.some((item) => item.id === record.id));
+  const visibleLatest = latest.filter(
+    (record) =>
+      (judgementFilter === "all" || record.judgement.state === judgementFilter) &&
+      (!recheckOnly || claimReviewContext(company, record).state !== "current"),
+  );
   const atLimit = records.length >= claimReviewLimits.versions;
   const blocked = Boolean(blockedReason) || saving;
   function open(previous?: ClaimReviewRecord) {
@@ -823,7 +834,62 @@ function ClaimReviewsPanel({
       >
         새 주장·근거 기록
       </Button>
-      {[...latest].reverse().map((record) => (
+      {latest.length > 0 && (
+        <div className="space-y-3 rounded-xl border bg-muted/20 p-4">
+          <Label htmlFor={filterId}>저장 당시 담당자 판단으로 최신 주장 보기</Label>
+          <select
+            ref={filterRef}
+            id={filterId}
+            className={selectClass}
+            value={judgementFilter}
+            aria-describedby={`${filterId}-help`}
+            onChange={(event) => setJudgementFilter(event.target.value as typeof judgementFilter)}
+          >
+            <option value="all">전체 판단 ({latest.length})</option>
+            {Object.entries(judgementLabels).map(([value, label]) => (
+              <option key={value} value={value}>
+                {label} ({latest.filter((record) => record.judgement.state === value).length})
+              </option>
+            ))}
+          </select>
+          <label className="flex items-start gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={recheckOnly}
+              aria-describedby={`${filterId}-help`}
+              onChange={(event) => setRecheckOnly(event.target.checked)}
+            />
+            연결 문맥 재확인 필요만
+          </label>
+          <p id={`${filterId}-help`} className="text-xs leading-6 text-muted-foreground">
+            각 주장의 최신 저장 버전만 좁혀 봅니다. 저장 당시 담당자 판단은 사실 검증 완료를 뜻하지
+            않습니다. 연결 문맥은 현재 받은 원고·자료의 등록 정보와 대조하며 원본 파일을 다시 읽지
+            않습니다. 과거 버전과 작성 중 입력에는 조건을 적용하지 않습니다.
+          </p>
+          <p role="status" className="text-sm text-muted-foreground">
+            최신 주장 표시 {visibleLatest.length}개 / 전체 {latest.length}개
+          </p>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            disabled={judgementFilter === "all" && !recheckOnly}
+            onClick={() => {
+              setJudgementFilter("all");
+              setRecheckOnly(false);
+              filterRef.current?.focus();
+            }}
+          >
+            주장 목록 조건 초기화
+          </Button>
+          {visibleLatest.length === 0 && (
+            <p className="text-sm text-muted-foreground">
+              선택한 조건의 최신 주장 검토가 없습니다.
+            </p>
+          )}
+        </div>
+      )}
+      {[...visibleLatest].reverse().map((record) => (
         <div key={record.id} className="space-y-2">
           <ClaimReviewRecordView company={company} record={record} />
           <Button
