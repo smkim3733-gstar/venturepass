@@ -149,6 +149,7 @@ function CertificateRenewalEditor({
   );
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  const [dateFocusRequest, setDateFocusRequest] = useState(0);
   const pending = useRef(false);
   const mounted = useRef(false);
   useEffect(() => {
@@ -157,6 +158,12 @@ function CertificateRenewalEditor({
     element?.scrollIntoView({ block: "start" });
     element?.focus({ preventScroll: true });
   }, [guidedFocus]);
+  useEffect(() => {
+    if (!dateFocusRequest) return;
+    const element = document.getElementById(`${id}-date`);
+    element?.scrollIntoView({ block: "center" });
+    element?.focus({ preventScroll: true });
+  }, [dateFocusRequest, id]);
   useEffect(() => {
     mounted.current = true;
     return () => {
@@ -297,6 +304,7 @@ function CertificateRenewalEditor({
                     attempted: false,
                     companyRevision: company.revision,
                   });
+                  setDateFocusRequest((request) => request + 1);
                   setError("");
                 }}
               >
