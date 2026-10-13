@@ -721,7 +721,31 @@ export function ResponsePreparations({
     }
     const parsed = responsePreparationInputSchema.safeParse(form.input);
     if (!parsed.success) {
-      setError(parsed.error.issues[0]?.message || "요청 인용과 입력 내용을 확인해 주세요.");
+      const path = parsed.error.issues[0]?.path ?? [];
+      let message = "답변 준비안의 필수 항목과 입력 형식을 확인해 주세요.";
+      if (path[0] === "title") message = "답변 준비안 제목을 1~300자로 입력해 주세요.";
+      else if (path[0] === "items" && typeof path[1] === "number") {
+        const fields: Record<string, string> = {
+          requestQuote: "요청 원문 인용을 1~1,500자로 입력해 주세요.",
+          summary: "담당자 요약을 1~200자로 입력해 주세요.",
+          gap: "부족한 자료와 확보할 이유는 2,000자 이내로 입력해 주세요.",
+          draft: "답변 초안은 20,000자 이내로 입력해 주세요.",
+        };
+        const planFields: Record<string, string> = {
+          planId: "연결할 원고 버전을 다시 확인해 주세요.",
+          sectionKey: "연결할 원고 항목을 선택해 주세요.",
+          quote: "원고 인용을 1~1,500자로 입력해 주세요.",
+        };
+        const detail =
+          path[2] === "planClaim"
+            ? (planFields[String(path[3])] ?? "원고 연결과 인용의 입력 형식을 확인해 주세요.")
+            : path[2] === "evidence"
+              ? "근거 자료의 연결·인용·위치와 입력 한도를 확인해 주세요."
+              : (fields[String(path[2])] ?? "필수 항목과 입력 형식을 확인해 주세요.");
+        message = `대응 항목 ${path[1] + 1} · ${detail}`;
+      } else if (path[0] === "items")
+        message = "대응 항목을 1~10개로 구성하고 중복 항목이 없는지 확인해 주세요.";
+      setError(message);
       return;
     }
     pending.current = true;
