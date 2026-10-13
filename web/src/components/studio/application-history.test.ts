@@ -405,3 +405,103 @@ describe("저장 응답의 회사·요청 번호 대조", () => {
     expect(applicationSaveAcknowledged(duplicate, companyId, 5, id(102))).toBe(false);
   });
 });
+
+describe("제출 접수 연결의 고유성과 종류", () => {
+  it.each(["missing", "duplicate", "request", "payment"] as const)(
+    "does not display arbitrary receipt details for a %s link",
+    (mode) => {
+      const record = company();
+      if (mode === "missing") record.agencyRecords = [];
+      if (mode === "duplicate")
+        record.agencyRecords.push(receipt({ title: "중복 접수 제목", body: "다른 중복 본문" }));
+      if (mode === "payment")
+        record.agencyRecords = [
+          receipt({
+            details: {
+              category: "payment",
+              amountWon: "",
+              dueOn: "",
+              dueNote: "",
+              paidOn: "",
+              referenceNumber: "납부기록",
+              statusText: "",
+            },
+          }),
+        ];
+      if (mode === "request") {
+        const { details, noticeRecordId, ...common } = receipt();
+        void details;
+        void noticeRecordId;
+        record.agencyRecords = [
+          {
+            ...common,
+            kind: "request",
+            requestRecordId: receiptId,
+            requestVersionId: receiptId,
+            responseStatus: null,
+            dueOn: "",
+            dueNote: "",
+          },
+        ];
+      }
+      const value = submission();
+      const original = structuredClone({ record, value });
+      const html = renderToStaticMarkup(
+        createElement(ApplicationSubmissionView, { company: record, submission: value }),
+      );
+      expect(html).toContain(
+        "연결한 접수 통보를 하나로 확인할 수 없어 원문을 표시하지 않습니다. 접수 연결을 다시 확인해 주세요.",
+      );
+      expect(html).toContain('role="alert"');
+      expect(html).toContain("연결 기록 확인 필요");
+      expect(html).not.toContain("당시 연결한 접수 기록 보기");
+      expect(html).not.toContain("첫 통보의 담당자 기록");
+      expect(html).not.toContain("접수 안내 원문");
+      expect(html).not.toContain("다른 중복 본문");
+      expect(html).toContain("당시 원본");
+      expect(html).toContain("당시 준비자");
+      expect(html).toContain("2026-09-23");
+      expect(html).toContain("기관 확인 미실시");
+      expect({ record, value }).toEqual(original);
+    },
+  );
+
+  it("keeps the exact linked receipt version and treats an empty link as unlinked", () => {
+    const record = company();
+    record.agencyRecords.push(
+      receipt({
+        id: id(15),
+        kind: "notice-correction",
+        previousVersionId: receiptId,
+        version: 2,
+        body: "후속 접수 원문",
+        details: {
+          category: "receipt",
+          receiptNumber: "후속-번호",
+          receivedOn: "2026-09-25",
+          statusText: "",
+        },
+      }),
+    );
+    const value = submission();
+    const original = structuredClone({ record, value });
+    const html = renderToStaticMarkup(
+      createElement(ApplicationSubmissionView, { company: record, submission: value }),
+    );
+    expect(html).toContain("첫 통보의 담당자 기록");
+    expect(html).toContain("기입번호-ABC");
+    expect(html).not.toContain("후속 접수 원문");
+    expect(html).not.toContain("후속-번호");
+    expect(html).not.toContain("연결한 접수 통보를 하나로 확인할 수 없어");
+    const unlinked = renderToStaticMarkup(
+      createElement(ApplicationSubmissionView, {
+        company: record,
+        submission: submission({ receiptRecordId: null }),
+      }),
+    );
+    expect(unlinked).toContain("미연결");
+    expect(unlinked).not.toContain("당시 연결한 접수 기록 보기");
+    expect(unlinked).not.toContain("연결한 접수 통보를 하나로 확인할 수 없어");
+    expect({ record, value }).toEqual(original);
+  });
+});

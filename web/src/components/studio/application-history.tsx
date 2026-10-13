@@ -179,7 +179,16 @@ export function ApplicationSubmissionView({
   submission: ApplicationSubmission;
   company: StudioCase;
 }) {
-  const receipt = company.agencyRecords.find((record) => record.id === submission.receiptRecordId);
+  const receiptMatches = company.agencyRecords.filter(
+    (record) => record.id === submission.receiptRecordId,
+  );
+  const receiptCandidate = receiptMatches.length === 1 ? receiptMatches[0] : null;
+  const receipt =
+    receiptCandidate &&
+    isAgencyNoticeRecord(receiptCandidate) &&
+    receiptCandidate.details.category === "receipt"
+      ? receiptCandidate
+      : null;
   const pending = submission.plan.sections.filter((section) => section.needsConfirmation).length;
   const warnings = submission.plan.review.filter(
     (issue) => issue.severity === "error" || issue.category === "confirmation",
@@ -251,6 +260,12 @@ export function ApplicationSubmissionView({
       <p className="text-muted-foreground">
         연결한 접수 통보도 담당자가 보관한 기록이며, 기관 접수 자동 확인이 아닙니다.
       </p>
+      {submission.receiptRecordId && !receipt && (
+        <p role="alert" className="text-amber-800">
+          연결한 접수 통보를 하나로 확인할 수 없어 원문을 표시하지 않습니다. 접수 연결을 다시 확인해
+          주세요.
+        </p>
+      )}
       {receipt && (
         <details className="rounded-lg border p-3">
           <summary className="cursor-pointer">당시 연결한 접수 기록 보기</summary>
