@@ -82,7 +82,12 @@ export function guidedAnswerText(
     if (new Set(ids).size !== ids.length || ids.length > 100)
       throw Error("연결 자료를 다시 확인해 주세요.");
     const sources = ids.map((id) => {
-      const source = company.sources.find((s) => s.id === id);
+      const matches = company.sources.filter((s) => s.id === id);
+      if (matches.length > 1)
+        throw Error(
+          "연결한 자료 ID가 중복되었습니다. 입력은 유지하니 자료 연결을 다시 확인해 주세요.",
+        );
+      const source = matches[0];
       if (!source)
         throw Error("연결한 자료가 바뀌었습니다. 입력은 유지하니 자료를 다시 선택해 주세요.");
       return `${source.name} · 자료 ${source.id} · 기록 시각 ${source.updatedAt} · ${source.extraction === "pending" ? "본문 판독·채택 전" : source.text.trim() ? "저장 본문 있음(진위 확인 별도)" : "본문 없음 · 기본 정보만"}`;

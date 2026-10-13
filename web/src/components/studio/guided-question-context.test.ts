@@ -192,3 +192,46 @@ describe("보완 질문 출처·연결과 사용자 진술 보관", () => {
       expect(html).toContain(text);
   });
 });
+
+describe("간단 답변의 자료 ID 고유성", () => {
+  it.each([false, true])(
+    "같은 ID의 순서가 바뀌어도 첫 자료를 임의로 보관하지 않는다: %s",
+    (reversed) => {
+      const { company, plan } = setup();
+      const source = { ...company.sources[0], name: "첫 중복 자료", text: "FIRST_BODY" };
+      const duplicate = {
+        ...source,
+        name: "다른 중복 자료",
+        text: "SECOND_BODY",
+        updatedAt: "2026-10-13T00:00:00.000Z",
+      };
+      const unique = {
+        ...source,
+        id: "b0000000-0000-4000-8000-000000000099",
+        name: "고유 자료",
+        text: "UNIQUE_BODY",
+      };
+      company.sources = reversed ? [duplicate, source, unique] : [source, duplicate, unique];
+      const questions = guidedQuestionContexts(company, plan);
+      const question = questions[0];
+      const answers = { [question.id]: "  입력을 그대로\n  유지  " };
+      const links = { [question.id]: { sectionKey: "development", sourceIds: [source.id] } };
+      const original = structuredClone({ company, questions, answers, links });
+      expect(() => guidedAnswerText(company, questions, answers, links)).toThrow(
+        "연결한 자료 ID가 중복되었습니다. 입력은 유지하니 자료 연결을 다시 확인해 주세요.",
+      );
+      expect({ company, questions, answers, links }).toEqual(original);
+      const uniqueLinks = { [question.id]: { ...links[question.id], sourceIds: [unique.id] } };
+      const uniqueBefore = structuredClone(uniqueLinks);
+      const text = guidedAnswerText(company, questions, answers, uniqueLinks)!;
+      expect(text).toContain(unique.name);
+      expect(text).toContain(unique.id);
+      expect(text).not.toContain(source.name);
+      expect(text).not.toContain(duplicate.name);
+      for (const body of [source.text, duplicate.text, unique.text])
+        expect(text).not.toContain(body);
+      expect(uniqueLinks).toEqual(uniqueBefore);
+      expect({ company, questions, answers, links }).toEqual(original);
+    },
+  );
+});

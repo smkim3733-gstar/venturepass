@@ -21,6 +21,9 @@ export function GuidedQuestionCard({
 }) {
   const value = link ?? { sectionKey: "", sourceIds: [] };
   const examples = guidedQuestionExamples(value.sectionKey);
+  const sourceIdCounts = new Map<string, number>();
+  for (const source of company.sources)
+    sourceIdCounts.set(source.id, (sourceIdCounts.get(source.id) ?? 0) + 1);
   return (
     <div className="space-y-2 mb-3">
       <p className={styles.helper}>
@@ -74,24 +77,39 @@ export function GuidedQuestionCard({
             </p>
             <div className="max-h-96 overflow-y-auto">
               {company.sources.map((source, index) => (
-                <div key={`${company.id}:${source.id}`} className="border-b py-2 last:border-0">
+                <div
+                  key={`${company.id}:${source.id}:${index}`}
+                  className="border-b py-2 last:border-0"
+                >
                   <label className="flex gap-2 py-2 text-sm break-all">
                     <input
                       type="checkbox"
-                      disabled={disabled}
+                      disabled={
+                        disabled ||
+                        (sourceIdCounts.get(source.id) !== 1 &&
+                          !value.sourceIds.includes(source.id))
+                      }
                       checked={value.sourceIds.includes(source.id)}
-                      onChange={(e) =>
+                      onChange={(e) => {
+                        if (disabled || (e.target.checked && sourceIdCounts.get(source.id) !== 1))
+                          return;
                         onLink({
                           ...value,
                           sourceIds: e.target.checked
                             ? [...value.sourceIds, source.id]
                             : value.sourceIds.filter((id) => id !== source.id),
-                        })
-                      }
+                        });
+                      }}
                     />
                     자료 {index + 1} · {source.name}{" "}
                     {source.extraction === "pending" ? "· 본문 채택 전" : "· 진위 확인 별도"}
                   </label>
+                  {sourceIdCounts.get(source.id) !== 1 && (
+                    <p className={styles.helper}>
+                      자료 ID가 중복되어 새로 연결할 수 없습니다. 이미 연결한 자료는 해제할 수
+                      있습니다.
+                    </p>
+                  )}
                   <details className={styles.details} aria-label={`자료 ${index + 1} 저장된 본문`}>
                     <summary>저장된 본문 보기</summary>
                     <p className={styles.helper}>
