@@ -364,6 +364,7 @@ function ApplicationHistoryEditor({ company, mutate, blockedReason, onDirtyChang
   const [form, setForm] = useState<FormState | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  const [errorTarget, setErrorTarget] = useState<{ id: string; label: string } | null>(null);
   const mounted = useRef(false);
   const inFlight = useRef(false);
   const id = useId();
@@ -394,9 +395,16 @@ function ApplicationHistoryEditor({ company, mutate, blockedReason, onDirtyChang
       attempted: null,
     });
     setError("");
+    setErrorTarget(null);
   }
   function edit(value: Command) {
-    if (form && !form.attempted && !blocked) setForm({ ...form, input: value });
+    if (form && !form.attempted && !blocked) {
+      setForm({ ...form, input: value });
+      if (errorTarget) {
+        setError("");
+        setErrorTarget(null);
+      }
+    }
   }
   function cancel() {
     if (saving) return;
@@ -411,16 +419,51 @@ function ApplicationHistoryEditor({ company, mutate, blockedReason, onDirtyChang
       return;
     setForm(null);
     setError("");
+    setErrorTarget(null);
   }
   async function save() {
     if (!form || blocked || inFlight.current || form.binding !== binding) return;
+    setErrorTarget(null);
     const parsed = applicationMutationSchema.safeParse({
       ...form.input,
       revision: company.revision,
       clientRequestId: form.clientRequestId,
     });
     if (!parsed.success) {
-      setError(parsed.error.issues[0]?.message || "기록 내용을 확인해 주세요.");
+      const issue = parsed.error.issues[0];
+      const field = issue?.path.length === 1 ? issue.path[0] : null;
+      const value = form.input;
+      if (
+        value.action === "record-application-submission" ||
+        value.action === "correct-application-submission"
+      ) {
+        const missing =
+          field === "planId" && !value.planId
+            ? {
+                message: "제출했다고 기록할 원고 버전을 선택해 주세요.",
+                suffix: "plan",
+                label: "원고 버전",
+              }
+            : field === "occurredOn" && !value.occurredOn
+              ? {
+                  message: "제출했다고 기록할 날짜를 입력해 주세요.",
+                  suffix: "occurred",
+                  label: "제출일",
+                }
+              : field === "recordedBy" && !value.recordedBy.trim()
+                ? {
+                    message: "기록자 이름을 입력해 주세요.",
+                    suffix: "recorder",
+                    label: "기록자 이름",
+                  }
+                : null;
+        if (missing) {
+          setError(missing.message);
+          setErrorTarget({ id: id + "-" + missing.suffix, label: missing.label });
+          return;
+        }
+      }
+      setError(issue?.message || "기록 내용을 확인해 주세요.");
       return;
     }
     const payload = JSON.stringify(parsed.data);
@@ -431,6 +474,7 @@ function ApplicationHistoryEditor({ company, mutate, blockedReason, onDirtyChang
     inFlight.current = true;
     setSaving(true);
     setError("");
+    setErrorTarget(null);
     setForm({ ...form, attempted: payload });
     try {
       const { revision: _revision, ...mutation } = parsed.data;
@@ -535,6 +579,21 @@ function ApplicationHistoryEditor({ company, mutate, blockedReason, onDirtyChang
       {error && (
         <div role="alert">
           <Notice tone="warning">{error}</Notice>
+          {errorTarget && form && (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="mt-2"
+              disabled={blocked || Boolean(form.attempted)}
+              onClick={() => {
+                if (blocked || form.attempted) return;
+                document.getElementById(errorTarget.id)?.focus();
+              }}
+            >
+              {errorTarget.label} 입력으로 이동
+            </Button>
+          )}
         </div>
       )}
       {form && input && (
