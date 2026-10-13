@@ -322,11 +322,13 @@ export function ClaimReviewFields({
         <Label htmlFor={`${prefix}-numeric`}>수치 대조 참고 버전 (최대 10개)</Label>
         <select
           id={`${prefix}-numeric`}
+          aria-describedby={`${prefix}-numeric-count`}
           multiple
           className={`${selectClass} !h-32`}
           value={value.numericReferences.map((ref) => ref.id)}
           onChange={(event) => {
             const ids = Array.from(event.target.selectedOptions, (item) => item.value);
+            if (ids.length > claimReviewLimits.references) return;
             onChange({
               ...value,
               numericReferences: ids
@@ -341,23 +343,32 @@ export function ClaimReviewFields({
               key={`${item.id}-${index}`}
               value={item.id}
               disabled={
-                company.numericChecks.filter((record) => record.id === item.id).length !== 1
+                company.numericChecks.filter((record) => record.id === item.id).length !== 1 ||
+                (value.numericReferences.length >= claimReviewLimits.references &&
+                  !value.numericReferences.some((ref) => ref.id === item.id))
               }
             >
               대조 v{item.version} · {item.title}
             </option>
           ))}
         </select>
+        <p id={`${prefix}-numeric-count`} className="text-xs text-muted-foreground">
+          선택 {value.numericReferences.length}/{claimReviewLimits.references}개
+          {value.numericReferences.length >= claimReviewLimits.references &&
+            " · 더 고르려면 선택한 버전을 먼저 해제해 주세요."}
+        </p>
       </div>
       <div className="space-y-2">
         <Label htmlFor={`${prefix}-plan-review`}>선택한 원고의 검토 판단 버전 (최대 10개)</Label>
         <select
           id={`${prefix}-plan-review`}
+          aria-describedby={`${prefix}-plan-review-count`}
           multiple
           className={`${selectClass} !h-32`}
           value={value.planReviewReferences.map((ref) => ref.id)}
           onChange={(event) => {
             const ids = Array.from(event.target.selectedOptions, (item) => item.value);
+            if (ids.length > claimReviewLimits.references) return;
             onChange({
               ...value,
               planReviewReferences: ids
@@ -383,7 +394,10 @@ export function ClaimReviewFields({
                 key={`${item.id}-${index}`}
                 value={item.id}
                 disabled={
-                  company.planReviewDecisions.filter((record) => record.id === item.id).length !== 1
+                  company.planReviewDecisions.filter((record) => record.id === item.id).length !==
+                    1 ||
+                  (value.planReviewReferences.length >= claimReviewLimits.references &&
+                    !value.planReviewReferences.some((ref) => ref.id === item.id))
                 }
               >
                 판단 v{item.version} · {item.finding.message}
@@ -391,6 +405,11 @@ export function ClaimReviewFields({
               </option>
             ))}
         </select>
+        <p id={`${prefix}-plan-review-count`} className="text-xs text-muted-foreground">
+          선택 {value.planReviewReferences.length}/{claimReviewLimits.references}개
+          {value.planReviewReferences.length >= claimReviewLimits.references &&
+            " · 더 고르려면 선택한 버전을 먼저 해제해 주세요."}
+        </p>
       </div>
       <h4 className="font-semibold">4. 검토 방식과 담당자 판단</h4>
       <div className="space-y-2">
