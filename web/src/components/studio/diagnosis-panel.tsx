@@ -93,6 +93,9 @@ export function DiagnosisAssessmentEditor({
   const prefix = `diagnosis-${assessmentKey}`;
   const change = (next: Assessment) => onChange({ ...next, reviewed: false });
   const canReview = canReviewDiagnosisAssessment(value, sources, criteriaCurrent);
+  const sourceIdCounts = new Map<string, number>();
+  for (const source of sources)
+    sourceIdCounts.set(source.id, (sourceIdCounts.get(source.id) ?? 0) + 1);
   return (
     <fieldset className="space-y-4 rounded-xl border p-4">
       <legend className="px-1 text-sm font-semibold">{title} · 사용자 검토</legend>
@@ -120,7 +123,10 @@ export function DiagnosisAssessmentEditor({
         보유자료의 제목만으로 해당 여부를 판단하지 않습니다.
       </p>
       {value.evidence.map((reference, index) => {
-        const source = sources.find((item) => item.id === reference.sourceId);
+        const source =
+          sourceIdCounts.get(reference.sourceId) === 1
+            ? sources.find((item) => item.id === reference.sourceId)
+            : undefined;
         const usable = source && source.extraction !== "pending" && source.text.trim();
         const exact = Boolean(
           usable &&
@@ -169,33 +175,49 @@ export function DiagnosisAssessmentEditor({
               className={selectClass}
               value={reference.sourceId}
               onChange={(event) => {
+                const selectedId = event.target.value;
+                const selectedSource =
+                  sourceIdCounts.get(selectedId) === 1
+                    ? sources.find((item) => item.id === selectedId)
+                    : undefined;
+                if (
+                  selectedId &&
+                  (!selectedSource ||
+                    selectedSource.extraction === "pending" ||
+                    !selectedSource.text.trim())
+                )
+                  return;
                 if (
                   (reference.quote || reference.locator) &&
                   !window.confirm("작성한 인용·원문 위치를 비우고 근거 자료를 변경할까요?")
                 )
                   return;
                 changeReference({
-                  sourceId: event.target.value,
-                  sourceUpdatedAt:
-                    sources.find((item) => item.id === event.target.value)?.updatedAt ?? "",
+                  sourceId: selectedId,
+                  sourceUpdatedAt: selectedSource?.updatedAt ?? "",
                   quote: "",
                   locator: "",
                 });
               }}
             >
               <option value="">자료 선택</option>
-              {reference.sourceId && !source && (
+              {reference.sourceId && !sourceIdCounts.has(reference.sourceId) && (
                 <option value={reference.sourceId} disabled>
                   현재 자료에 없는 이전 연결
                 </option>
               )}
-              {sources.map((item) => (
+              {sources.map((item, sourceIndex) => (
                 <option
-                  key={item.id}
+                  key={`${item.id}:${sourceIndex}`}
                   value={item.id}
-                  disabled={item.extraction === "pending" || !item.text.trim()}
+                  disabled={
+                    sourceIdCounts.get(item.id) !== 1 ||
+                    item.extraction === "pending" ||
+                    !item.text.trim()
+                  }
                 >
                   {item.name}
+                  {sourceIdCounts.get(item.id) !== 1 ? " · 자료 ID 중복 · 선택 불가" : ""}
                   {item.extraction === "pending" || !item.text.trim() ? " · 본문 확인 필요" : ""}
                 </option>
               ))}
@@ -221,13 +243,20 @@ export function DiagnosisAssessmentEditor({
                 onChange={(event) => changeReference({ ...reference, locator: event.target.value })}
               />
             </div>
-            <p
-              className={`text-xs leading-6 ${exact ? "text-muted-foreground" : "text-amber-900"}`}
-            >
-              {exact
-                ? "인용 문구가 현재 자료 본문에 있습니다. 기재 사실의 진위나 요건 충족을 확인한 것은 아닙니다."
-                : "현재 본문에서 정확한 인용을 확인할 수 없습니다. 자료와 인용을 다시 확인해 주세요."}
-            </p>
+            {reference.sourceId && !source ? (
+              <p role="alert" className="text-xs leading-6 text-amber-900">
+                연결한 자료를 하나로 확인할 수 없어 본문과 인용 일치 여부를 표시하지 않습니다. 자료
+                연결을 다시 확인해 주세요.
+              </p>
+            ) : (
+              <p
+                className={`text-xs leading-6 ${exact ? "text-muted-foreground" : "text-amber-900"}`}
+              >
+                {exact
+                  ? "인용 문구가 현재 자료 본문에 있습니다. 기재 사실의 진위나 요건 충족을 확인한 것은 아닙니다."
+                  : "현재 본문에서 정확한 인용을 확인할 수 없습니다. 자료와 인용을 다시 확인해 주세요."}
+              </p>
+            )}
             {usable && reference.sourceUpdatedAt !== source.updatedAt && (
               <div className="space-y-2">
                 <p className="text-xs leading-6 text-amber-900">
