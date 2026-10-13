@@ -131,9 +131,19 @@ export function CriteriaDetailsEditor({
               type="button"
               size="sm"
               variant="ghost"
-              onClick={() =>
-                onChange({ ...details, sources: details.sources.filter((_, row) => row !== index) })
-              }
+              onClick={() => {
+                if (
+                  sourceLabels.some(([key]) => source[key]) &&
+                  !window.confirm(
+                    "작성한 출처·원문 인용·확인 메모를 포함한 이 출처 입력을 제거할까요?",
+                  )
+                )
+                  return;
+                onChange({
+                  ...details,
+                  sources: details.sources.filter((_, row) => row !== index),
+                });
+              }}
             >
               이 출처 입력 제거
             </Button>
@@ -182,12 +192,19 @@ export function CriteriaDetailsEditor({
               type="button"
               size="sm"
               variant="ghost"
-              onClick={() =>
+              onClick={() => {
+                if (
+                  documentLabels.some(([key]) => document[key]) &&
+                  !window.confirm(
+                    "작성한 서류 이름과 조건·확인 사항을 포함한 이 서류 조건 입력을 제거할까요?",
+                  )
+                )
+                  return;
                 onChange({
                   ...details,
                   documents: details.documents.filter((item) => item.id !== document.id),
-                })
-              }
+                });
+              }}
             >
               이 서류 조건 입력 제거
             </Button>
