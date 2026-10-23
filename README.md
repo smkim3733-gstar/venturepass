@@ -4,7 +4,7 @@
 
 ## Claude에서 개발 이어가기 — 2026-10-23
 
-최신 공개 개발본은 **`claude/continue-development`**입니다. [Claude 시작 안내](기획/개발환경인계/2026_10_23_Claude_이어가기.md)에 현황·실행·검증 방법과 다음 작업을 정리했습니다. 루트 `CLAUDE.md`가 지침을 불러옵니다. Windows의 `Start-Claude.ps1`로 프로젝트에서 Claude Code를 실행할 수 있습니다.
+최신 공개 개발본은 `claude/continue-development` 브랜치입니다. [Claude 시작 안내](기획/개발환경인계/2026_10_23_Claude_이어가기.md)에 현황·실행·검증 방법과 다음 작업을 정리했습니다. 루트 `CLAUDE.md`가 지침을 불러옵니다. Windows의 `Start-Claude.cmd`를 더블클릭하거나 `Start-Claude.ps1`을 실행하면 이 프로젝트에서 Claude Code를 시작합니다.
 
 고객 원본·보고서·DB·키와 고객별 작업 기록은 제외했습니다. [합성 행사 시연](examples/scheduling-simulation)은 별도 예제이며 실제 계약·납품·실증이나 전체 완료를 뜻하지 않습니다. 제품은 **15/20(75%)**이며 아래 10월13~14일 인계는 과거 기록입니다.
 
@@ -66,11 +66,6 @@ pnpm dev
 
 ## 검사
 
-`web` 폴더에서 실행합니다.
+제품 변경 시 [Claude 인계의 검증 순서](기획/개발환경인계/2026_10_23_Claude_이어가기.md)를 따릅니다. 정적 의존 확인 후 정확한 영향 시험을 `--maxWorkers 1`로 실행하고, 필요한 격리 합성 UI → lint → 격리 typecheck → 격리 build의 각 종료를 확인합니다.
 
-```sh
-pnpm lint
-pnpm typecheck
-pnpm test
-pnpm build
-```
+`web`의 `scripts/build-local.mjs`로 소스를 별도 임시 폴더에 준비합니다. `TEMP/TMP`는 OneDrive·저장소 밖의 쓰기 가능한 경로여야 합니다. 기존 고객 서버·원래 `.next`를 보존하며, 변경 없는 전체 검사와 빌드를 반복하지 않습니다.
