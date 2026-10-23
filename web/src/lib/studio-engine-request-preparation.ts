@@ -1,4 +1,5 @@
-import { createHash } from "node:crypto";
+import { executionDigest, StudioEngineError } from "./studio-engine-request-core";
+export { executionDigest, StudioEngineError } from "./studio-engine-request-core";
 import { zodTextFormat } from "openai/helpers/zod";
 import { z } from "zod";
 import { serializeStudioAiInput, STUDIO_AI_INPUT_CHARACTER_LIMIT } from "./studio-ai-input";
@@ -27,17 +28,6 @@ export const systemPrompt = legacyPrompt.systemPrompt;
 export const planGenerationInstruction = legacyPrompt.generationInstruction;
 export const planReviewInstruction = legacyPrompt.reviewInstruction;
 
-export class StudioEngineError extends Error {
-  constructor(
-    public code: string,
-    message: string,
-    public status = 422,
-  ) {
-    super(message);
-    this.name = "StudioEngineError";
-  }
-}
-
 export function aiInput(value: StudioCase, extra: object = {}) {
   const input = serializeStudioAiInput(value, extra);
   if (input.length > STUDIO_AI_INPUT_CHARACTER_LIMIT) {
@@ -52,21 +42,6 @@ export function aiInput(value: StudioCase, extra: object = {}) {
 
 export const planSemanticReviewSchema = z.object({ findings: z.array(reviewSchema).max(12) });
 
-export function executionDigest(value: unknown): string {
-  const canonical = (item: unknown): unknown =>
-    Array.isArray(item)
-      ? item.map(canonical)
-      : item !== null && typeof item === "object"
-        ? Object.fromEntries(
-            Object.entries(item)
-              .sort(([a], [b]) => a.localeCompare(b))
-              .map(([key, entry]) => [key, canonical(entry)]),
-          )
-        : item;
-  return createHash("sha256")
-    .update(JSON.stringify(canonical(value)))
-    .digest("hex");
-}
 export function requestFormat<T>(schema: z.ZodType<T>, name: string) {
   // Keep only the wire format; SDK parser functions are not request bytes.
   return JSON.parse(

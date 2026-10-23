@@ -373,10 +373,6 @@ try {
         checked: e.type === "checkbox" ? e.checked : null,
       })),
     );
-  const rowInputs = (row) =>
-    row
-      .locator("textarea")
-      .evaluateAll((es) => es.map((e) => ({ id: e.id, value: e.value, checked: null })));
   async function dirty(value) {
     await page.waitForFunction(
       (expected) => {

@@ -4,6 +4,10 @@
 !/.gitattributes
 !/README.md
 !/AGENTS.md
+!/CLAUDE.md
+!/Start-Claude.ps1
+!/Start-Claude.cmd
+!/examples/
 !/web/
 !/기획/
 
@@ -24,3 +28,6 @@
 **/*.key
 **/*.log
 **/*.tsbuildinfo
+**/CLAUDE.local.md
+**/.claude/settings.local.json
+examples/scheduling-simulation/dist/

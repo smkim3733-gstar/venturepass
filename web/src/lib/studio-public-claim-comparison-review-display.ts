@@ -1,7 +1,9 @@
 import type { IsolatedPublicComparisonService } from "./studio-public-claim-comparison-database-v11";
 
 // Same-process, already audited DTOs only. This is display ordering, not a wire decoder.
-export type StoredComparisonReview = ReturnType<IsolatedPublicComparisonService["readStoredReviewByRun"]>;
+export type StoredComparisonReview = Omit<ReturnType<IsolatedPublicComparisonService["readStoredReviewByRun"]>, "source"> & {
+  source: "synthetic-comparison-stored-review" | "comparison-stored-review";
+};
 export type ComparisonReviewDisplaySelection = {
   runId: string;
   dispatchCommandDigest: string;

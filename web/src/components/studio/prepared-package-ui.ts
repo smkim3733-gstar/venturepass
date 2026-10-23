@@ -4,6 +4,8 @@ import {
   preparedPackageListSchema,
   preparedPackageRecordSchema,
   preparedPackageRequestSchema,
+  preparedPackageSummary,
+  preparedPackageSummarySchema,
   type PreparedPackageRequest,
   type PreparedPackageSummary,
 } from "@/lib/studio-prepared-package-types";
@@ -102,4 +104,22 @@ export function preparedPackageCurrent(item: PreparedPackageSummary, company: St
     item.caseRevision === company.revision &&
     company.plans.some((plan) => plan.id === item.planId && plan.version === item.planVersion)
   );
+}
+
+/** Bind a historical read to the selected archive, without substituting current company data. */
+export function preparedPackageDetails(value: unknown, expected: PreparedPackageSummary) {
+  const { package: record } = z.object({ package: preparedPackageRecordSchema }).parse(value);
+  if (
+    JSON.stringify(preparedPackageSummary(record)) !==
+      JSON.stringify(preparedPackageSummarySchema.parse(expected)) ||
+    record.input.revision !== record.caseRevision ||
+    record.input.planId !== record.plan.id ||
+    record.input.clientRequestId !== record.clientRequestId ||
+    JSON.stringify(record.input.sourceIds) !== JSON.stringify(record.sourceIds) ||
+    JSON.stringify(record.sources.map((item) => item.source.id)) !==
+      JSON.stringify(record.sourceIds) ||
+    new Set(record.sourceIds).size !== record.sourceIds.length
+  )
+    throw new Error("선택한 준비본의 보관 내용을 확인하지 못했습니다.");
+  return record;
 }

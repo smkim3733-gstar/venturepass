@@ -8,6 +8,7 @@ import {
   deriveGuidedFollowup,
   type GuidedFollowupSummary,
   type GuidedWorkflowTarget,
+  type GuidedFollowupOptions,
 } from "./studio-guided-followup";
 
 export type GuidedStep = "materials" | "plan" | "application";
@@ -31,6 +32,7 @@ export type GuidedFlow = {
 };
 export type GuidedFlowOptions = {
   today?: string;
+  procedureDeadlines?: GuidedFollowupOptions["procedureDeadlines"];
   busy?: boolean;
   busyMessage?: string;
   /** Fresh same-scope approval only; older revisions cannot prove the current input scope. */
@@ -117,7 +119,10 @@ export function deriveGuidedFlow(company: StudioCase, options: GuidedFlowOptions
   const pendingSources = company.sources.filter((source) => source.extraction === "pending");
   const run = company.preparationRuns.at(-1);
   const batch = company.preparationAutomation.batches.at(-1);
-  const followup = deriveGuidedFollowup(company, { today: options.today });
+  const followup = deriveGuidedFollowup(company, {
+    today: options.today,
+    procedureDeadlines: options.procedureDeadlines,
+  });
   const unsettledPreparation = Boolean(
     guided
       ? guided.status !== "awaiting_review" ||

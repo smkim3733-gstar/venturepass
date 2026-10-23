@@ -4,6 +4,7 @@ import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdtemp, readFile, readdir, realpath, writeFile } from "node:fs/promises";
 import { createServer, connect } from "node:net";
+import { tmpdir } from "node:os";
 import { createServer as createHttpServer, request as httpRequest } from "node:http";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -13,7 +14,7 @@ import { localBuildEnvironment } from "./build-local.mjs";
 // Actual app UI; all business APIs are fulfilled with synthetic, in-memory state.
 // No server business route, SQL, SDK, key, customer record or external service is used.
 const app = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const temporaryRoot = await realpath(path.resolve(app, "../../.venturepass-tools/build-temp"));
+const temporaryRoot = await realpath(tmpdir());
 const staging = await realpath(process.argv[2]);
 const serverMode = process.argv[3] ?? "start";
 const scenario = "response-validation";
@@ -369,15 +370,13 @@ try {
   const save = editor.getByRole("button", { name: "답변 준비 새 버전 저장", exact: true });
   const alert = panel.locator('p[role="alert"].text-destructive');
   const snapshot = () =>
-    editor
-      .locator("input,textarea,select")
-      .evaluateAll((es) =>
-        es.map((e) => ({
-          id: e.id,
-          value: e.value,
-          checked: e.type === "checkbox" ? e.checked : null,
-        })),
-      );
+    editor.locator("input,textarea,select").evaluateAll((es) =>
+      es.map((e) => ({
+        id: e.id,
+        value: e.value,
+        checked: e.type === "checkbox" ? e.checked : null,
+      })),
+    );
   async function dirty(value) {
     await page.waitForFunction(
       (expected) => {
@@ -389,14 +388,15 @@ try {
       { timeout: 10000 },
     );
   }
+  let expectedDialogs = 0;
   async function sound() {
     assert.deepEqual(companies, original);
     assert.deepEqual(errors, []);
     assert.deepEqual(unexpected, []);
     assert.deepEqual(commands, []);
-    assert.deepEqual(dialogs, []);
+    assert.equal(dialogs.length, expectedDialogs);
   }
-  async function invalid(message, keyboard = false) {
+  async function invalid(message, target, keyboard = false) {
     const before = await snapshot();
     if (keyboard) {
       await save.focus();
@@ -410,6 +410,21 @@ try {
       message,
       { timeout: 10000 },
     );
+    await page.waitForFunction(
+      (id) =>
+        id
+          ? document.activeElement?.id === id
+          : document.activeElement?.getAttribute("role") === "alert",
+      await target.getAttribute("id"),
+      { timeout: 10000 },
+    );
+    assert.equal(await target.evaluate((element) => document.activeElement === element), true);
+    if (target !== alert) {
+      assert.equal(await target.getAttribute("aria-invalid"), "true");
+      const id = await target.getAttribute("id");
+      assert.ok((await target.getAttribute("aria-describedby")).split(" ").includes(id + "-error"));
+      assert.equal(await page.locator(`[id="${id}-error"]`).textContent(), message);
+    }
     assert.deepEqual(await snapshot(), before);
     await sound();
     await dirty(true);
@@ -435,31 +450,37 @@ try {
       .fill("  " + n + "번 답변 <b>문자</b>\n그대로 유지  ");
   }
   await title.fill("  ");
-  await invalid("답변 준비안 제목을 1~300자로 입력해 주세요.");
+  await invalid("답변 준비안 제목을 1~300자로 입력해 주세요.", title);
+  await invalid("답변 준비안 제목을 1~300자로 입력해 주세요.", title, true);
   await page.setViewportSize({ width: 390, height: 844 });
-  await shot("title", alert);
+  await shot("title", title.locator(".."));
   const titleMessage = await alert.textContent();
   await title.fill("  보존할 준비안 제목  ");
   assert.equal(await alert.textContent(), titleMessage);
+  assert.equal(await title.getAttribute("aria-invalid"), null);
+  assert.equal(await page.locator("#response-preparation-title-error").count(), 0);
   await quote(1).fill("  \n ");
-  await invalid("대응 항목 1 · 요청 원문 인용을 1~1,500자로 입력해 주세요.", true);
-  await shot("request", alert);
+  await invalid("대응 항목 1 · 요청 원문 인용을 1~1,500자로 입력해 주세요.", quote(1), true);
+  assert.ok((await quote(1).getAttribute("aria-describedby")).includes("request-match"));
+  assert.ok((await quote(1).getAttribute("aria-describedby")).includes("request-comparison-note"));
+  await shot("request", quote(1).locator(".."));
   await quote(1).fill(request.body);
   await summary(2).fill("   ");
-  await invalid("대응 항목 2 · 담당자 요약을 1~200자로 입력해 주세요.");
-  await shot("summary", alert);
+  await invalid("대응 항목 2 · 담당자 요약을 1~200자로 입력해 주세요.", summary(2));
+  await shot("summary", summary(2).locator(".."));
   record(
-    "Local saves explain a blank title, first-item request quote and second-item summary in Korean. The first schema issue identifies the current item, while every raw input and the other item's draft stay unchanged with no business request.",
+    "Invalid saves focus the exact title, request quote or second summary and attach inline errors, including repeated keyboard submission. Editing removes stale field markers, request descriptions remain linked, raw input is preserved and no business request runs.",
   );
   await summary(2).fill("  2번 요약  ");
   const planChoice = item(1).getByLabel("관련 원고 버전 (선택)", { exact: true });
   await planChoice.selectOption(plan.id);
-  await invalid("대응 항목 1 · 연결할 원고 항목을 선택해 주세요.");
-  await item(1).getByLabel("원고 항목", { exact: true }).selectOption(section.key);
-  await invalid("대응 항목 1 · 원고 인용을 1~1,500자로 입력해 주세요.", true);
-  await shot("plan", alert);
-  const planMessage = await alert.textContent();
+  const sectionChoice = item(1).getByLabel("원고 항목", { exact: true });
+  await invalid("대응 항목 1 · 연결할 원고 항목을 선택해 주세요.", sectionChoice);
+  await sectionChoice.selectOption(section.key);
   const planQuote = item(1).getByLabel("해당 원고 부분 그대로 인용 *", { exact: true });
+  await invalid("대응 항목 1 · 원고 인용을 1~1,500자로 입력해 주세요.", planQuote, true);
+  await shot("plan", planQuote.locator(".."));
+  const planMessage = await alert.textContent();
   await planQuote.fill(section.content);
   assert.equal(await alert.textContent(), planMessage);
   await sound();
@@ -467,10 +488,10 @@ try {
     "Selecting an optional plan without its section or quote yields distinct first-item guidance. Correcting inputs keeps the previous message until the next explicit save, without trimming drafts or changing stored plans.",
   );
   await editor.getByRole("button", { name: "대응 항목 추가", exact: true }).click();
-  await invalid("대응 항목 3 · 요청 원문 인용을 1~1,500자로 입력해 주세요.");
+  await invalid("대응 항목 3 · 요청 원문 인용을 1~1,500자로 입력해 주세요.", quote(3));
   await quote(3).fill(request.body);
-  await invalid("대응 항목 3 · 담당자 요약을 1~200자로 입력해 주세요.", true);
-  await shot("third", alert);
+  await invalid("대응 항목 3 · 담당자 요약을 1~200자로 입력해 주세요.", summary(3), true);
+  await shot("third", summary(3).locator(".."));
   const beforeRead = await snapshot(),
     message = await alert.textContent();
   const originalSummary = item(2).locator("summary").filter({ hasText: "기준 요청 원문 읽기" });
@@ -484,7 +505,20 @@ try {
   await sound();
   assert.equal(caseReads, 1);
   record(
-    "A newly added third item gets its own quote and summary guidance. Opening another item's request text preserves the latest error and all drafts. Seven save attempts end at local validation; valid saves, server failures and AI actions are not run.",
+    "Newly added items receive focus at their own quote and summary. Reading a different request retains keyboard focus and all drafts, with no save or AI call.",
+  );
+  for (let count = 3; count > 0; count--) {
+    nextDialog = "accept";
+    expectedDialogs++;
+    await item(count).getByRole("button", { name: "이 대응 항목 제거", exact: true }).click();
+  }
+  await invalid("대응 항목을 1~10개로 구성하고 중복 항목이 없는지 확인해 주세요.", alert, true);
+  await shot("empty", alert);
+  await editor.getByRole("button", { name: "대응 항목 추가", exact: true }).click();
+  await invalid("대응 항목 1 · 요청 원문 인용을 1~1,500자로 입력해 주세요.", quote(1));
+  await sound();
+  record(
+    "After explicitly removing all three draft items, an empty-list error focuses the alert without a guessed field. Adding a fresh item targets its new ID; stored company records and business request count remain unchanged.",
   );
   assert.deepEqual(
     network.filter((item) => item.console),

@@ -23,6 +23,7 @@ import {
   type NumericObservation,
 } from "@/lib/studio-numeric-check-types";
 import { Notice, selectClass, useDirty, type PanelProps } from "./shared";
+import { NumericSuggestions } from "./numeric-suggestions";
 
 export function newNumericObservation(): NumericObservation {
   return {
@@ -626,6 +627,19 @@ export function NumericObservationEditor({
       )}
       {ref && (
         <>
+          <NumericSuggestions
+            key={JSON.stringify([
+              company.id,
+              company.revision,
+              value.id,
+              ref.kind,
+              ref.kind === "source" ? ref.sourceId : ref.planId,
+              ref.kind === "source" ? ref.sourceUpdatedAt : ref.sectionKey,
+            ])}
+            company={company}
+            value={value}
+            onChange={onChange}
+          />
           <details>
             <summary className="cursor-pointer text-xs underline">선택한 등록 원문 보기</summary>
             {!sourceUnavailable && (

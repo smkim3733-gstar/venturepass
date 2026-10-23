@@ -18,6 +18,7 @@ function recordedTime(value: string | null) {
 }
 
 function ItemContext({ item }: { item: GuidedFollowupItem }) {
+  const procedure = item.procedureDeadline;
   const deadline =
     item.deadlineStatus === "overdue"
       ? " · 날짜 지남"
@@ -34,6 +35,39 @@ function ItemContext({ item }: { item: GuidedFollowupItem }) {
         기한·일정: {item.dueOn ? `${item.dueOn}${deadline}` : "미확인"}
         {item.dueNote ? ` · ${item.dueNote}` : ""}
       </p>
+      {procedure && (
+        <div aria-label="요청의 절차 기한" aria-busy={procedure.state === "pending"}>
+          <p className={styles.helper}>{procedure.message}</p>
+          <p className={styles.helper}>
+            요청 원문 기한: {procedure.originalDueOn ?? "미확인"}
+            {procedure.originalDueNote ? ` · ${procedure.originalDueNote}` : ""}
+          </p>
+          {procedure.record && (
+            <details className={styles.details}>
+              <summary>절차 기한 근거 보기</summary>
+              <p className={styles.helper}>
+                {procedure.record.title} · 절차 v{procedure.record.version} · 기록자{" "}
+                {procedure.record.recordedBy}
+              </p>
+              <p className={styles.helper}>
+                절차 안내기한: {procedure.record.dueOn || "미확인"} ·{" "}
+                {procedure.record.dueBasis || "근거 미기록"}
+              </p>
+              <p className={styles.helper}>
+                연장 기한: {procedure.record.extendedDueOn || "미확인"} ·{" "}
+                {procedure.record.extensionBasis || "근거 미기록"}
+              </p>
+              <p className={styles.helper}>
+                기록 시각: {recordedTime(procedure.record.recordedAt)}
+              </p>
+              <p className={styles.helper}>
+                원본 파일과 실제 기관 처리 상태는 별도로 확인해 주세요. 담당자 업무 기한은 자동
+                변경하지 않습니다.
+              </p>
+            </details>
+          )}
+        </div>
+      )}
     </>
   );
 }

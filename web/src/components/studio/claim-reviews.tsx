@@ -19,6 +19,10 @@ import {
   type ClaimReviewRecord,
 } from "@/lib/studio-claim-review-types";
 import { PublicClaimPreview } from "./public-claim-preview";
+import { StoredComparisonReviews } from "./stored-comparison-reviews";
+import type { ComparisonPlanReview } from "@/lib/studio-comparison-plan-reference";
+import { ComparisonExecution } from "./comparison-execution";
+import { ComparisonBooking } from "./comparison-booking";
 import { AppealEvidenceEditor } from "./appeal-preparation";
 import { Notice, formatDate, selectClass, useDirty, type PanelProps } from "./shared";
 
@@ -569,14 +573,16 @@ export function claimReviewSaveAcknowledged(
 export function ClaimReviewRecordView({
   company,
   record,
+  anchor = true,
 }: {
   company: StudioCase;
   record: ClaimReviewRecord;
+  anchor?: boolean;
 }) {
   const context = claimReviewContext(company, record);
   return (
     <article
-      id={`claim-review-${record.id}`}
+      id={anchor ? `claim-review-${record.id}` : undefined}
       aria-label={`주장 검토 v${record.version}`}
       className="space-y-3 rounded-xl border p-4"
     >
@@ -708,9 +714,24 @@ export function ClaimReviewRecordView({
   );
 }
 
+export function claimReviewPlanTarget(company: StudioCase, recordId: string) {
+  const records = company.claimReviews.filter((item) => item.id === recordId);
+  if (records.length !== 1) return null;
+  const record = records[0];
+  const plans = company.plans.filter((item) => item.id === record.planId);
+  if (plans.length !== 1 || plans[0].version !== record.planVersion) return null;
+  const sections = plans[0].content.sections.filter((item) => item.key === record.sectionKey);
+  return sections.length === 1 ? { plan: plans[0], section: sections[0] } : null;
+}
+
 type ClaimReviewsProps = Pick<PanelProps, "company" | "mutate"> & {
   blockedReason?: string;
   onDirtyChange: (dirty: boolean) => void;
+  onEditClaimPlan?: (recordId: string) => void;
+  onEditComparisonPlan?: (
+    result: ComparisonPlanReview,
+    isCurrent: () => boolean,
+  ) => Promise<boolean>;
 };
 export function ClaimReviews(props: ClaimReviewsProps) {
   return <ClaimReviewsPanel key={`${props.company.id}:${props.company.revision}`} {...props} />;
@@ -720,6 +741,8 @@ function ClaimReviewsPanel({
   mutate,
   blockedReason = "",
   onDirtyChange,
+  onEditClaimPlan,
+  onEditComparisonPlan,
 }: ClaimReviewsProps) {
   const filterId = useId();
   const filterRef = useRef<HTMLSelectElement>(null);
@@ -815,6 +838,17 @@ function ClaimReviewsPanel({
         company={company}
         blocked={blocked || !!editor}
       />
+      <ComparisonBooking
+        key={`${company.id}:${company.revision}:${blocked || !!editor}`}
+        company={company}
+        blocked={blocked || !!editor}
+      />
+      <ComparisonExecution company={company} blocked={blocked || !!editor} />
+      <StoredComparisonReviews
+        company={company}
+        blocked={blocked || !!editor}
+        onEditComparisonPlan={onEditComparisonPlan}
+      />
       {atLimit && (
         <Notice tone="warning">
           주장 검토 {claimReviewLimits.versions}개 버전 한도입니다. 과거 이력을 보존하며 새 버전
@@ -892,6 +926,33 @@ function ClaimReviewsPanel({
       {[...visibleLatest].reverse().map((record) => (
         <div key={record.id} className="space-y-2">
           <ClaimReviewRecordView company={company} record={record} />
+          {onEditClaimPlan && (
+            <div className="space-y-1">
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                disabled={blocked || !!editor || !claimReviewPlanTarget(company, record.id)}
+                onClick={() => {
+                  if (
+                    blocked ||
+                    editor ||
+                    inFlight.current ||
+                    !claimReviewPlanTarget(company, record.id)
+                  )
+                    return;
+                  onEditClaimPlan(record.id);
+                }}
+              >
+                연결된 원고 v{record.planVersion} 항목 고치기
+              </Button>
+              <p className="text-xs text-muted-foreground">
+                {claimReviewPlanTarget(company, record.id)
+                  ? "기록에 연결된 원고를 엽니다. 이동만으로 원고나 검토 판단을 변경하지 않습니다."
+                  : "연결된 원고 버전·항목을 하나로 찾을 수 없습니다. 최신 원고로 대신 이동하지 않습니다."}
+              </p>
+            </div>
+          )}
           <Button
             type="button"
             size="sm"

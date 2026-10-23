@@ -214,6 +214,7 @@ type Owned = {
   rootIdentity: z.infer<typeof identity>;
   qualityIdentity: z.infer<typeof identity>;
   active: boolean;
+  readOnly: boolean;
 };
 const sessions = new WeakMap<ComparisonStorageSession, Owned>();
 const leases = new WeakMap<ComparisonStorageSession, ReturnType<typeof acquireJournalLease>>();
@@ -238,6 +239,20 @@ export function openComparisonStorageSession(
   raw: unknown,
   selection: PublicComparisonDatabaseSelection,
 ): ComparisonStorageSession {
+  return openStorageSession(raw, selection, false);
+}
+/** Existing files only. SQLite itself rejects writes; witness writes are rejected below. */
+export function openComparisonReadOnlyStorageSession(
+  raw: unknown,
+  selection: PublicComparisonDatabaseSelection,
+): ComparisonStorageSession {
+  return openStorageSession(raw, selection, true);
+}
+function openStorageSession(
+  raw: unknown,
+  selection: PublicComparisonDatabaseSelection,
+  readOnly: boolean,
+): ComparisonStorageSession {
   assertPublicComparisonDataOnly(raw, 8192);
   assertPublicComparisonDataOnly(selection, 8192);
   const p = pathsSchema.parse(raw);
@@ -258,7 +273,7 @@ export function openComparisonStorageSession(
   checkComparisonDatabasePath(paths.dataRoot, paths.qualityFile);
   const rootIdentity = comparisonRootIdentity(paths.dataRoot),
     qualityIdentity = comparisonFileIdentity(paths.qualityFile);
-  const db = new DatabaseSync(paths.qualityFile);
+  const db = new DatabaseSync(paths.qualityFile, { readOnly });
   try {
     const token = Object.freeze({ kind: "comparison-storage-session" as const });
     const s = {
@@ -268,6 +283,7 @@ export function openComparisonStorageSession(
       rootIdentity,
       qualityIdentity,
       active: false,
+      readOnly,
     };
     pathCheck(s);
     db.exec("PRAGMA foreign_keys=ON; PRAGMA busy_timeout=1000");
@@ -320,8 +336,7 @@ function entries(token: ComparisonStorageSession, version: Version = 1) {
   const names = dirs.map((dir) => readdirSync(dir).sort());
   if (!names[0].length || names[0].length > 128 || digest(names[0]) !== digest(names[1]))
     fail("WITNESS_PARTIAL");
-  const result: Entry[] = [];
-  let size = 0;
+  const records: unknown[] = [];
   for (let i = 0; i < names[0].length; i++) {
     const name = String(i).padStart(3, "0") + ".json";
     if (names[0][i] !== name) fail("WITNESS_INVALID");
@@ -332,6 +347,36 @@ function entries(token: ComparisonStorageSession, version: Version = 1) {
       version === 1 ? entrySchema : version === 2 ? throughV2Schema : anyEntrySchema
     ).parse(readJournalJson(join(dirs[1], name), 32768, fail));
     if (digest(a) !== digest(b)) fail("WITNESS_PARTIAL");
+    records.push(a);
+  }
+  const result = inspectComparisonWitnessRecords(s.db, records, s.selection, version);
+  const binding = result[0].payload;
+  if (
+    binding.type !== "binding" ||
+    digest(binding.paths) !== digest(s.paths) ||
+    digest(binding.rootIdentity) !== digest(s.rootIdentity) ||
+    digest(binding.qualityIdentity) !== digest(s.qualityIdentity) ||
+    digest(binding.controlIdentity) !== digest(comparisonRootIdentity(dirs[0])) ||
+    digest(binding.journalIdentity) !== digest(comparisonRootIdentity(dirs[1]))
+  )
+    fail("WITNESS_BINDING_CHANGED");
+  return result;
+}
+/** Detached records are audited against an already-open private DB copy.
+ * Archived paths are metadata only and are never followed or rebound here. */
+function inspectComparisonWitnessRecords(
+  db: DatabaseSync,
+  records: unknown[],
+  selection: PublicComparisonDatabaseSelection,
+  version: Version,
+) {
+  if (records.length < 2 || records.length > 128) fail("WITNESS_PARTIAL");
+  const result: Entry[] = [];
+  let size = 0;
+  for (let i = 0; i < records.length; i++) {
+    const a = (
+      version === 1 ? entrySchema : version === 2 ? throughV2Schema : anyEntrySchema
+    ).parse(records[i]);
     size += Buffer.byteLength(JSON.stringify(a) + "\n");
     const { entryDigest, ...body } = a;
     if (
@@ -347,12 +392,7 @@ function entries(token: ComparisonStorageSession, version: Version = 1) {
   if (
     binding.type !== "binding" ||
     result[1]?.payload.type !== "anchor" ||
-    digest(binding.paths) !== digest(s.paths) ||
-    digest(binding.selection) !== digest(s.selection) ||
-    digest(binding.rootIdentity) !== digest(s.rootIdentity) ||
-    digest(binding.qualityIdentity) !== digest(s.qualityIdentity) ||
-    digest(binding.controlIdentity) !== digest(comparisonRootIdentity(dirs[0])) ||
-    digest(binding.journalIdentity) !== digest(comparisonRootIdentity(dirs[1]))
+    digest(binding.selection) !== digest(selection)
   )
     fail("WITNESS_BINDING_CHANGED");
   if (result[0].recordVersion !== 1 || result[1]?.recordVersion !== 1) fail("WITNESS_INVALID");
@@ -422,7 +462,7 @@ function entries(token: ComparisonStorageSession, version: Version = 1) {
         v.checkpoint.cutoverDigest !== intent.before.cutoverDigest
       )
         fail("WITNESS_INVALID");
-      const r = s.db
+      const r = db
         .prepare("SELECT body FROM quality_actual_requests WHERE nonce=?")
         .get(intent.nonce);
       if (!r || typeof r.body !== "string" || digest(JSON.parse(r.body)) !== v.receiptDigest)
@@ -441,6 +481,7 @@ function append(
   version: Version = 1,
 ) {
   const s = guard(token);
+  if (s.readOnly) fail("STORAGE_READ_ONLY");
   if (prior.length >= 128) fail("WITNESS_LIMIT");
   const body = {
     kind: "public-comparison-storage-witness" as const,
@@ -557,6 +598,7 @@ export function initializeComparisonWitness(
   company: ComparisonCompanyGuard,
 ) {
   const s = guard(token);
+  if (s.readOnly) fail("STORAGE_READ_ONLY");
   if (state.archive.records.runs.length || state.bindings.length) fail("WITNESS_NONEMPTY");
   const studio = comparisonCompanyBinding(company);
   if (!samePath(studio.root, s.paths.dataRoot) || !samePath(studio.file, s.paths.studioFile))
@@ -585,8 +627,16 @@ export function checkComparisonWitness(
   checkpoint: ComparisonWitnessCheckpoint,
   version: Version = 1,
 ) {
-  const list = entries(token, version),
-    last = list.at(-1)!.payload;
+  const list = entries(token, version);
+  requireClosedWitness(list, checkpoint, version);
+  return list;
+}
+function requireClosedWitness(
+  list: Entry[],
+  checkpoint: ComparisonWitnessCheckpoint,
+  version: Version,
+) {
+  const last = list.at(-1)!.payload;
   if (
     (last.type !== "anchor" && last.type !== "ack" && last.type !== "transition-ack") ||
     digest(last.checkpoint) !== digest(checkpoint)
@@ -597,7 +647,20 @@ export function checkComparisonWitness(
     !list.some((e) => e.recordVersion === version && e.payload.type === "transition-ack")
   )
     fail("WITNESS_TRANSITION_REQUIRED");
-  return list;
+}
+/** Archive integrity is not operational file identity or permission to execute. */
+export function inspectComparisonArchivedWitness(
+  db: DatabaseSync,
+  records: unknown[],
+  selection: PublicComparisonDatabaseSelection,
+  checkpoint: ComparisonWitnessCheckpoint,
+  version: Version,
+) {
+  const list = inspectComparisonWitnessRecords(db, records, selection, version);
+  requireClosedWitness(list, checkpoint, version);
+  const binding = list[0].payload;
+  if (binding.type !== "binding") fail("WITNESS_BINDING_CHANGED");
+  return { binding, headDigest: list.at(-1)!.entryDigest, recordCount: list.length };
 }
 export function checkComparisonWitnessCompany(
   token: ComparisonStorageSession,

@@ -18,6 +18,7 @@ import {
 } from "./prepared-package-ui";
 import { jsonBody, studioFetch, StudioApiError } from "./shared";
 import styles from "./guided-workspace.module.css";
+import { PreparedPackageDetails } from "./prepared-package-details";
 
 type Pending = { request: PreparedPackageRequest; company: StudioCase };
 type Props = {
@@ -367,6 +368,11 @@ export function PreparedPackagesPanel({
               보관 당시 원고 검토 의견 {item.storedReviewCount}개 · 규칙 점검 의견{" "}
               {item.currentRuleReviewCount}개. 검토 의견 수는 기관 평가 점수가 아닙니다.
             </p>
+            <PreparedPackageDetails
+              key={`${company.id}:${company.revision}:${JSON.stringify(item)}`}
+              item={item}
+              blocked={working || packageBusy || blocked || !!pending}
+            />
             <button
               type="button"
               className={styles.link}

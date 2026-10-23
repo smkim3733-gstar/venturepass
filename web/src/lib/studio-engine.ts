@@ -1,6 +1,7 @@
 import "server-only";
 
 import OpenAI from "openai";
+import { unmatchedNumericEvidence } from "./studio-numeric-evidence";
 import {
   aiInput,
   buildPlanGenerationRequestForVersion,
@@ -1425,25 +1426,26 @@ export function reviewPlan(value: StudioCase, content: PlanContent): ReviewFindi
         "결과 보장을 제거하고 입증 가능한 기술·사업 내용으로 수정해 주세요.",
         section.key,
       );
-    const numbers = [
-      ...new Set(
-        section.content.match(
-          /\d[\d,.]*\s*(?:%|％|억원|만원|백만원|천만원|억\s*원|만\s*원|원|명|건|개사|배)/g,
-        ) || [],
-      ),
-    ];
-    const quotes = section.evidence
+    const numericReferences = section.evidence
       .filter((ref) => validReference(value, ref))
-      .map((ref) => ref.quote.replace(/\s+/g, ""));
-    const unmatched = numbers.filter(
-      (number) => !quotes.some((quote) => quote.includes(number.replace(/\s+/g, ""))),
-    );
+      .flatMap((ref) => {
+        const texts =
+          ref.sourceId === "profile"
+            ? Object.values(value.profile).filter((field) => typeof field === "string")
+            : value.sources
+                .filter((source) => source.id === ref.sourceId && source.extraction !== "pending")
+                .map((source) => source.text);
+        return texts
+          .filter((text) => text.includes(ref.quote))
+          .map((text) => ({ text, quote: ref.quote }));
+      });
+    const unmatched = unmatchedNumericEvidence(section.content, numericReferences);
     if (unmatched.length)
       add(
         "warning",
         "numeric-evidence",
         `인용 근거와 직접 대조되지 않은 수치가 있습니다: ${unmatched.slice(0, 8).join(", ")}`,
-        "실적이면 기준기간·산식·원본을 연결하고, 목표나 가정이면 제안·계획임을 표시해 주세요. 단위 변환 수치는 산식을 확인해 주세요.",
+        "인용 원문의 전체 수치·부호·단위를 확인해 주세요. 실적은 기준기간·산식·원본을 연결하고, 목표나 가정은 제안·계획임을 표시해 주세요. 단위 변환은 산식을 별도로 확인해 주세요.",
         section.key,
       );
     if (

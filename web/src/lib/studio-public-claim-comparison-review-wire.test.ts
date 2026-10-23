@@ -24,6 +24,19 @@ import { encodeStoredComparisonReview } from "./studio-public-claim-comparison-r
 const h = "a".repeat(64), other = "b".repeat(64);
 const { prepared, query, value } = comparisonReviewTestFixture();
 function wire() { return comparisonReviewSuccessWire(query, value()); }
+it("keeps legacy v1 bytes and versions owned reader results separately without upgrading authority", () => {
+  expect(wire()).toBe(JSON.stringify({ wireVersion: 1, kind: "public-comparison-stored-review", query, result: value() }));
+  const owned = { ...value(), source: "comparison-stored-review" as const };
+  const text = comparisonReviewSuccessWire(query, owned);
+  expect(JSON.parse(text).wireVersion).toBe(2);
+  expect(decodeComparisonReviewWire(text, 200, query)).toEqual(owned);
+  expect(Object.values(owned.authority).every((authority) => authority === false)).toBe(true);
+  expect(owned.historical.result.evidenceOrigin).toBe("manual-unverified");
+  for (const mismatch of [text.replace('"wireVersion":2', '"wireVersion":1'),
+    wire().replace('"wireVersion":1', '"wireVersion":2')])
+    expect(() => decodeComparisonReviewWire(mismatch, 200, query)).toThrow();
+  expect(() => comparisonReviewSuccessWire(query, { ...owned, runtimeObserved: true })).toThrow();
+});
 const headers = { "Content-Type": "application/json; charset=utf-8" };
 function response(text = wire(), status = 200, extra = {}) {
   return new Response(text, { status, headers: { ...headers, ...extra } });

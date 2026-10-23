@@ -1,4 +1,6 @@
 import "server-only";
+import { parseProviderResponseOutput } from "./studio-provider-response-output";
+export { parseProviderResponseOutput } from "./studio-provider-response-output";
 import {
   buildPlanGenerationRequest,
   buildPlanReviewRequest,
@@ -91,34 +93,6 @@ const options = {
   background: false,
   stream: false,
 } as const;
-export function parseProviderResponseOutput(response: ProviderCapturedResponse): unknown {
-  if (response.status !== "completed" || !Array.isArray(response.output))
-    return fail("AI_INCOMPLETE");
-  const texts: string[] = [];
-  for (const item of response.output) {
-    if (
-      !item ||
-      typeof item !== "object" ||
-      Array.isArray(item) ||
-      item.type !== "message" ||
-      !Array.isArray(item.content)
-    )
-      continue;
-    for (const part of item.content) {
-      if (!part || typeof part !== "object" || Array.isArray(part)) continue;
-      if (part.type === "refusal") return fail("AI_INCOMPLETE");
-      if (part.type === "output_text" && typeof part.text === "string") texts.push(part.text);
-    }
-  }
-  if (texts.length !== 1 || Buffer.byteLength(texts[0]) > providerObservationLimits.validatedBytes)
-    return fail("AI_INVALID_OUTPUT");
-  try {
-    return JSON.parse(texts[0]);
-  } catch {
-    return fail("AI_INVALID_OUTPUT");
-  }
-}
-
 /** Synthetic injection only. No provider client, configuration, credentials or network lookup. */
 export async function generateObservedProviderPlan(
   company: StudioCase,

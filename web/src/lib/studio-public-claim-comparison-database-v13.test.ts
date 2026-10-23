@@ -1,4 +1,24 @@
+import { renameSync, rmdirSync, unlinkSync } from "node:fs";
+import { backupComparisonData, verifyComparisonBackup, restoreComparisonCandidate } from "./studio-comparison-backup";
+import { sha as archiveSha } from "../../scripts/local-data-files.mjs";
+import { prepareComparisonInputFile, listComparisonInputReservations } from "../../scripts/comparison-input.mjs";
+import { openConfiguredInputPreparation } from "./studio-comparison-input-open";
+import { createInputPreparationHttpServer } from "./studio-comparison-input-route";
+import { readComparisonExecutionInputFile } from "./studio-comparison-execution-input-file";
+import { createComparisonReservationCatalog } from "./studio-comparison-input-preparation";
+import { createComparisonReservationBooking } from "./studio-comparison-reservation-booking";
+import { createComparisonCancellation } from "./studio-comparison-cancellation";
+import { createPublicComparisonCancellationStore } from "./studio-public-claim-comparison-database-v11";
+import { createPublicComparisonReservationStore } from "./studio-public-claim-comparison-database-v11";
+import { openConfiguredReservations } from "./studio-comparison-reservations-open";
+import { createReservationHttpServer } from "./studio-comparison-reservations-route";
 import * as storedRead32 from "./studio-public-claim-comparison-stored-read";
+import { openConfiguredComparison } from "./studio-comparison-execution-open";
+import { createComparisonExecutionHttpServer } from "./studio-comparison-execution-http-server";
+import { createProviderPublicComparisonService } from "./studio-public-claim-comparison-database-v11";
+import { registerComparisonProviderDriver } from "./studio-comparison-provider-driver";
+import { createProviderPublicComparisonExecution } from "./studio-public-claim-comparison-database-v11";
+import { snapshotProviderSdkWire } from "./studio-plan-quality-provider-sdk-wire";
 import { ownedComparisonCompanyGuard } from "./studio-comparison-company-capability";
 import { preparePublicClaimComparison } from "./studio-public-claim-comparison";
 import {
@@ -25,8 +45,11 @@ import { publicClaimComparisonRequestPins } from "./studio-public-claim-comparis
 import * as transmissionRows from "../../scripts/local-data-quality-provider-transmission-database.mjs";
 import * as journalIO from "../../scripts/local-journal-io.mjs";
 import { randomUUID } from "node:crypto";
+import { spawnSync } from "node:child_process";
+import { pathToFileURL } from "node:url";
 import {
   copyFileSync,
+  existsSync,
   mkdtempSync,
   rmSync,
   mkdirSync,
@@ -70,7 +93,7 @@ import {
 } from "./studio-public-claim-comparison-reservation";
 import * as configuration from "./studio-plan-quality-provider-configuration";
 import { comparisonReservationTestFixture } from "./studio-public-claim-comparison-reservation-test-helpers";
-import { createIsolatedPublicComparisonExecution, createIsolatedPublicComparisonService } from "./studio-public-claim-comparison-database-v11";
+import { createIsolatedPublicComparisonExecution, createIsolatedPublicComparisonService, openPublicComparisonStoredReader } from "./studio-public-claim-comparison-database-v11";
 import { endComparisonCompanyRead } from "./studio-public-comparison-company-guard";
 import {
   createSyntheticComparisonDriver,
@@ -115,9 +138,11 @@ vi.mock("./studio-plan-quality-provider-production-runtime", () => ({
   providerProductionPolicyContext: forbidden,
   isProviderProductionExecution: () => false,
 }));
+const offlineSdk = vi.hoisted(() => ({ construct: undefined as ((options: unknown) => object) | undefined }));
 vi.mock("openai", () => ({
   default: class {
-    constructor() {
+    constructor(options: unknown) {
+      if (offlineSdk.construct) return offlineSdk.construct(options);
       forbidden();
     }
   },
@@ -274,6 +299,7 @@ const cleanups: (() => void)[] = [];
 afterEach(() => {
   vi.restoreAllMocks();
   for (const close of cleanups.splice(0).reverse()) close();
+  offlineSdk.construct = undefined;
 });
 function reserveGuard(g: ReturnType<typeof guarded>) {
   return reserveGuardedPublicComparison(g.session, fixture.command, g.current);
@@ -3369,7 +3395,7 @@ function service30(g: ReturnType<typeof guarded>) {
   const selected = { runId: b.runId, dispatchCommandDigest: digest(b.command) };
   return { service, start, selected };
 }
-function commands30(p: ReturnType<ReturnType<typeof service30>["service"]["previewPostcapture"]>) {
+function commands30(p: Omit<ReturnType<ReturnType<typeof service30>["service"]["previewPostcapture"]>, "source">) {
   const common = {
     commandVersion: 1, purpose: "compare-public-claim", runId: p.runId,
     transmissionBindingDigest: p.transmissionBindingDigest, dispatchEventDigest: p.dispatchEventDigest,
@@ -4550,6 +4576,8 @@ it("4I42 SQL13 cancelled/released slot retains server cleanup and next explicit 
 }, postLimit30);
 
 import { exportComparisonExample } from "./comparison-review-example-export-test-helper";
+import { createOwnedComparisonReviewServer, createCompanyComparisonReviewServer } from "./studio-public-claim-comparison-review-owned-server";
+import { decodeComparisonReviewWire } from "./studio-public-claim-comparison-review-wire";
 
 // 4I51: export from actual isolated SQL13 writes, then the same historical reader.
 // This is a build-time synthetic snapshot, never a runtime SQL acquisition port.
@@ -4642,3 +4670,1013 @@ for (const failure of ["wrong-selection", "corrupt-row", "cleanup-required"] as 
     expect(allCompany(g.companyDb)).toEqual(company);
     expect(start).not.toHaveBeenCalled();
   }, postLimit30);
+// The reader owns a fresh read-only connection; no synthetic execution service is acquired.
+it("owned stored reader preserves SQL13 history and borrowed stores with no write surface", () => {
+  const g = throughResult(readyResponse32()), { service, start, selected } = service30(g);
+  const query = { ...selected, mode: "historical" as const };
+  const expected = service.readStoredReviewByRun(query);
+  expect(service.retire().status).toBe("closed");
+  const before = snapshot(g.db), files = witnessFiles(g), company = allCompany(g.companyDb);
+  const reader = openPublicComparisonStoredReader(g.paths, selection, g.cap);
+  cleanups.push(() => { reader.close(); });
+  expect(Object.keys(reader).sort()).toEqual(["close", "inspect", "listStoredReviews", "readCompanyStoredReview", "readStoredReviewByRun"]);
+  const loaded = reader.readStoredReviewByRun(query);
+  expect(loaded).toEqual({ ...expected, source: "comparison-stored-review" });
+  expect(reader.readStoredReviewByRun({ ...query, mode: "inspect-current" }).current.status).toBe("exact-original-request");
+  expect(reader.close()).toMatchObject({ status: "closed", cleanupRequired: false });
+  expect(reader.close().status).toBe("closed");
+  expect(() => reader.readStoredReviewByRun(query)).toThrow("PUBLIC_COMPARISON_STORED_READER_CLOSED");
+  expect(start).not.toHaveBeenCalled(); expect(forbidden).not.toHaveBeenCalled();
+  expect(snapshot(g.db)).toEqual(before); expect(witnessFiles(g)).toEqual(files);
+  expect(allCompany(g.companyDb)).toEqual(company);
+  const missing = { ...g.paths, qualityFile: join(g.paths.dataRoot, "missing.sqlite") };
+  expect(() => openPublicComparisonStoredReader(missing, selection, g.cap)).toThrow();
+  expect(existsSync(missing.qualityFile)).toBe(false);
+  // The explicit storage capability is also protected by SQLite and the witness writer.
+  const session = storageWitness22.openComparisonReadOnlyStorageSession(g.paths, selection);
+  const { db } = beginComparisonStorageSession(session);
+  try {
+    expect(() => db.exec("CREATE TABLE forbidden_reader_write(value TEXT)")).toThrow(/readonly|read.only/i);
+    expect(() => storageWitness22.initializeComparisonWitness(session, undefined as never, undefined as never, g.cap))
+      .toThrow("PUBLIC_COMPARISON_STORAGE_READ_ONLY");
+  } finally { endComparisonStorageSession(session); closeComparisonStorageSession(session); }
+  expect(snapshot(g.db)).toEqual(before); expect(witnessFiles(g)).toEqual(files);
+}, postLimit30);
+
+it("owned stored reader never releases a lease or company read acquired by another owner", () => {
+  const g = throughResult(readyResponse32()), selected = selected32(g);
+  const query = { runId: selected.runId, dispatchCommandDigest: selected.dispatchCommandDigest, mode: "historical" };
+  const reader = openPublicComparisonStoredReader(g.paths, selection, g.cap);
+  cleanups.push(() => { reader.close(); });
+  const borrowed = beginComparisonStorageSession(g.session);
+  borrowed.db.exec("BEGIN");
+  try {
+    expect(() => reader.readStoredReviewByRun(query)).toThrow();
+    expect(reader.close().status).toBe("closed");
+    expect(borrowed.db.isTransaction).toBe(true);
+    expect(() => beginComparisonStorageSession(g.session)).toThrow(/BUSY/);
+  } finally { borrowed.db.exec("ROLLBACK"); endComparisonStorageSession(g.session); }
+  const second = openPublicComparisonStoredReader(g.paths, selection, g.cap);
+  cleanups.push(() => { second.close(); });
+  const owned = companyGuard22.createComparisonCompanyReadScope(g.cap);
+  owned.read(fixture.company.id);
+  try {
+    expect(second.readStoredReviewByRun({ ...query, mode: "inspect-current" }).current)
+      .toMatchObject({ status: "unavailable", reason: "COMPANY_BUSY" });
+    expect(second.close().status).toBe("closed");
+    expect(owned.pending()).toBe(true);
+    owned.check(fixture.company.id);
+  } finally { owned.finish(); }
+}, postLimit30);
+
+for (const fault of ["rollback", "lease"] as const)
+  it("owned stored reader retains its own " + fault + " cleanup until explicit close succeeds", () => {
+    const g = throughResult(readyResponse32()), selected = selected32(g);
+    const query = { runId: selected.runId, dispatchCommandDigest: selected.dispatchCommandDigest, mode: "historical" };
+    const before = snapshot(g.db), files = witnessFiles(g), company = allCompany(g.companyDb);
+    const reader = openPublicComparisonStoredReader(g.paths, selection, g.cap);
+    cleanups.push(() => { reader.close(); });
+    let session: Parameters<typeof beginComparisonStorageSession>[0] | undefined;
+    let readerDb: DatabaseSync | undefined;
+    const begin = storageWitness22.beginComparisonStorageSession;
+    const acquisition = vi.spyOn(storageWitness22, "beginComparisonStorageSession").mockImplementation((token) => {
+      const result = begin(token);
+      if (token !== g.session) { session = token; readerDb = result.db; }
+      return result;
+    });
+    const exec = DatabaseSync.prototype.exec;
+    const rollback = vi.spyOn(DatabaseSync.prototype, "exec").mockImplementation(function (this: DatabaseSync, sql: string) {
+      if (fault === "rollback" && this === readerDb && sql === "ROLLBACK") throw Error("synthetic rollback failure");
+      return exec.call(this, sql);
+    });
+    const end = storageWitness22.endComparisonStorageSession;
+    const lease = vi.spyOn(storageWitness22, "endComparisonStorageSession").mockImplementation((token) => {
+      if (fault === "lease" && token === session) throw Error("synthetic lease release failure");
+      return end(token);
+    });
+    expect(() => reader.readStoredReviewByRun(query)).toThrow();
+    expect(reader.inspect().cleanupRequired).toBe(true);
+    expect(() => reader.close()).toThrow();
+    expect(reader.inspect()).toMatchObject({ status: "draining", cleanupRequired: true });
+    expect(() => reader.readStoredReviewByRun(query)).toThrow("PUBLIC_COMPARISON_STORED_READER_CLOSED");
+    expect(() => beginComparisonStorageSession(g.session)).toThrow();
+    rollback.mockRestore(); lease.mockRestore(); acquisition.mockRestore();
+    expect(reader.close()).toMatchObject({ status: "closed", cleanupRequired: false });
+    expect(() => readerDb!.prepare("SELECT 1")).toThrow();
+    const own = beginComparisonStorageSession(g.session);
+    expect(own.db).toBe(g.db); endComparisonStorageSession(g.session);
+    expect(snapshot(g.db)).toEqual(before); expect(witnessFiles(g)).toEqual(files);
+    expect(allCompany(g.companyDb)).toEqual(company);
+  }, postLimit30);
+
+it("owned review server returns the original SQL13 result through the bound HTTP boundary and closes its reader", async () => {
+  const g = throughResult(readyResponse32()), selected = selected32(g);
+  const query = { runId: selected.runId, dispatchCommandDigest: selected.dispatchCommandDigest, mode: "historical" as const };
+  const before = snapshot(g.db), files = witnessFiles(g), company = allCompany(g.companyDb);
+  const origin = "http://127.0.0.1:3000";
+  const server = createOwnedComparisonReviewServer({ paths: g.paths, selection, companyGuard: g.cap,
+    companyId: fixture.company.id, ...query, localOrigin: origin });
+  cleanups.push(() => { expect(server.close().status).toBe("closed"); });
+  expect(server.inspect().readerAcquired).toBe(false);
+  const operation = server.handle(new Request(origin + "/api/studio/cases/" + fixture.company.id + "/public-claim-comparison/stored-review", {
+    method: "POST", headers: { origin, host: "127.0.0.1:3000", "content-type": "application/json" }, body: JSON.stringify(query),
+  }));
+  const response = await operation.response; await operation.completion;
+  expect(response.status).toBe(200);
+  expect(response.headers.get("cache-control")).toContain("no-store");
+  const text = await response.text(), result = decodeComparisonReviewWire(text, response.status, query);
+  expect(JSON.parse(text).wireVersion).toBe(2);
+  expect(result.resultIdentity).toMatchObject(selected);
+  expect(result).toMatchObject({ source: "comparison-stored-review", runtimeObserved: false,
+    historical: { result: { state: "comparison-ready", evidenceOrigin: "manual-unverified" } } });
+  expect(Object.values(result.authority).every((authority) => authority === false)).toBe(true);
+  expect(server.close()).toMatchObject({ status: "closed", storageCleanupRequired: false, bodyCleanupRequired: false });
+  expect(snapshot(g.db)).toEqual(before); expect(witnessFiles(g)).toEqual(files);
+  expect(allCompany(g.companyDb)).toEqual(company); expect(forbidden).not.toHaveBeenCalled();
+}, postLimit30);
+
+it("company catalog selects only audited SQL13 history and reads the selected run through the bound server", async () => {
+  const g = throughResult(readyResponse32()), selected = selected32(g);
+  const before = snapshot(g.db), files = witnessFiles(g), company = allCompany(g.companyDb);
+  const origin = "http://127.0.0.1:3000";
+  const server = createCompanyComparisonReviewServer({ paths: g.paths, selection, companyGuard: g.cap,
+    companyId: fixture.company.id, companyRevision: fixture.company.revision, localOrigin: origin });
+  cleanups.push(() => { expect(server.close().status).toBe("closed"); });
+  const catalog = server.list();
+  expect(catalog).toMatchObject({ source: "comparison-stored-catalog", companyId: fixture.company.id,
+    companyRevision: fixture.company.revision, currentContextVerified: false, runtimeObserved: false });
+  expect(catalog.reviews).toHaveLength(1);
+  expect(catalog.reviews[0]).toMatchObject(selected);
+  expect(Object.values(catalog.authority).every((v) => v === false)).toBe(true);
+  expect(JSON.stringify(catalog)).not.toContain(g.paths.dataRoot);
+  const chosen = server.select(catalog.reviews[0].runId, catalog.reviews[0].dispatchCommandDigest);
+  const query = { runId: chosen.runId, dispatchCommandDigest: chosen.dispatchCommandDigest, mode: "historical" as const };
+  const operation = server.handle(new Request(origin + "/api/studio/cases/" + fixture.company.id + "/public-claim-comparison/stored-review", {
+    method: "POST", headers: { origin, host: "127.0.0.1:3000", "content-type": "application/json" }, body: JSON.stringify(query),
+  }));
+  const response = await operation.response; await operation.completion;
+  expect(response.status).toBe(200);
+  const result = decodeComparisonReviewWire(await response.text(), 200, query);
+  const { sectionKey, sectionTitle, claimQuote, ...identity } = chosen;
+  expect(result.resultIdentity).toEqual(identity);
+  expect(result.historical.prepared.input).toMatchObject({ claimQuote, section: { key: sectionKey, title: sectionTitle } });
+  expect(result.historical.result).toMatchObject({ source: "supplied-response", evidenceOrigin: "manual-unverified" });
+  expect(server.close().status).toBe("closed");
+  expect(snapshot(g.db)).toEqual(before); expect(witnessFiles(g)).toEqual(files);
+  expect(allCompany(g.companyDb)).toEqual(company); expect(forbidden).not.toHaveBeenCalled();
+}, postLimit30);
+
+it("company catalog filters other-company history and rejects stale or missing company snapshots", () => {
+  const g = throughResult(readyResponse32());
+  const other = { ...fixture.company, id: randomUUID() };
+  g.companyDb.prepare("INSERT INTO studio_cases(id,revision,evidence_revision,body) VALUES(?,?,?,?)")
+    .run(other.id, other.revision, 0, JSON.stringify(other));
+  const before = snapshot(g.db), files = witnessFiles(g), company = allCompany(g.companyDb);
+  const reader = openPublicComparisonStoredReader(g.paths, selection, g.cap);
+  cleanups.push(() => { reader.close(); });
+  expect(reader.listStoredReviews({ companyId: other.id, companyRevision: other.revision }).reviews).toEqual([]);
+  expect(() => reader.listStoredReviews({ companyId: fixture.company.id, companyRevision: fixture.company.revision + 1 }))
+    .toThrow("CATALOG_COMPANY_CHANGED");
+  expect(() => reader.listStoredReviews({ companyId: randomUUID(), companyRevision: 0 })).toThrow("COMPANY_ROW_INVALID");
+  const catalog = reader.listStoredReviews({ companyId: fixture.company.id, companyRevision: fixture.company.revision });
+  expect(catalog.reviews).toHaveLength(1);
+  expect(catalog.reviews.every((r) => r.selection.companyId === fixture.company.id)).toBe(true);
+  expect(reader.inspect().cleanupRequired).toBe(false);
+  expect(reader.close().status).toBe("closed");
+  expect(snapshot(g.db)).toEqual(before); expect(witnessFiles(g)).toEqual(files); expect(allCompany(g.companyDb)).toEqual(company);
+}, postLimit30);
+
+it("company catalog omits captured responses before comparison recording and rejects corrupt archive rows", () => {
+  const g = throughCapture(readyResponse32());
+  const before = snapshot(g.db), files = witnessFiles(g), company = allCompany(g.companyDb);
+  const reader = openPublicComparisonStoredReader(g.paths, selection, g.cap);
+  cleanups.push(() => { reader.close(); });
+  const query = { companyId: fixture.company.id, companyRevision: fixture.company.revision };
+  expect(reader.listStoredReviews(query).reviews).toEqual([]);
+  const prepare = DatabaseSync.prototype.prepare;
+  const corrupted = vi.spyOn(DatabaseSync.prototype, "prepare").mockImplementation(function(this: DatabaseSync, sql: string) {
+    const statement = prepare.call(this, sql);
+    if (this !== g.db && sql.startsWith("SELECT") && sql.includes("quality_actual_artifacts")) {
+      const all = statement.all.bind(statement);
+      vi.spyOn(statement, "all").mockImplementation((...args) => all(...args).map((row) =>
+        row.artifact_key === "comparison-response" ? { ...row, payload: "{}" } : row));
+    }
+    return statement;
+  });
+  expect(() => reader.listStoredReviews(query)).toThrow();
+  corrupted.mockRestore();
+  expect(reader.inspect().cleanupRequired).toBe(false);
+  expect(reader.close().status).toBe("closed");
+  expect(snapshot(g.db)).toEqual(before); expect(witnessFiles(g)).toEqual(files); expect(allCompany(g.companyDb)).toEqual(company);
+}, postLimit30);
+
+it("company catalog retains its own failed company rollback until the same reader closes", () => {
+  const g = throughResult(readyResponse32());
+  const before = snapshot(g.db), files = witnessFiles(g), company = allCompany(g.companyDb);
+  const reader = openPublicComparisonStoredReader(g.paths, selection, g.cap);
+  cleanups.push(() => { reader.close(); });
+  const db = ownedComparisonCompanyGuard(g.cap).db, exec = db.exec.bind(db);
+  const rollback = vi.spyOn(db, "exec").mockImplementation((sql: string) => {
+    if (sql === "ROLLBACK") throw Error("synthetic company rollback failure");
+    return exec(sql);
+  });
+  const query = { companyId: fixture.company.id, companyRevision: fixture.company.revision };
+  expect(() => reader.listStoredReviews(query)).toThrow("CLEANUP_REQUIRED");
+  expect(reader.inspect().cleanupRequired).toBe(true);
+  expect(() => reader.close()).toThrow("CLEANUP_REQUIRED");
+  expect(reader.inspect().status).toBe("draining");
+  expect(() => reader.listStoredReviews(query)).toThrow("STORED_READER_CLOSED");
+  expect(() => beginComparisonStorageSession(g.session)).toThrow();
+  rollback.mockRestore();
+  expect(reader.close()).toMatchObject({ status: "closed", cleanupRequired: false });
+  expect(db.isTransaction).toBe(false);
+  expect(snapshot(g.db)).toEqual(before); expect(witnessFiles(g)).toEqual(files); expect(allCompany(g.companyDb)).toEqual(company);
+}, postLimit30);
+
+import { createStoredComparisonRuntime } from "./studio-comparison-review-runtime";
+import { storedReviewHeaders } from "./studio-comparison-review-catalog";
+it("app comparison runtime opens readonly company and quality files, audits company selection and closes before receipt", async () => {
+  const g = throughResult(readyResponse32()), selected = selected32(g);
+  const before = snapshot(g.db), files = witnessFiles(g), company = allCompany(g.companyDb);
+  const runtime = createStoredComparisonRuntime({ dataRoot: g.paths.dataRoot, controlDirectory: g.paths.controlDirectory, selection });
+  const origin = "http://127.0.0.1:31234";
+  cleanups.push(() => { expect(runtime.cleanup(fixture.company.id, origin).status).toBe(200); });
+  const catalog = runtime.catalog(fixture.company.id, fixture.company.revision, origin);
+  expect(catalog.status).toBe(200); expect(runtime.inspect().retained).toBe(0);
+  const rows = await catalog.json(); expect(rows.reviews[0]).toMatchObject(selected);
+  const query = { runId: selected.runId, dispatchCommandDigest: selected.dispatchCommandDigest, mode: "inspect-current" as const };
+  const req = new Request(origin + "/api/studio/cases/" + fixture.company.id + "/public-claim-comparison/stored-review", {
+    method: "POST", headers: { origin, host: "127.0.0.1:31234", "content-type": "application/json" }, body: JSON.stringify(query) });
+  const response = await runtime.review(req, fixture.company.id, fixture.company.revision, origin, query.runId, query.dispatchCommandDigest);
+  expect(response.status).toBe(200); expect(response.headers.get(storedReviewHeaders.receipt)).toBe("complete");
+  const result = decodeComparisonReviewWire(await response.text(), 200, query);
+  expect(result.resultIdentity).toMatchObject(selected); expect(result.current.status).toBe("exact-original-request");
+  expect(runtime.inspect().retained).toBe(0);
+  expect(snapshot(g.db)).toEqual(before); expect(witnessFiles(g)).toEqual(files); expect(allCompany(g.companyDb)).toEqual(company);
+}, postLimit30);
+
+// Provider owner integration uses an explicit offline port, never an operational key or SDK.
+it("provider comparison owner captures under both locks and nonce replay never reenters configuration", async () => {
+  const { g, command, current } = ownerFixture22();
+  const assertCurrent = vi.fn((actual) => expect(actual).toEqual(selection));
+  const network = vi.fn(async () => {
+    expect(g.db.isTransaction).toBe(true);
+    expect(() => g.companyDb.exec("BEGIN IMMEDIATE")).toThrow(/locked/);
+    return new Response(JSON.stringify(response));
+  });
+  const run = vi.fn((b: PublicComparisonTransportBoundary, h: Pick<SyntheticComparisonHooks, "sdk">) => h.sdk(async (fetch, request) => {
+    const received = await fetch(b.destination, { ...wire22(b, request.signal) });
+    return received.json();
+  }, network));
+  const driver = registerComparisonProviderDriver({ assertCurrent, run,
+    snapshotWire: (raw, url, wire) => snapshotProviderSdkWire(raw, comparisonSyntheticWireKey, url, wire) });
+  const execution = createProviderPublicComparisonExecution(g.session, g.cap, driver);
+  const first = await execution.execute(command, current);
+  expect(first).toMatchObject({ source: "provider-comparison-execution", providerStartObserved: true,
+    capturePersisted: true, promiseSettled: true, cleanupRequired: false, runtimeObserved: false });
+  expect(first).not.toHaveProperty("syntheticStartObserved");
+  expect(network).toHaveBeenCalledTimes(1);
+  expect(assertCurrent).toHaveBeenCalledTimes(2);
+  const before = snapshot(g.db), journal = witnessFiles(g);
+  expect(await execution.execute(command, explode())).toMatchObject({ phase: "replay" });
+  expect(assertCurrent).toHaveBeenCalledTimes(2); expect(run).toHaveBeenCalledTimes(1);
+  expect(snapshot(g.db)).toEqual(before); expect(witnessFiles(g)).toEqual(journal);
+  execution.retire();
+}, limit);
+for (const when of ["before-commit", "before-fetch", "expires-during-check"] as const)
+  it("provider comparison owner revocation " + when + " blocks transport without replacing the owner", async () => {
+    const { g, command, current } = ownerFixture22();
+    let revoked = when === "before-commit";
+    let checks = 0;
+    const assertCurrent = vi.fn(() => {
+      checks++;
+      if (revoked) throw Error("offline revocation");
+      if (when === "expires-during-check" && checks === 2)
+        vi.setSystemTime(Date.parse(fixture.at) + 3600000);
+    });
+    const network = vi.fn(async () => new Response(JSON.stringify(response)));
+    const run = vi.fn((b: PublicComparisonTransportBoundary, h: Pick<SyntheticComparisonHooks, "sdk">) => h.sdk(async (fetch, request) => {
+      revoked = when === "before-fetch"; // SDK preparation can yield before the actual start.
+      const received = await fetch(b.destination, wire22(b, request.signal));
+      return received.json();
+    }, network));
+    const driver = registerComparisonProviderDriver({ assertCurrent, run,
+      snapshotWire: (raw, url, wire) => snapshotProviderSdkWire(raw, comparisonSyntheticWireKey, url, wire) });
+    const execution = createProviderPublicComparisonExecution(g.session, g.cap, driver);
+    const before = snapshot(g.db), journal = witnessFiles(g);
+    const result = await execution.execute(command, current);
+    expect(result).toMatchObject({ source: "provider-comparison-execution", startAttempted: false,
+      providerStartObserved: false, capturePersisted: false });
+    expect(network).not.toHaveBeenCalled();
+    if (when === "before-commit") {
+      expect(run).not.toHaveBeenCalled(); expect(result.dispatchCommitObserved).toBe(false);
+      expect(snapshot(g.db)).toEqual(before); expect(witnessFiles(g)).toEqual(journal);
+    } else {
+      expect(result.dispatchCommitObserved).toBe(true);
+      const events = state13(g).reservation.archive.records.events.filter(e => e.runId === command.runId);
+      expect(events.some(e => e.payload.kind === "dispatch-recorded")).toBe(true);
+      expect(events.some(e => e.payload.kind === "dispatch-unknown")).toBe(true);
+      const calls = assertCurrent.mock.calls.length;
+      await execution.execute(command, explode());
+      expect(assertCurrent).toHaveBeenCalledTimes(calls); expect(run).toHaveBeenCalledTimes(1);
+    }
+    execution.retire();
+  }, limit);
+
+// Full runtime integration: real installed SDK, replaced network, synthetic TEMP SQL only.
+it("configured HTTP open retains reviewed consent through SDK capture and stored opinion after input revocation", async () => {
+  const { g, command, current } = ownerFixture22();
+  const companyBefore = allCompany(g.companyDb);
+  const key = "sk-offline-runtime-integration-never-real";
+  const SDK = (await vi.importActual<typeof import("openai")>("openai")).default;
+  const construct = vi.fn((options: unknown) => new SDK(options as ConstructorParameters<typeof SDK>[0]));
+  offlineSdk.construct = construct;
+  vi.stubEnv("OPENAI_API_KEY", key);
+  vi.stubEnv("OPENAI_CUSTOM_HEADERS", "");
+  vi.stubEnv("VENTURE_DATA_DIR", g.paths.dataRoot);
+  vi.stubEnv("VENTUREPASS_COMPARISON_EXECUTION_CONTROL_DIR", g.paths.controlDirectory);
+  vi.stubEnv("VENTUREPASS_COMPARISON_EXECUTION_DATABASE_ID", selection.databaseInstanceId);
+  cleanups.push(() => { vi.unstubAllEnvs(); vi.stubGlobal("fetch", forbidden); });
+  const network = vi.fn(async (url: unknown, wire: RequestInit | undefined) => {
+    expect(url).toBe("https://api.openai.com/v1/responses");
+    expect(new Headers(wire?.headers).get("authorization")).toBe("Bearer " + key);
+    try { expect(() => g.companyDb.exec("BEGIN IMMEDIATE")).toThrow(/locked/); }
+    finally { if (g.companyDb.isTransaction) g.companyDb.exec("ROLLBACK"); }
+    return new Response(JSON.stringify(response), { headers: { "content-type": "application/json" } });
+  });
+  vi.stubGlobal("fetch", network);
+  const settings = {
+    companyId: fixture.company.id, companyRevision: fixture.company.revision, runId: command.runId,
+    basis: current.basis, usagePolicy: current.usagePolicy,
+  };
+  const inputFile = join(g.paths.controlDirectory, "..", "reviewed-comparison-input.json");
+  const inputBytes = JSON.stringify({ inputVersion: 1, databaseInstanceId: selection.databaseInstanceId, settings });
+  writeFileSync(inputFile, inputBytes); vi.stubEnv("VENTUREPASS_COMPARISON_EXECUTION_INPUT_FILE", inputFile);
+  await expect(openConfiguredComparison(fixture.company.id, fixture.company.revision + 1)).rejects.toThrow();
+  let assembled: Awaited<ReturnType<typeof openConfiguredComparison>> | undefined;
+  cleanups.push(() => { if (assembled) expect(assembled.runtime.close().status).toBe("closed"); });
+  const http = createComparisonExecutionHttpServer(), origin = "http://127.0.0.1:30976";
+  let originalExecution: ReturnType<Awaited<ReturnType<typeof openConfiguredComparison>>["approval"]["execute"]> | undefined;
+  const opened = http.handle(new Request(`${origin}/api/studio/cases/${fixture.company.id}/public-claim-comparison/execution`, {
+    method: "POST", headers: { origin, "content-type": "application/json" },
+    body: JSON.stringify({ action: "open", companyRevision: fixture.company.revision, clientRequestId: randomUUID() }),
+  }), fixture.company.id, async (companyId, revision) => {
+    assembled = await openConfiguredComparison(companyId, revision);
+    const approval = assembled.approval;
+    return { ...assembled, approval: { ...approval, execute(consent) {
+      originalExecution = approval.execute(consent); return originalExecution;
+    } } };
+  });
+  const openedResponse = await opened.response; await opened.completion;
+  expect(openedResponse.status).toBe(200);
+  const ticket = await openedResponse.json(), { runtime, approval } = assembled!;
+  expect(runtime.inspect()).toMatchObject({ status: "unused", retained: false });
+  expect(construct).not.toHaveBeenCalled(); expect(network).not.toHaveBeenCalled();
+  async function request(action: unknown) {
+    const operation = http.handle(new Request(`${origin}/api/studio/cases/${fixture.company.id}/public-claim-comparison/execution`, {
+      method: "POST", headers: { origin, "content-type": "application/json", "x-venturepass-comparison-session": ticket.sessionId },
+      body: JSON.stringify(action),
+    }), fixture.company.id);
+    const response = await operation.response; await operation.completion;
+    return { response, body: await response.json() };
+  }
+  const beforePreview = snapshot(g.db), beforeWitness = witnessFiles(g);
+  const preparedResponse = await request({ action: "preview" });
+  expect(preparedResponse.response.status).toBe(200);
+  const approved = preparedResponse.body.prepared;
+  expect(approved.review).toEqual(current.approvedReview);
+  expect(approved.reservation.financialBasis.costs.reservedUnits).toBe(approved.review.budget.heldUnits);
+  expect(approved.reservation.retentionNotice).toEqual(fixture.review.retentionNotice);
+  expect(snapshot(g.db)).toEqual(beforePreview); expect(witnessFiles(g)).toEqual(beforeWitness);
+  expect(construct).not.toHaveBeenCalled(); expect(network).not.toHaveBeenCalled();
+  const consent = { clientRequestId: randomUUID(), reviewDigest: approved.review.reviewDigest,
+    externalTransmissionAcknowledged: true, comparisonPurposeAcknowledged: true, singleCallAcknowledged: true,
+    noAutomaticRetryAcknowledged: true, unknownCostHoldAcknowledged: true, noResendAcknowledged: true,
+    localRetentionAcknowledged: true };
+  expect((await request({ action: "execute", consent })).response.status).toBe(202);
+  const executed = await originalExecution!;
+  expect(executed).toMatchObject({ source: "provider-comparison-execution", providerStartObserved: true,
+    capturePersisted: true, cleanupRequired: false, runtimeObserved: false });
+  expect(construct).toHaveBeenCalledTimes(1); expect(network).toHaveBeenCalledTimes(1);
+  vi.stubGlobal("fetch", forbidden); // An existing owner keeps only its originally pinned network.
+  writeFileSync(inputFile, inputBytes + "\n"); // Even byte-only input drift revokes a retained runtime.
+  expect(runtime.inspect().configuration).toBe("revoked");
+  const originalPromise = originalExecution;
+  expect((await request({ action: "execute", consent })).body.outcome).toBe("returned");
+  expect(originalExecution).toBe(originalPromise);
+  const selected = approval.inspect().selection!;
+  const preview = (await request({ action: "postcapture-preview" })).body.postcapture;
+  expect(preview.review).toMatchObject({ comparisonRecorded: false, usageStatus: "known" });
+  const record = { action: "record-result", reviewDigest: preview.review.reviewDigest };
+  expect((await request(record)).body.postcapture.record).toBe("stored");
+  const afterRecord = snapshot(g.db), afterRecordWitness = witnessFiles(g);
+  expect((await request(record)).body.postcapture.record).toBe("stored");
+  expect(snapshot(g.db)).toEqual(afterRecord); expect(witnessFiles(g)).toEqual(afterRecordWitness);
+  const stored = runtime.readStoredReviewByRun({ ...selected, mode: "historical" });
+  expect(stored).toMatchObject({ source: "comparison-stored-review", resultIdentity: selected,
+    historical: { currentContextVerified: false }, runtimeObserved: false });
+  expect(runtime.inspect().service?.source).toBe("provider-comparison-service");
+  const settlementReview = (await request({ action: "postcapture-preview" })).body.postcapture.review;
+  expect(settlementReview.comparisonRecorded).toBe(true);
+  const settle = { action: "settle-finalize", reviewDigest: settlementReview.reviewDigest };
+  expect((await request(settle)).body.postcapture.settlement).toBe("stored");
+  const afterSettlement = snapshot(g.db), afterSettlementWitness = witnessFiles(g);
+  expect((await request({ action: "recover-postcapture", operation: "settle-finalize" })).body.postcapture.settlement).toBe("stored");
+  expect(snapshot(g.db)).toEqual(afterSettlement); expect(witnessFiles(g)).toEqual(afterSettlementWitness);
+  expect((await request({ action: "postcapture-preview" })).body.postcapture.review).toMatchObject({ comparisonRecorded: true, costSettled: true, finalized: true });
+
+  const stable = snapshot(g.db), journal = witnessFiles(g);
+  expect((await request({ action: "close" })).body).toMatchObject({ status: "closed", closed: true });
+  expect(http.inspect().retained).toBe(0);
+  expect(runtime.close().status).toBe("closed");
+  expect(() => runtime.open()).toThrow(/CLOSED/);
+  expect(snapshot(g.db)).toEqual(stable); expect(witnessFiles(g)).toEqual(journal);
+  expect(allCompany(g.companyDb)).toEqual(companyBefore);
+  expect(network).toHaveBeenCalledTimes(1); expect(construct).toHaveBeenCalledTimes(1);
+  expect(JSON.stringify({ executed, preview, stored, view: runtime.inspect() })).not.toContain(key);
+}, postLimit30);
+
+it("provider approval preparation rejects changed selection and preserves failed read cleanup on the original service", () => {
+  const { g, command, current } = ownerFixture22();
+  const driver = registerComparisonProviderDriver({ assertCurrent: forbidden, run: forbidden, snapshotWire: forbidden });
+  const service = createProviderPublicComparisonService(g.session, g.cap, driver);
+  cleanups.push(() => { service.close(); });
+  const query = { runId: command.runId, companyId: fixture.company.id, companyRevision: fixture.company.revision };
+  const before = snapshot(g.db), files = witnessFiles(g);
+  for (const changed of [{ ...query, companyId: randomUUID() }, { ...query, companyRevision: query.companyRevision + 1 }])
+    expect(() => service.prepareTransmission(changed, current.basis, current.usagePolicy, fixture.at)).toThrow(/SELECTION_CHANGED/);
+  const companyConnection = ownedComparisonCompanyGuard(g.cap).db;
+  const exec = companyConnection.exec.bind(companyConnection);
+  let breakCleanup = true;
+  const rollback = vi.spyOn(companyConnection, "exec").mockImplementation(sql => {
+    if (sql === "ROLLBACK" && breakCleanup) throw Error("synthetic preparation cleanup failure");
+    return exec(sql);
+  });
+  expect(() => service.prepareTransmission(query, current.basis, current.usagePolicy, fixture.at)).toThrow();
+  expect(service.inspect().postcapture.cleanupRequired).toBe(true);
+  expect(() => beginComparisonStorageSession(g.session)).toThrow(/BUSY/);
+  breakCleanup = false;
+  expect(service.close().status).toBe("closed");
+  rollback.mockRestore();
+  expect(companyConnection.isTransaction).toBe(false); expect(g.db.isTransaction).toBe(false);
+  expect(snapshot(g.db)).toEqual(before); expect(witnessFiles(g)).toEqual(files);
+}, postLimit30);
+
+it("comparison input preparation exports only after original reservation and policy audits without a provider", async () => {
+  const { g, command, current } = ownerFixture22();
+  const companyBefore = allCompany(g.companyDb), before = snapshot(g.db), files = witnessFiles(g);
+  const policyFile = join(g.paths.controlDirectory, "..", "input-policy.json");
+  const outputFile = join(g.paths.controlDirectory, "..", "prepared-input.json");
+  writeFileSync(policyFile, JSON.stringify({ basis: current.basis, usagePolicy: current.usagePolicy }));
+  const args = ["prepare", "--data-root", g.paths.dataRoot, "--control-dir", g.paths.controlDirectory,
+    "--database-id", selection.databaseInstanceId, "--company-id", fixture.company.id,
+    "--company-revision", String(fixture.company.revision), "--run-id", command.runId,
+    "--policy-file", policyFile, "--output", outputFile];
+  vi.stubEnv("OPENAI_API_KEY", ""); vi.stubGlobal("fetch", forbidden);
+  cleanups.push(() => vi.unstubAllEnvs());
+  const catalog = await listComparisonInputReservations(["list", ...args.slice(1, 11)]);
+  expect(catalog).toMatchObject({ kind: "comparison-reservation-catalog", companyId: fixture.company.id,
+    currentCompanyVerified: true, currentContextVerified: false, policiesVerified: false,
+    transmissionAllowed: false, consentRecorded: false });
+  expect(catalog.reservations).toHaveLength(1);
+  expect(catalog.reservations[0]).toMatchObject({runId: command.runId, latestEventKind: "reserved",
+    companyRevisionMatches: true, reservationExpired: false});
+  expect(JSON.stringify(catalog)).not.toMatch(/claimQuote|approvedReview|usagePolicy|contextSha256/);
+  // Operator chooses the exact original ID; prepare audits it again, never an array index/latest fallback.
+  args[12] = catalog.reservations[0].runId;
+  const result = await prepareComparisonInputFile(args);
+  expect(result).toMatchObject({ status: "prepared", runId: command.runId, companyId: fixture.company.id,
+    databaseVerified: true, currentCompanyVerified: true, transmissionAllowed: false, consentRecorded: false });
+  vi.stubEnv("VENTUREPASS_COMPARISON_EXECUTION_INPUT_FILE", outputFile);
+  const opened = readComparisonExecutionInputFile(g.paths.controlDirectory, selection.databaseInstanceId)!;
+  expect(opened.settings).toEqual({ companyId: fixture.company.id, companyRevision: fixture.company.revision,
+    runId: command.runId, basis: current.basis, usagePolicy: current.usagePolicy });
+  if (!("outputSha256" in result)) throw Error("expected prepared input output");
+  expect(opened.sha256).toBe(result.outputSha256);
+  expect(snapshot(g.db)).toEqual(before); expect(witnessFiles(g)).toEqual(files);
+  expect(allCompany(g.companyDb)).toEqual(companyBefore);
+  await expect(prepareComparisonInputFile(args)).rejects.toThrow(/OUTPUT_EXISTS/);
+  const wrong = [...args]; wrong[10] = String(fixture.company.revision + 1);
+  wrong[16] = join(g.paths.controlDirectory, "..", "wrong-company-input.json");
+  await expect(prepareComparisonInputFile(wrong)).rejects.toThrow(/SELECTION_CHANGED/);
+  expect(existsSync(wrong[16])).toBe(false);
+  expect(snapshot(g.db)).toEqual(before); expect(witnessFiles(g)).toEqual(files);
+  expect(allCompany(g.companyDb)).toEqual(companyBefore);
+  expect(g.db.isTransaction).toBe(false); expect(g.companyDb.isTransaction).toBe(false);
+}, postLimit30);
+
+it("app input preparation uses audited SQL13 and closed owners without activation or writes", async () => {
+ const {g,command,current}=ownerFixture22();
+ const before=snapshot(g.db),files=witnessFiles(g),companyBefore=allCompany(g.companyDb);
+ const policyFile=join(g.paths.controlDirectory,"..","app-input-policy.json");
+ const policy=JSON.stringify({basis:current.basis,usagePolicy:current.usagePolicy});
+ writeFileSync(policyFile,policy);
+ vi.stubEnv("VENTURE_DATA_DIR",g.paths.dataRoot);
+ vi.stubEnv("VENTUREPASS_COMPARISON_EXECUTION_CONTROL_DIR",g.paths.controlDirectory);
+ vi.stubEnv("VENTUREPASS_COMPARISON_EXECUTION_DATABASE_ID",selection.databaseInstanceId);
+ vi.stubEnv("VENTUREPASS_COMPARISON_INPUT_POLICY_FILE",policyFile);
+ vi.stubEnv("VENTUREPASS_COMPARISON_EXECUTION_INPUT_FILE","");
+ vi.stubEnv("OPENAI_API_KEY","");vi.stubGlobal("fetch",forbidden);
+ cleanups.push(()=>vi.unstubAllEnvs());
+ const selected={companyId:fixture.company.id,companyRevision:fixture.company.revision,runId:command.runId};
+ const origin="http://127.0.0.1:30333",endpoint=origin+"/api/studio/cases/"+fixture.company.id+"/public-claim-comparison/input-preparation";
+ const server=createInputPreparationHttpServer(async value=>openConfiguredInputPreparation(value));
+ const response=await server.handle(new Request(endpoint,{method:"POST",headers:{origin,"content-type":"application/json"},body:JSON.stringify(selected)}),fixture.company.id);
+ expect(response.status).toBe(200);
+ const value=await response.json();
+ expect(value).toMatchObject({...selected,transmissionAllowed:false,consentRecorded:false});
+ const document=JSON.parse(value.content);
+ expect(document).toEqual({inputVersion:1,databaseInstanceId:selection.databaseInstanceId,settings:{...selected,basis:current.basis,usagePolicy:current.usagePolicy}});
+ expect(value.sha256).toBe(sha(value.content));expect(server.inspect().retained).toBe(0);
+ // Closing is mandatory and policy identity is checked again afterwards.
+ const owner=openConfiguredInputPreparation(selected);cleanups.push(()=>owner.close());
+ expect(()=>owner.download()).toThrow(/CLEANUP_REQUIRED/);
+ owner.prepare();expect(()=>owner.download()).toThrow(/CLEANUP_REQUIRED/);expect(owner.close().closed).toBe(true);
+ writeFileSync(policyFile,policy+" ");
+ expect(()=>owner.download()).toThrow(/CONFIGURATION_CHANGED/);
+ writeFileSync(policyFile,policy);
+ vi.stubEnv("VENTUREPASS_COMPARISON_INPUT_POLICY_FILE","");
+ expect(()=>owner.download()).toThrow(/NOT_CONFIGURED/);
+ vi.stubEnv("VENTUREPASS_COMPARISON_INPUT_POLICY_FILE",policyFile);
+ expect(owner.download().content).toBe(value.content);
+ vi.setSystemTime(new Date(Date.parse(value.expiresAt)+1));
+ expect(()=>owner.download()).toThrow(/INPUT_UNAVAILABLE/);
+ expect(process.env.VENTUREPASS_COMPARISON_EXECUTION_INPUT_FILE).toBe("");
+ expect(readFileSync(policyFile,"utf8")).toBe(policy);
+ expect(snapshot(g.db)).toEqual(before);expect(witnessFiles(g)).toEqual(files);expect(allCompany(g.companyDb)).toEqual(companyBefore);
+ expect(g.db.isTransaction).toBe(false);expect(g.companyDb.isTransaction).toBe(false);
+},postLimit30);
+
+it("reservation catalog separates company history, stale revisions and expiry and rejects corrupt records", async () => {
+  const g = throughResult(readyResponse32());
+  const other = { ...fixture.company, id: randomUUID() };
+  const newer = { ...fixture.company, revision: fixture.company.revision + 1 };
+  g.companyDb.prepare("INSERT INTO studio_cases(id,revision,evidence_revision,body) VALUES(?,?,?,?)")
+    .run(other.id, other.revision, 0, JSON.stringify(other));
+  g.companyDb.prepare("UPDATE studio_cases SET revision=?,body=? WHERE id=?")
+    .run(newer.revision, JSON.stringify(newer), newer.id);
+  const before = snapshot(g.db), files = witnessFiles(g), company = allCompany(g.companyDb);
+  const args = ["list", "--data-root", g.paths.dataRoot, "--control-dir", g.paths.controlDirectory,
+    "--database-id", selection.databaseInstanceId, "--company-id", newer.id,
+    "--company-revision", String(newer.revision)];
+  vi.setSystemTime(new Date(Date.parse(fixture.at) + 3600000));
+  const historical = await listComparisonInputReservations(args);
+  expect(historical.reservations).toHaveLength(1);
+  expect(historical.reservations[0]).toMatchObject({companyRevision: fixture.company.revision,
+    companyRevisionMatches: false, reservationExpired: true, latestEventKind: "comparison-recorded"});
+  expect(historical).toMatchObject({currentContextVerified: false, policiesVerified: false, transmissionAllowed: false});
+  const changed = [...args]; changed[8] = other.id; changed[10] = String(other.revision);
+  expect((await listComparisonInputReservations(changed)).reservations).toEqual([]);
+  changed[8] = newer.id;
+  await expect(listComparisonInputReservations(changed)).rejects.toThrow(/CATALOG_COMPANY_CHANGED/);
+  changed[8] = randomUUID();
+  await expect(listComparisonInputReservations(changed)).rejects.toThrow(/COMPANY_ROW_INVALID/);
+  const prepare = DatabaseSync.prototype.prepare;
+  const corrupted = vi.spyOn(DatabaseSync.prototype, "prepare").mockImplementation(function(this: DatabaseSync, sql: string) {
+    const statement = prepare.call(this, sql);
+    if (this !== g.db && sql.startsWith("SELECT") && sql.includes("quality_actual_artifacts")) {
+      const all = statement.all.bind(statement);
+      vi.spyOn(statement, "all").mockImplementation((...values) => all(...values).map(row =>
+        row.artifact_key === "comparison-context" ? {...row,payload:"{}"} : row));
+    }
+    return statement;
+  });
+  await expect(listComparisonInputReservations(args)).rejects.toThrow();
+  corrupted.mockRestore();
+  const owner = createComparisonReservationCatalog({dataRoot: g.paths.dataRoot, controlDirectory: g.paths.controlDirectory,
+    databaseInstanceId: selection.databaseInstanceId, companyId: newer.id, companyRevision: newer.revision});
+  cleanups.push(() => { owner.close(); });
+  const exec = DatabaseSync.prototype.exec;
+  const rollback = vi.spyOn(DatabaseSync.prototype, "exec").mockImplementation(function(this: DatabaseSync, sql: string) {
+    if (this !== g.db && this !== g.companyDb && sql === "ROLLBACK") throw Error("synthetic catalog rollback failure");
+    return exec.call(this, sql);
+  });
+  expect(() => owner.list()).toThrow();
+  expect(() => owner.close()).toThrow();
+  expect(owner.inspect()).toMatchObject({closed: false, cleanupRequired: true});
+  expect(() => beginComparisonStorageSession(g.session)).toThrow();
+  expect(() => owner.list()).toThrow(/CLOSED/);
+  rollback.mockRestore();
+  expect(owner.close()).toMatchObject({closed: true, cleanupRequired: false});
+  expect(g.db.isTransaction).toBe(false); expect(g.companyDb.isTransaction).toBe(false);
+  expect(snapshot(g.db)).toEqual(before); expect(witnessFiles(g)).toEqual(files);
+  expect(allCompany(g.companyDb)).toEqual(company);
+}, postLimit30);
+
+function bookingConsent(reviewDigest: string) {
+  return { reviewDigest, comparisonPurposeAcknowledged: true, selectedContentRetentionAcknowledged: true,
+    currentBudgetReservationAcknowledged: true, financialBasisNotTokenFitAcknowledged: true, noAutomaticRetryAcknowledged: true };
+}
+it("fresh Node processes read reservation and cancellation receipts from persisted SQL13 without former owners", () => {
+  const g=setup13(false), booking=bookingOwner(g), bookingReview=booking.review(), pendingBooking=booking.inspect();
+  const booked=booking.reserve(bookingConsent(bookingReview.reviewDigest));
+  expect(booked.receipt).toMatchObject({clientRequestId:pendingBooking.clientRequestId,runId:pendingBooking.runId});
+  expect(booking.close().status).toBe("closed");
+  const binding=state13(g).reservation.bindings[0];
+  const guard=join(g.paths.controlDirectory,"..","history-read-guard.mjs");
+  writeFileSync(guard,`import {registerHooks} from 'node:module';
+registerHooks({resolve(s,c,n){if(s==='openai'||s.startsWith('openai/')||s.includes('production-runtime'))throw Error('FORBIDDEN_PROVIDER_IMPORT');return n(s,c);}});
+globalThis.fetch=()=>{throw Error('FORBIDDEN_FETCH');};`);
+  const env={...process.env};for(const key of Object.keys(env))if(/OPENAI|KOSIS|API_KEY|TOKEN|SECRET|^VENTURE/i.test(key))delete env[key];
+  const run=()=>{
+    const result=spawnSync(process.execPath,["--conditions=react-server","--import",pathToFileURL(guard).href,"--import",pathToFileURL(resolve("scripts/operational-typescript-loader.mjs")).href,"scripts/comparison-input.mjs","list",
+      "--data-root",g.paths.dataRoot,"--control-dir",g.paths.controlDirectory,"--database-id",selection.databaseInstanceId,
+      "--company-id",fixture.company.id,"--company-revision",String(fixture.company.revision)],
+      {cwd:process.cwd(),env,encoding:"utf8",windowsHide:true,timeout:60000,maxBuffer:1024*1024});
+    expect(result.status,result.stderr).toBe(0);expect(result.stderr).not.toContain("FORBIDDEN_");
+    return JSON.parse(result.stdout);
+  };
+  const initial=snapshot(g.db),initialFiles=witnessFiles(g),company=allCompany(g.companyDb);
+  const first=run();expect(first.reservations[0].history).toEqual({reservation:{clientRequestId:binding.clientRequestId,commandDigest:binding.commandDigest,recordedAt:binding.recordedAt},cancellation:null,finalizedAt:null});
+  expect(snapshot(g.db)).toEqual(initial);expect(witnessFiles(g)).toEqual(initialFiles);
+  vi.setSystemTime(fixture.at);const {owner}=cancellationOwner(g),review=owner.review();
+  const pendingCancellation=owner.inspect();
+  const receipt=owner.cancel(cancellationConsent(review.reviewDigest)).receipt!;
+  expect(receipt.clientRequestId).toBe(pendingCancellation.clientRequestId);
+  expect(owner.close().status).toBe("closed");
+  const after=snapshot(g.db),files=witnessFiles(g),second=run();
+  expect(second.reservations[0].history).toEqual({reservation:first.reservations[0].history.reservation,
+    cancellation:{clientRequestId:receipt.clientRequestId,commandDigest:receipt.commandDigest,recordedAt:receipt.recordedAt,releasedUnits:receipt.releasedUnits},finalizedAt:receipt.recordedAt});
+  expect(second.reservations[0].latestEventKind).toBe("finalized");expect(second.transmissionAllowed).toBe(false);
+  expect(snapshot(g.db)).toEqual(after);expect(witnessFiles(g)).toEqual(files);expect(allCompany(g.companyDb)).toEqual(company);
+}, postLimit30);
+function cancellationConsent(reviewDigest:string){return {reviewDigest,cancelReservationAcknowledged:true,retainedEvidenceAcknowledged:true};}
+function cancellationOwner(g:ReturnType<typeof guarded>,revision=fixture.company.revision){
+  const query={companyId:fixture.company.id,companyRevision:revision,runId:state13(g).reservation.bindings[0].runId};
+  const owner=createComparisonCancellation({dataRoot:g.paths.dataRoot,controlDirectory:g.paths.controlDirectory,databaseInstanceId:selection.databaseInstanceId,selection:query});
+  cleanups.push(()=>{expect(owner.close().status).toBe("closed");});return {owner,query};
+}
+it("cancellation owner releases an expired older-company reservation once and preserves original evidence",()=>{
+  const g=setup13();const changed=structuredClone(fixture.company);changed.revision++;
+  g.companyDb.prepare("UPDATE studio_cases SET revision=?,body=? WHERE id=?").run(changed.revision,JSON.stringify(changed),changed.id);
+  vi.setSystemTime("2027-01-01T00:00:00.000Z");const {owner}=cancellationOwner(g,changed.revision);
+  const before=snapshot(g.db),files=witnessFiles(g),company=allCompany(g.companyDb),old=state13(g).reservation;
+  const review=owner.review();expect(review.reservationCompanyRevision).toBe(fixture.company.revision);
+  expect(snapshot(g.db)).toEqual(before);expect(witnessFiles(g)).toEqual(files);
+  expect(()=>owner.cancel({...cancellationConsent(review.reviewDigest),retainedEvidenceAcknowledged:false})).toThrow();
+  const result=owner.cancel(cancellationConsent(review.reviewDigest));expect(result).toMatchObject({status:"recorded",receipt:{cancelled:true,finalized:true,refundVerified:false}});
+  const after=state13(g);expect(after.transmissionBindings).toHaveLength(0);expect(after.reservation.bindings).toEqual(old.bindings);expect(after.reservation.archive.records.runs).toEqual(old.archive.records.runs);
+  expect(after.reservation.archive.records.events).toHaveLength(old.archive.records.events.length+2);
+  expect(after.reservation.archive.financial.events.at(-1)!.payload).toMatchObject({kind:"release-comparison",releasedUnits:review.releasedUnits});
+  const saved=snapshot(g.db),savedFiles=witnessFiles(g);
+  expect(owner.cancel(cancellationConsent(review.reviewDigest)).receipt).toEqual(result.receipt);owner.revoke();vi.setSystemTime("2028-01-01T00:00:00.000Z");expect(owner.recover().receipt).toEqual(result.receipt);
+  expect(snapshot(g.db)).toEqual(saved);expect(witnessFiles(g)).toEqual(savedFiles);expect(allCompany(g.companyDb)).toEqual(company);
+  expect(owner.close()).toMatchObject({status:"closed",retained:false});
+},postLimit30);
+it("cancellation owner refuses dispatched reservations without releasing any hold",()=>{
+  const g=setup13();dispatch13(g);const {owner}=cancellationOwner(g),before=snapshot(g.db),files=witnessFiles(g);
+  expect(()=>owner.review()).toThrow(/CANCELLABLE/);expect(snapshot(g.db)).toEqual(before);expect(witnessFiles(g)).toEqual(files);expect(owner.close().status).toBe("closed");
+},postLimit30);
+it("cancellation owner rejects company changes after review and recovers only the original absent command",()=>{
+  const g=setup13();vi.setSystemTime(fixture.at);const {owner}=cancellationOwner(g),review=owner.review(),changed=structuredClone(fixture.company);changed.revision++;
+  g.companyDb.prepare("UPDATE studio_cases SET revision=?,body=? WHERE id=?").run(changed.revision,JSON.stringify(changed),changed.id);
+  const before=snapshot(g.db),files=witnessFiles(g),company=allCompany(g.companyDb);
+  expect(()=>owner.cancel(cancellationConsent(review.reviewDigest))).toThrow();expect(owner.recover().status).toBe("not-observed");expect(owner.cancel(cancellationConsent(review.reviewDigest)).status).toBe("not-observed");
+  expect(snapshot(g.db)).toEqual(before);expect(witnessFiles(g)).toEqual(files);expect(allCompany(g.companyDb)).toEqual(company);expect(owner.close().status).toBe("closed");
+},postLimit30);
+it("cancellation native store retains the exact failed company rollback until explicit cleanup succeeds",()=>{
+  const g=setup13(),query={companyId:fixture.company.id,companyRevision:fixture.company.revision,runId:state13(g).reservation.bindings[0].runId};
+  const store=createPublicComparisonCancellationStore(g.session,g.cap);cleanups.push(()=>{store.close();});const review=store.review(query,fixture.at);
+  const command={commandVersion:1,kind:"cancel-public-claim-comparison",purpose:"compare-public-claim",clientRequestId:randomUUID(),runId:query.runId,expectedBindingDigest:review.expectedBindingDigest,reservationDigest:review.reservationDigest,expectedRunHead:review.expectedRunHead,expectedBudgetHead:review.expectedBudgetHead};
+  const companyDb=ownedComparisonCompanyGuard(g.cap).db,exec=companyDb.exec.bind(companyDb);
+  const spy=vi.spyOn(companyDb,"exec").mockImplementation(sql=>{if(sql==="ROLLBACK")throw Error("hold cancellation company scope");return exec(sql);});
+  expect(()=>store.cancel(command,{...cancelCurrent(),selection:query})).toThrow();expect(companyDb.isTransaction).toBe(true);expect(()=>store.close()).toThrow();spy.mockRestore();expect(store.close()).toEqual({closed:true});expect(companyDb.isTransaction).toBe(false);expect(g.db.isTransaction).toBe(false);
+  expect(state13(g).reservation.archive.records.events.at(-1)!.payload.kind).toBe("finalized");
+},postLimit30);
+function bookingOwner(g: ReturnType<typeof guarded>) {
+  vi.setSystemTime(fixture.at);
+  const owner = createComparisonReservationBooking({ dataRoot: g.paths.dataRoot, controlDirectory: g.paths.controlDirectory,
+    databaseInstanceId: selection.databaseInstanceId, request: fixture.request.command, evidence: fixture.evidence });
+  cleanups.push(() => { expect(owner.close().status).toBe("closed"); });
+  return owner;
+}
+it("booking owner prepares current SQL13 company and records one explicitly consented reservation without transmission", () => {
+  const g = setup13(false), owner = bookingOwner(g);
+  const before = snapshot(g.db), files = witnessFiles(g), companies = allCompany(g.companyDb);
+  const review = owner.review();
+  expect(snapshot(g.db)).toEqual(before); expect(witnessFiles(g)).toEqual(files);
+  expect(review).toMatchObject({ companyId: fixture.company.id, companyRevision: fixture.company.revision });
+  expect(() => owner.reserve({ ...bookingConsent(review.reviewDigest), currentBudgetReservationAcknowledged: false })).toThrow();
+  const recorded = owner.reserve(bookingConsent(review.reviewDigest));
+  expect(recorded).toMatchObject({ status: "recorded", receipt: { acknowledgedReservationOnly: true, transmissionAllowed: false } });
+  const archive = state13(g);
+  expect(archive.reservation.bindings).toHaveLength(1); expect(archive.transmissionBindings).toHaveLength(0);
+  expect(archive.reservation.archive.records.runs[0].id).toBe(recorded.runId);
+  expect(allCompany(g.companyDb)).toEqual(companies);
+  const after = snapshot(g.db), afterFiles = witnessFiles(g);
+  expect(owner.reserve(bookingConsent(review.reviewDigest)).receipt).toEqual(recorded.receipt);
+  owner.revoke(); vi.setSystemTime("2027-01-01T00:00:00.000Z");
+  expect(owner.recover().receipt).toEqual(recorded.receipt);
+  expect(snapshot(g.db)).toEqual(after); expect(witnessFiles(g)).toEqual(afterFiles);
+  expect(owner.close()).toMatchObject({ status: "closed", retained: false });
+  expect(g.db.isTransaction).toBe(false); expect(allCompany(g.companyDb)).toEqual(companies);
+}, postLimit30);
+it("booking owner rejects changed company after review and only reads its unobserved original attempt", () => {
+  const g = setup13(false), owner = bookingOwner(g), review = owner.review();
+  const changed = structuredClone(fixture.company); changed.revision++;
+  g.companyDb.prepare("UPDATE studio_cases SET revision=?,body=? WHERE id=?").run(changed.revision, JSON.stringify(changed), changed.id);
+  const before = snapshot(g.db), files = witnessFiles(g), companies = allCompany(g.companyDb);
+  expect(() => owner.reserve(bookingConsent(review.reviewDigest))).toThrow();
+  const original = owner.inspect();
+  expect(original.clientRequestId).not.toBeNull();
+  expect(owner.recover()).toMatchObject({ status: "not-observed", clientRequestId: original.clientRequestId, runId: original.runId });
+  expect(owner.reserve(bookingConsent(review.reviewDigest)).status).toBe("not-observed");
+  expect(snapshot(g.db)).toEqual(before); expect(witnessFiles(g)).toEqual(files);
+  expect(allCompany(g.companyDb)).toEqual(companies);
+  expect(owner.close().status).toBe("closed"); expect(g.db.isTransaction).toBe(false);
+}, postLimit30);
+it("booking native store retains its exact failed company rollback scope until explicit close succeeds", () => {
+  const g = setup13(false), store = createPublicComparisonReservationStore(g.session, g.cap);
+  cleanups.push(() => { store.close(); });
+  const review = store.review(fixture.request.command, fixture.evidence, fixture.at);
+  const command = { ...fixture.command, approvedReviewDigest: review.reviewDigest, expectedArchiveDigest: review.archiveDigest,
+    expectedBudgetHead: { revision: review.budget.revision, headDigest: review.budget.headDigest }, expectedGlobalRunCount: review.globalRunCount };
+  const companyDb = ownedComparisonCompanyGuard(g.cap).db, exec = companyDb.exec.bind(companyDb);
+  const spy = vi.spyOn(companyDb, "exec").mockImplementation(sql => { if (sql === "ROLLBACK") throw Error("hold own company read"); return exec(sql); });
+  const { companyGuard: _cap, ...input } = g.current; void _cap;
+  expect(() => store.reserve(command, { ...input, approvedReview: review })).toThrow();
+  expect(companyDb.isTransaction).toBe(true);
+  expect(() => store.close()).toThrow();
+  spy.mockRestore();
+  expect(store.close()).toEqual({ closed: true });
+  expect(companyDb.isTransaction).toBe(false); expect(g.db.isTransaction).toBe(false);
+  // A possible committed reservation is not retransmitted or acknowledged by close.
+  expect(state13(g).reservation.bindings).toHaveLength(1);
+}, postLimit30);
+
+it("reservation HTTP reads native audited company metadata and matches only explicit server input without a provider", async () => {
+  const {g, command, current} = ownerFixture22();
+  const before = snapshot(g.db), files = witnessFiles(g), companyBefore = allCompany(g.companyDb);
+  vi.stubEnv("OPENAI_API_KEY", "");
+  vi.stubEnv("VENTURE_DATA_DIR",g.paths.dataRoot);
+  vi.stubEnv("VENTUREPASS_COMPARISON_EXECUTION_CONTROL_DIR",g.paths.controlDirectory);
+  vi.stubEnv("VENTUREPASS_COMPARISON_EXECUTION_DATABASE_ID",selection.databaseInstanceId);
+  vi.stubEnv("VENTUREPASS_COMPARISON_EXECUTION_INPUT_FILE",undefined);
+  cleanups.push(() => vi.unstubAllEnvs());
+  const server = createReservationHttpServer(async (id,revision) => openConfiguredReservations(id,revision));
+  const endpoint = `http://127.0.0.1:30333/api/studio/cases/${fixture.company.id}/public-claim-comparison/reservations`;
+  const get = () => server.handle(new Request(endpoint+`?revision=${fixture.company.revision}`),fixture.company.id);
+  const first = await get(); expect(first.status).toBe(200);
+  expect(await first.json()).toMatchObject({input:{status:"not-configured",runId:null},reservations:[{runId:command.runId}],transmissionAllowed:false});
+  const file = join(g.paths.controlDirectory,"..","reservation-http-input.json");
+  writeFileSync(file,JSON.stringify({inputVersion:1,databaseInstanceId:selection.databaseInstanceId,settings:{companyId:fixture.company.id,
+    companyRevision:fixture.company.revision,runId:command.runId,basis:current.basis,usagePolicy:current.usagePolicy}}));
+  vi.stubEnv("VENTUREPASS_COMPARISON_EXECUTION_INPUT_FILE",file);
+  const matched = await get();expect(matched.status).toBe(200);
+  const view = await matched.json();
+  expect(view).toMatchObject({input:{status:"matched",runId:command.runId},policiesVerified:false,currentContextVerified:false,consentRecorded:false});
+  expect(JSON.stringify(view)).not.toMatch(/basis|usagePolicy|sha256|controlDirectory|claimQuote/);
+  expect(view.reservations[0].reservedUnits).toMatch(/^[1-9][0-9]*$/);
+  expect(server.inspect().retained).toBe(0);
+  expect((await server.handle(new Request(endpoint,{method:"DELETE"}),fixture.company.id)).status).toBe(200);
+  expect(snapshot(g.db)).toEqual(before);expect(witnessFiles(g)).toEqual(files);expect(allCompany(g.companyDb)).toEqual(companyBefore);
+  expect(g.db.isTransaction).toBe(false);expect(g.companyDb.isTransaction).toBe(false);
+}, postLimit30);
+
+function closeForBackup(g: ReturnType<typeof guarded>) {
+  const index = cleanups.indexOf(g.cleanup);
+  if (index < 0) throw Error("cleanup owner missing");
+  cleanups.splice(index, 1);
+  g.cleanup();
+}
+for (const storageVersion of [10, 11, 12, 13] as const) {
+  it(
+    "comparison cold backup roundtrip SQL" +
+      storageVersion +
+      " preserves bytes and quarantines restore",
+    () => {
+      const g = guarded(storageVersion !== 10);
+      if (storageVersion >= 11) reserveGuard(g);
+      if (storageVersion >= 12) migrateGuardedPublicComparisonDatabaseV12(g.session);
+      if (storageVersion === 13) {
+        migrateGuardedPublicComparisonDatabaseV13(g.session);
+        dispatch13(g);
+        save13(g);
+        result13(g);
+        const close = closeInput(g);
+        writeGuardedPublicComparisonV13(g.session, "settle-finalize", close.command, close.current);
+      }
+      closeForBackup(g);
+      if (storageVersion === 10) {
+        // Rebuild a synthetic v10 fixture from the original v9 file; no witnesses exist.
+        copyFileSync(
+          join(directory, "base", "quality-evaluation", "quality.sqlite"),
+          g.paths.qualityFile,
+        );
+        const db = new DatabaseSync(g.paths.qualityFile);
+        try {
+          migratePublicComparisonDatabaseV10(
+            db,
+            selection,
+            createPublicComparisonCoverage(readPublicComparisonPrefix(db)),
+          );
+        } finally {
+          db.close();
+        }
+      }
+      const original = readFileSync(g.paths.qualityFile),
+        studio = readFileSync(g.paths.studioFile);
+      const witness = storageVersion === 10 ? null : witnessFiles(g);
+      const destination = join(directory, "archive-" + randomUUID()),
+        restored = join(directory, "restored-" + randomUUID());
+      const result = backupComparisonData({ ...g.paths, destination, selection, storageVersion });
+      expect(result).toMatchObject({
+        status: "verified",
+        role: "backup",
+        storageVersion,
+        dispatchAllowed: false,
+        operationalRestoreAllowed: false,
+      });
+      expect(verifyComparisonBackup(destination, selection, storageVersion)).toEqual(result);
+      expect(readFileSync(join(destination, "quality.sqlite"))).toEqual(original);
+      expect(
+        restoreComparisonCandidate(destination, restored, selection, storageVersion),
+      ).toMatchObject({
+        status: "verified",
+        role: "review-candidate",
+        auditDigest: result.auditDigest,
+        databaseSha256: result.databaseSha256,
+        dispatchAllowed: false,
+        fileIdentityVerified: false,
+      });
+      expect(verifyComparisonBackup(restored, selection, storageVersion).role).toBe(
+        "review-candidate",
+      );
+      expect(readFileSync(join(restored, "quality.sqlite"))).toEqual(original);
+      expect(existsSync(join(restored, "studio.sqlite"))).toBe(false);
+      expect(() =>
+        openComparisonStorageSession(
+          {
+            dataRoot: restored,
+            qualityFile: join(restored, "quality.sqlite"),
+            studioFile: join(restored, "studio.sqlite"),
+            controlDirectory: join(directory, "never-control"),
+          },
+          selection,
+        ),
+      ).toThrow();
+      if (witness) {
+        for (const dir of ["control-witness", "database-witness"]) {
+          expect(
+            readdirSync(join(restored, dir))
+              .sort()
+              .map((n) => readFileSync(join(restored, dir, n), "utf8")),
+          ).toEqual(witness[0]);
+        }
+        expect(witnessFiles(g)).toEqual(witness);
+      }
+      expect(readFileSync(g.paths.qualityFile)).toEqual(original);
+      expect(readFileSync(g.paths.studioFile)).toEqual(studio);
+      expect(existsSync(g.paths.controlDirectory + ".lock")).toBe(false);
+      for (const suffix of ["-wal", "-shm", "-journal"])
+        expect(existsSync(g.paths.qualityFile + suffix)).toBe(false);
+      if (storageVersion === 13) {
+        const hidden = g.paths.qualityFile + ".synthetic-hidden";
+        renameSync(g.paths.qualityFile, hidden);
+        try {
+          expect(verifyComparisonBackup(destination, selection, storageVersion)).toEqual(result);
+        } finally { renameSync(hidden, g.paths.qualityFile); }
+      }
+    },
+    180000,
+  );
+}
+it("comparison cold backup refuses active sidecars existing locks and incomplete witness without cleaning sources", () => {
+  const g = setup13(false);
+  closeForBackup(g);
+  const original = readFileSync(g.paths.qualityFile);
+  const options = {
+    ...g.paths,
+    selection,
+    storageVersion: 13 as const,
+    destination: join(directory, randomUUID()),
+  };
+  writeFileSync(g.paths.qualityFile + "-wal", "synthetic");
+  expect(() => backupComparisonData(options)).toThrow("UNEXPECTED_PATH");
+  expect(readFileSync(g.paths.qualityFile + "-wal", "utf8")).toBe("synthetic");
+  unlinkSync(g.paths.qualityFile + "-wal");
+  mkdirSync(g.paths.controlDirectory + ".lock");
+  expect(() => backupComparisonData(options)).toThrow("BUSY");
+  expect(existsSync(g.paths.controlDirectory + ".lock")).toBe(true);
+  rmdirSync(g.paths.controlDirectory + ".lock");
+  const journal = join(g.paths.dataRoot, "comparison-storage-witness");
+  const lastWitness = readdirSync(journal).sort().at(-1)!;
+  unlinkSync(join(journal, lastWitness));
+  expect(() => backupComparisonData(options)).toThrow("WITNESS_PARTIAL");
+  unlinkSync(join(g.paths.controlDirectory, lastWitness));
+  expect(() => backupComparisonData(options)).toThrow("WITNESS_RECONCILIATION_REQUIRED");
+  expect(readFileSync(g.paths.qualityFile)).toEqual(original);
+  expect(existsSync(options.destination)).toBe(false);
+}, 90000);
+it("comparison cold backup rejects changed binding and closed-checkpoint tampering even with rehashed entries", () => {
+  const g = setup13(false);
+  closeForBackup(g);
+  const dirs = [g.paths.controlDirectory, join(g.paths.dataRoot, "comparison-storage-witness")];
+  const originals = readdirSync(dirs[0])
+    .sort()
+    .map((name) => ({ name, body: readFileSync(join(dirs[0], name), "utf8") }));
+  const rewrite = (edit: (entry: Record<string, unknown>, index: number) => void) => {
+    let previousDigest: string | null = null;
+    originals.forEach(({ name, body }, index) => {
+      const entry = JSON.parse(body);
+      edit(entry, index);
+      entry.previousDigest = previousDigest;
+      if (entry.payload.type === "ack" || entry.payload.type === "transition-ack")
+        entry.payload.intentDigest = previousDigest;
+      const { entryDigest: _old, ...payload } = entry;
+      void _old;
+      entry.entryDigest = digest(payload);
+      previousDigest = entry.entryDigest;
+      dirs.forEach((dir) => writeFileSync(join(dir, name), JSON.stringify(entry) + "\n"));
+    });
+  };
+  const options = {
+    ...g.paths,
+    selection,
+    storageVersion: 13 as const,
+    destination: join(directory, randomUUID()),
+  };
+  rewrite((entry, index) => {
+    if (index === 0)
+      (entry.payload as { qualityIdentity: { ino: string } }).qualityIdentity.ino = "0";
+  });
+  expect(() => backupComparisonData(options)).toThrow("WITNESS_BINDING_CHANGED");
+  rewrite((entry, index) => {
+    if (index === originals.length - 1)
+      (entry.payload as { checkpoint: { rawRowsDigest: string } }).checkpoint.rawRowsDigest =
+        "0".repeat(64);
+  });
+  expect(() => backupComparisonData(options)).toThrow("WITNESS_RECONCILIATION_REQUIRED");
+  expect(existsSync(options.destination)).toBe(false);
+}, 120000);
+it("comparison cold backup verification rejects bytes unknown files selection and incomplete completion; destinations are exclusive", () => {
+  const g = setup13(false);
+  closeForBackup(g);
+  const destination = join(directory, randomUUID());
+  const options = { ...g.paths, destination, selection, storageVersion: 13 as const };
+  backupComparisonData(options);
+  expect(() => backupComparisonData(options)).toThrow("DESTINATION_EXISTS");
+  expect(() =>
+    verifyComparisonBackup(destination, { ...selection, databaseInstanceId: randomUUID() }, 13),
+  ).toThrow("ARCHIVE_SELECTION_MISMATCH");
+  expect(() => restoreComparisonCandidate(destination, destination, selection, 13)).toThrow(
+    "DESTINATION_OVERLAP",
+  );
+  writeFileSync(join(destination, "unexpected"), "keep");
+  expect(() => verifyComparisonBackup(destination, selection, 13)).toThrow("ARCHIVE_FILES_INVALID");
+  unlinkSync(join(destination, "unexpected"));
+  const complete = readFileSync(join(destination, "COMPLETE"));
+  unlinkSync(join(destination, "COMPLETE"));
+  expect(() => verifyComparisonBackup(destination, selection, 13)).toThrow("ARCHIVE_FILES_INVALID");
+  writeFileSync(join(destination, "COMPLETE"), complete);
+  const db = join(destination, "quality.sqlite"),
+    bytes = readFileSync(db);
+  const damaged = Buffer.from(bytes);
+  damaged[damaged.length - 1] ^= 1;
+  writeFileSync(db, damaged);
+  expect(() => verifyComparisonBackup(destination, selection, 13)).toThrow("ARCHIVE_HASH_MISMATCH");
+  writeFileSync(db, bytes);
+  const changed = new DatabaseSync(db);
+  try {
+    changed.exec("CREATE TABLE forged(id TEXT)");
+  } finally {
+    changed.close();
+  }
+  const manifestFile = join(destination, "comparison-backup-manifest.json");
+  const manifest = JSON.parse(readFileSync(manifestFile, "utf8"));
+  const newBytes = readFileSync(db);
+  manifest.database = { sha256: archiveSha(newBytes), sizeBytes: newBytes.length };
+  writeFileSync(manifestFile, JSON.stringify(manifest) + "\n");
+  writeFileSync(
+    join(destination, "COMPLETE"),
+    JSON.stringify(archiveSha(readFileSync(manifestFile))) + "\n",
+  );
+  expect(() => verifyComparisonBackup(destination, selection, 13)).toThrow(/PUBLIC_COMPARISON/);
+  expect(existsSync(join(destination, ".restore-pending"))).toBe(true);
+}, 180000);
+it("comparison cold backup does not publish completion after lease release failure", () => {
+  const g = setup13(false);
+  closeForBackup(g);
+  const destination = join(directory, randomUUID());
+  const original = journalIO.acquireJournalLease;
+  let acquired: ReturnType<typeof original> | undefined;
+  vi.spyOn(journalIO, "acquireJournalLease").mockImplementation((path, fail) => {
+    acquired = original(path, fail);
+    return {
+      ...acquired,
+      close: () => {
+        throw Error("synthetic release failure");
+      },
+    };
+  });
+  try {
+    expect(() =>
+      backupComparisonData({ ...g.paths, destination, selection, storageVersion: 13 }),
+    ).toThrow("synthetic release failure");
+    expect(existsSync(join(destination, "COMPLETE"))).toBe(false);
+    expect(existsSync(join(destination, ".restore-pending"))).toBe(true);
+    expect(existsSync(g.paths.controlDirectory + ".lock")).toBe(true);
+  } finally {
+    acquired?.close();
+  }
+}, 90000);

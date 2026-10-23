@@ -124,7 +124,7 @@ describe("고정 합성 사업계획서 품질 입력 세트", () => {
     },
   );
 
-  it("같은 수치의 기간·주체·목표·부호 오류는 문자열 수치 검사가 못 찾는 한계로 기록한다", () => {
+  it("같은 수치의 기간·주체·목표 오류는 여전히 문자열 수치 검사의 한계다", () => {
     for (const id of [
       "outdated-financial-period",
       "unverified-growth-as-result",
@@ -132,7 +132,6 @@ describe("고정 합성 사업계획서 품질 입력 세트", () => {
       "quarterly-result-as-annual",
       "contractors-counted-as-employees",
       "survey-interest-as-market-share",
-      "negative-cash-sign-removed",
       "exclusive-percentages-exceed-total",
     ]) {
       const fixture = cases.find((item) => item.id === id)!;
@@ -144,6 +143,24 @@ describe("고정 합성 사업계획서 품질 입력 세트", () => {
       ).toBe(false);
       expect(fixture.semanticRubric.expectedDisposition).not.toBe("reviewable");
     }
+  });
+
+  it("고정 과거 corpus를 바꾸지 않고 부호 삭제 사례의 새 규칙 경고만 대조한다", () => {
+    const fixture = cases.find((item) => item.id === "negative-cash-sign-removed")!;
+    const before = structuredClone(fixture);
+    expect(reviewPlan(fixture.company, fixture.plan)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          category: "numeric-evidence",
+          severity: "warning",
+          sectionKey: "funding",
+        }),
+      ]),
+    );
+    // This historic rubric remains frozen for stored evaluation digests.
+    expect(fixture.semanticRubric.ruleGateLimitation).toContain("음수 부호를 포함하지 않아");
+    expect(fixture).toEqual(before);
+    expect(aiConstructor).not.toHaveBeenCalled();
   });
 
   it("정상적인 단위 변환은 문자 경고가 생겨도 의미 검토에서 금액 오류로 취급하지 않는다", () => {

@@ -378,7 +378,7 @@ export function readPublicComparisonDatabaseSnapshot(
     rawRowsDigest,
   };
 }
-function inspectInTransaction(
+export function inspectPublicComparisonDatabaseTransaction(
   db: DatabaseSync,
   expectedSelection: PublicComparisonDatabaseSelection,
 ) {
@@ -418,7 +418,7 @@ export function inspectPublicComparisonDatabase(
   if (db.isTransaction) fail("PUBLIC_COMPARISON_TRANSACTION_ACTIVE");
   db.exec("BEGIN");
   try {
-    const result = inspectInTransaction(db, selection);
+    const result = inspectPublicComparisonDatabaseTransaction(db, selection);
     db.exec("COMMIT");
     return result;
   } catch (error) {
@@ -438,7 +438,7 @@ export function migratePublicComparisonDatabaseV10(
   db.exec("BEGIN IMMEDIATE");
   try {
     if (schemaRows(db).some((row) => row.name === table)) {
-      const inspection = inspectInTransaction(db, selected);
+      const inspection = inspectPublicComparisonDatabaseTransaction(db, selected);
       const { cutover } = readCutover(db);
       if (digest(cutover.coverage) !== digest(expectedCoverage))
         fail("PUBLIC_COMPARISON_COVERAGE_MISMATCH");
@@ -473,7 +473,7 @@ export function migratePublicComparisonDatabaseV10(
     for (const name of Object.keys(qualityV9WriterTriggerSql)) db.exec(`DROP TRIGGER ${name}`);
     for (const sql of Object.values({ ...immutableSql, ...publicComparisonV10InsertGates }))
       db.exec(sql);
-    const inspection = inspectInTransaction(db, selected);
+    const inspection = inspectPublicComparisonDatabaseTransaction(db, selected);
     db.exec("COMMIT");
     return { status: "migrated" as const, inspection };
   } catch (error) {

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
+import { tmpdir } from "node:os";
 import { mkdtemp, readFile, readdir, realpath, writeFile } from "node:fs/promises";
 import { createServer, connect } from "node:net";
 import { createServer as createHttpServer, request as httpRequest } from "node:http";
@@ -13,10 +14,11 @@ import { localBuildEnvironment } from "./build-local.mjs";
 // Actual app UI; all business APIs are fulfilled with synthetic, in-memory state.
 // No server business route, SQL, SDK, key, customer record or external service is used.
 const app = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const temporaryRoot = await realpath(path.resolve(app, "../../.venturepass-tools/build-temp"));
+const temporaryRoot = await realpath(tmpdir());
 const staging = await realpath(process.argv[2]);
 const serverMode = process.argv[3] ?? "start";
-const scenario = "detailed-plan-save-receipt";
+const scenario = process.argv[4] ?? "detailed-plan-save-receipt";
+assert.ok(["detailed-plan-save-receipt", "section-identity"].includes(scenario));
 
 assert.ok(["start", "dev"].includes(serverMode));
 const relative = path.relative(temporaryRoot, staging);
@@ -104,6 +106,20 @@ try {
   await bundle.close();
 }
 const prepared = fixture.detailedPlanSaveFixture();
+if (scenario === "section-identity") {
+  // Distinct originals sharing a section key are permitted by the saved schema.
+  // They must remain readable and must never be edited or confirmed together.
+  const duplicates = [true, false].map((needsConfirmation, index) => ({
+    ...structuredClone(prepared.content.sections[0]),
+    key: "duplicate-section",
+    title: `중복 연결 원문 ${index + 1}`,
+    content: `  서로 다른 합성 원문 ${index + 1}\n<확인되지 않은 내용>을 그대로 보존합니다.  `,
+    needsConfirmation,
+  }));
+  for (const plan of prepared.company.plans)
+    plan.content.sections.push(...structuredClone(duplicates));
+  prepared.content.sections.push(...structuredClone(duplicates));
+}
 let company = prepared.company;
 const original = structuredClone(company),
   name = company.profile.companyName,
@@ -355,6 +371,52 @@ try {
     exact: true,
   });
   const save = () => page.getByRole("button", { name: "수정본 저장", exact: true }).first();
+  async function checkAmbiguousSections() {
+    const originals = page.getByRole("region", {
+      name: "수정 대상 확인이 필요한 원문",
+      exact: true,
+    });
+    for (const label of ["중복 연결 원문 1", "중복 연결 원문 2"]) {
+      await nav.getByRole("button").filter({ hasText: label }).click();
+      await originals.waitFor();
+      assert.equal(await originals.locator("article").count(), 2);
+      for (const [index, item] of expected.sections.slice(-2).entries()) {
+        const article = originals.locator("article").nth(index);
+        assert.equal(
+          await article.locator("h4").textContent(),
+          `원문 ${index + 1} · ${item.title}`,
+        );
+        assert.equal(await article.locator("p").first().textContent(), item.content);
+        assert.ok(
+          (await article.textContent()).includes(
+            item.needsConfirmation ? "항목 확인 필요" : "저장된 항목 확인 표시 있음",
+          ),
+        );
+      }
+      assert.equal(await page.locator("#plan-section, #plan-section-title").count(), 0);
+      assert.equal(await confirmed.count(), 0);
+      assert.equal(await page.getByRole("button", { name: "본문 복사", exact: true }).count(), 0);
+    }
+  }
+  if (scenario === "section-identity") {
+    await checkAmbiguousSections();
+    assert.equal(await save().isDisabled(), true);
+    assert.deepEqual(commands, []);
+    assert.deepEqual(company, original);
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page
+      .getByRole("region", { name: "수정 대상 확인이 필요한 원문", exact: true })
+      .scrollIntoViewIfNeeded();
+    assert.equal(
+      await page.evaluate(() => document.documentElement.scrollWidth > innerWidth),
+      false,
+    );
+    await page.screenshot({ path: path.join(output, "ambiguous-sections-mobile.png") });
+    await page.setViewportSize({ width: 1280, height: 960 });
+    record(
+      "both ambiguous navigation entries expose all original bodies and confirmation states read-only, with no dirty state or write",
+    );
+  }
   await page.locator("#plan-title").fill(expected.title);
   await page.locator("#plan-summary").fill(expected.summary);
   for (let i = 0; i < 2; i++) {
@@ -452,6 +514,18 @@ try {
   assert.equal(await page.locator("#plan-version").inputValue(), prepared.savedId);
   assert.equal(await page.locator("#plan-summary").inputValue(), expected.summary);
   assert.equal(commands.length, 9);
+  if (scenario === "section-identity") {
+    await checkAmbiguousSections();
+    assert.equal(await save().isDisabled(), true);
+    assert.deepEqual(
+      company.plans.at(-1).content.sections.slice(-2),
+      original.plans[0].content.sections.slice(-2),
+    );
+    assert.ok(!network.some((entry) => entry.console?.includes("same key")));
+    record(
+      "editing unique sections and saving a new version preserves both ambiguous originals byte-for-byte through reentry",
+    );
+  }
   assert.equal(caseReads, 1);
   for (const key of Object.keys(original)) {
     if (["revision", "updatedAt", "plans"].includes(key)) continue;

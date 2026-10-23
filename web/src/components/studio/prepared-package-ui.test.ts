@@ -13,6 +13,7 @@ import {
   preparedPackageList,
   preparedPackageReceipt,
   preparedPackageDefiniteRejection,
+  preparedPackageDetails,
 } from "./prepared-package-ui";
 import { PackagePanel } from "./package-panel";
 import { PreparedPackagesPanel } from "./prepared-packages-panel";
@@ -315,5 +316,93 @@ describe("로컬 준비본 응답과 기본 화면", () => {
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+});
+
+describe("보관 당시 준비본 읽기", () => {
+  it("현재 회사나 원고가 달라져도 선택한 과거 준비본의 본문을 그대로 읽는다", () => {
+    const { company, record } = fixture();
+    const summary = preparedPackageSummary(record);
+    const before = structuredClone(record);
+    company.revision++;
+    company.plans[0].content.summary = "현재 바뀐 원고";
+    expect(preparedPackageDetails({ package: record }, summary)).toEqual(before);
+    expect(record).toEqual(before);
+  });
+  it.each([
+    [
+      "준비본",
+      (r: PreparedPackageRecord) => {
+        r.id = foreign;
+      },
+    ],
+    [
+      "준비본 버전",
+      (r: PreparedPackageRecord) => {
+        r.version++;
+      },
+    ],
+    [
+      "기업",
+      (r: PreparedPackageRecord) => {
+        r.caseId = foreign;
+      },
+    ],
+    [
+      "원고",
+      (r: PreparedPackageRecord) => {
+        r.plan.id = foreign;
+      },
+    ],
+    [
+      "원고 제목",
+      (r: PreparedPackageRecord) => {
+        r.plan.content.title = "다른 제목";
+      },
+    ],
+    [
+      "ZIP",
+      (r: PreparedPackageRecord) => {
+        r.zip.sha256 = "b".repeat(64);
+      },
+    ],
+    [
+      "요청 버전",
+      (r: PreparedPackageRecord) => {
+        r.input.revision++;
+      },
+    ],
+    [
+      "요청 원고",
+      (r: PreparedPackageRecord) => {
+        r.input.planId = foreign;
+      },
+    ],
+    [
+      "요청 번호",
+      (r: PreparedPackageRecord) => {
+        r.input.clientRequestId = foreign;
+      },
+    ],
+    [
+      "원본 목록",
+      (r: PreparedPackageRecord) => {
+        r.sourceIds = [foreign];
+        r.input.sourceIds = [foreign];
+      },
+    ],
+  ] as const)("%s가 다른 상세 응답을 선택한 준비본으로 표시하지 않는다", (_, change) => {
+    const { record } = fixture();
+    const summary = preparedPackageSummary(record);
+    change(record);
+    expect(() => preparedPackageDetails({ package: record }, summary)).toThrow();
+  });
+  it("목록과 요약이 같아도 원본 세부 목록이 빠졌으면 거절한다", () => {
+    const { record } = fixture();
+    record.sourceIds = [foreign];
+    record.input.sourceIds = [foreign];
+    expect(() =>
+      preparedPackageDetails({ package: record }, preparedPackageSummary(record)),
+    ).toThrow();
   });
 });

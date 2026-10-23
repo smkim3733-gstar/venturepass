@@ -113,7 +113,7 @@ export function PublicClaimPreview({
       <div className="mt-4 min-w-0 space-y-4">
         <Notice>
           저장 주장과 선택한 공개 발췌를 이 PC에서 확인합니다. AI 전송·비용 발생·자료 저장은 하지
-          않습니다. 비교 실행은 아직 지원하지 않습니다.
+          않습니다. 새 예약과 기존 예약 실행은 아래의 별도 화면에서 진행합니다.
         </Notice>
         <fieldset disabled={blocked} className="min-w-0 space-y-3">
           <label className="block space-y-1" htmlFor={id + "-claim"}>
@@ -216,7 +216,13 @@ export function PublicClaimPreview({
     </details>
   );
 }
-export function PublicClaimPreviewResult({ view }: { view: PublicClaimPreviewView }) {
+export function PublicClaimPreviewResult({
+  view,
+  reserved = false,
+}: {
+  view: PublicClaimPreviewView;
+  reserved?: boolean;
+}) {
   const { prepared: p, preview: r } = view;
   const text = "whitespace-pre-wrap text-sm [overflow-wrap:anywhere]";
   return (
@@ -226,7 +232,9 @@ export function PublicClaimPreviewResult({ view }: { view: PublicClaimPreviewVie
     >
       <Notice>
         수동 공개 근거·미검증 입력입니다. 사실 확인·출처 진위·회사 해당성을 확인한 결과가 아닙니다.
-        이 내용은 현재 창에만 남습니다.
+        {reserved
+          ? "이 예약의 입력·응답 보관 범위는 위의 보관 안내를 따릅니다."
+          : "이 내용은 현재 창에만 남습니다."}
       </Notice>
       <p className={text}>주장: {p.input.claimQuote}</p>
       <p className={text}>

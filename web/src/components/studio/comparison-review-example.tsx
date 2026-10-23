@@ -40,7 +40,7 @@ function ConnectedReview({ screen, frame }: { screen: Screen; frame: ComparisonR
         : message || "버튼을 눌러 고정된 합성 검토 결과를 확인하세요."}
     </p>
     {review.display?.kind === "error" && <p role="alert" className="rounded-lg border p-4">{review.display.message}</p>}
-    <ComparisonReviewOpinion result={review.display?.kind === "result" ? review.display.result : null} />
+    <ComparisonReviewOpinion synthetic result={review.display?.kind === "result" ? review.display.result : null} />
     {(review.notificationFailed || review.observationFailed) &&
       <p role="alert">읽기 상태를 확인하지 못했습니다. 이 창의 원래 요청을 보관합니다.</p>}
   </section>;

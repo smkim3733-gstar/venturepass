@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
+import { tmpdir } from "node:os";
 import { mkdtemp, readFile, readdir, realpath, writeFile } from "node:fs/promises";
 import { createServer, connect } from "node:net";
 import { createServer as createHttpServer, request as httpRequest } from "node:http";
@@ -13,9 +14,11 @@ import { localBuildEnvironment } from "./build-local.mjs";
 // Actual app UI; all business APIs are fulfilled with synthetic, in-memory state.
 // No server business route, SQL, SDK, key, customer record or external service is used.
 const app = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const temporaryRoot = await realpath(path.resolve(app, "../../.venturepass-tools/build-temp"));
+const temporaryRoot = await realpath(tmpdir());
 const staging = await realpath(process.argv[2]);
 const serverMode = process.argv[3] ?? "start";
+const scenario = process.argv[4] ?? "preview";
+assert.ok(["preview", "research"].includes(scenario));
 
 assert.ok(["start", "dev"].includes(serverMode));
 const relative = path.relative(temporaryRoot, staging);
@@ -25,6 +28,7 @@ assert.ok(!(await readdir(staging)).some((name) => name.startsWith(".env")));
 const sha = (bytes) => createHash("sha256").update(bytes).digest("hex");
 for (const file of [
   "src/components/studio/public-claim-preview.tsx",
+  "src/components/studio/public-research-links.tsx",
   "src/components/studio/claim-reviews.tsx",
   "src/components/studio/plan-editor.tsx",
   "scripts/fixtures/public-preview-cancel.ts",
@@ -117,6 +121,8 @@ let enteredPreview;
 const firstEntered = new Promise((resolve) => {
   enteredPreview = resolve;
 });
+const researchCommands = [],
+  researchReleases = new Map();
 // Browser attachment downloads may bypass Playwright interception. The HTTP boundary
 // must enforce isolation independently: only static UI requests reach Next.
 const proxy = createHttpServer(async (req, res) => {
@@ -238,6 +244,29 @@ try {
     viewport: { width: 1280, height: 1000 },
   });
   context.setDefaultTimeout(30000);
+  if (scenario === "research")
+    await context.addInitScript(() => {
+      const originalFetch = window.fetch.bind(window);
+      window.syntheticSearchSignals = [];
+      window.syntheticSearchResponses = [];
+      // Deliberately return late responses despite cancellation to exercise ownership guards.
+      window.fetch = async (input, init) => {
+        const url = new URL(typeof input === "string" ? input : input.url, location.href);
+        if (url.pathname !== "/api/studio/public-research/search")
+          return originalFetch(input, init);
+        const index = window.syntheticSearchSignals.push(init.signal);
+        const response = await originalFetch(input, { ...init, signal: undefined });
+        const readJson = response.json.bind(response);
+        response.json = async () => {
+          try {
+            return await readJson();
+          } finally {
+            window.syntheticSearchResponses.push(index);
+          }
+        };
+        return response;
+      };
+    });
   await context.route("**/*", async (route) => {
     try {
       const req = route.request(),
@@ -275,12 +304,54 @@ try {
             ],
           });
         if (u.pathname === root) return reply(company);
+        if (scenario === "research" && u.pathname === root + "/source-intakes")
+          return reply({ company, activeItemIds: [] });
         if (u.pathname === root + "/preparation-automation") {
           stateReads++;
           return reply({ company, active: false });
         }
         if (u.pathname === root + "/guided-preparation")
           return reply({ company, active: false, aiConfigured: false, approval: null });
+      }
+      if (
+        scenario === "research" &&
+        req.method() === "POST" &&
+        u.pathname === "/api/studio/public-research/search"
+      ) {
+        const command = req.postDataJSON();
+        researchCommands.push(command);
+        const index = researchCommands.length;
+        assert.ok(index <= 6, "Only six explicit synthetic lookups");
+        assert.deepEqual(command, { topic: index === 6 ? "manufacturing" : "services" });
+        const result = await new Promise((resolve) => researchReleases.set(index, resolve));
+        researchReleases.delete(index);
+        if (result === "error") return reply({ error: "Synthetic late search error" }, 503);
+        return reply({
+          topic: command.topic,
+          query: command.topic === "manufacturing" ? "제조업" : "서비스업",
+          provider: "KOSIS 국가통계포털",
+          status: "results",
+          retrievedAt: "2026-10-14T00:00:00.000Z",
+          page: 1,
+          pageSize: 10,
+          candidates:
+            result === "empty"
+              ? []
+              : [
+                  {
+                    organizationId: "101",
+                    tableId: "SYNTHETIC_SEARCH",
+                    title: `합성 조회 ${index}`,
+                    organization: "합성 제공기관",
+                    periodStart: "",
+                    periodEnd: "",
+                    originalUrl:
+                      "https://kosis.kr/statHtml/statHtml.do?orgId=101&tblId=SYNTHETIC_SEARCH",
+                  },
+                ],
+          originalRead: false,
+          databaseChanged: false,
+        });
       }
       if (req.method() === "POST" && u.pathname === root + "/public-claim-comparison/preview") {
         const command = req.postDataJSON();
@@ -325,83 +396,184 @@ try {
 
   await page.goto(origin + "/studio", { waitUntil: "networkidle", timeout: 60000 });
   await page.getByRole("button").filter({ hasText: name }).first().click();
-  await page.getByRole("button", { name: "상세 도구", exact: true }).click();
-  await page.locator("#studio-tab-plan").click();
-  const stateButton = page.getByRole("button", { name: "연결 저장 상태 확인", exact: true });
-  await stateButton.click({ trial: true });
-  const area = page.getByRole("region", { name: "주장·근거 검토 기록", exact: true });
-  const box = area
-    .locator("details")
-    .filter({ has: page.locator("summary", { hasText: "공개 근거 비교 입력 미리보기 (선택)" }) });
-  await box.locator(":scope > summary").click();
-  const claim = box.getByRole("combobox");
-  const model = box.getByRole("textbox");
-  const preview = box.getByRole("button", { name: "선택 입력 미리보기", exact: true });
-  const sources = box.getByRole("checkbox");
-  await claim.selectOption(company.claimReviews[0].id);
-  await sources.first().check();
-  await model.fill(fixture.model);
-  await preview.click();
-  let enteredTimer;
-  try {
-    await Promise.race([
-      firstEntered,
-      new Promise((_, reject) => {
-        enteredTimer = setTimeout(
-          () => reject(Error("Synthetic preview route not reached")),
-          10000,
-        );
-      }),
-    ]);
-  } finally {
-    clearTimeout(enteredTimer);
+  if (scenario === "research") {
+    await page
+      .getByRole("navigation", { name: "신청 준비 3단계" })
+      .getByRole("button", { name: /자료 올리기/ })
+      .click();
+    await page.getByRole("button", { name: "공개 근거 보완", exact: true }).click();
+    const panel = page.getByRole("region", { name: "공개 근거 후보 보관", exact: true });
+    const title = panel.getByRole("textbox", { name: "공개 자료 제목", exact: true });
+    const quote = panel.getByRole("textbox", { name: "원문 발췌" });
+    await title.fill("보존할 미저장 제목");
+    await quote.fill("  보존할 미저장 발췌\n회사 해당성 미확인  ");
+    const summary = panel.getByText("공개 통계 찾기 (선택)", { exact: true });
+    await summary.click();
+    const topic = panel.getByLabel("찾을 공개 주제", { exact: true });
+    await topic.selectOption("services");
+    const lookup = panel.getByRole("button", { name: "공개 검색 후보 10개 조회", exact: true });
+    const loading = panel.getByRole("button", { name: "공개 검색 후보 조회 중", exact: true });
+    const results = panel.getByRole("region", { name: "KOSIS 검색 후보", exact: true });
+    const begin = async (index) => {
+      await lookup.click();
+      await page.waitForFunction((n) => window.syntheticSearchSignals.length === n, index);
+      const deadline = Date.now() + 10000;
+      while (!researchReleases.has(index) && Date.now() < deadline)
+        await new Promise((r) => setTimeout(r, 20));
+      assert.ok(researchReleases.has(index));
+      assert.equal(await loading.isDisabled(), true);
+    };
+    const finish = async (index, mode = "results") => {
+      researchReleases.get(index)(mode);
+      await page.waitForFunction((n) => window.syntheticSearchResponses.includes(n), index);
+      // Let the component's continuation and React commit run after the synthetic body read.
+      await page.evaluate(
+        () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))),
+      );
+    };
+    const wasAborted = (index) =>
+      page.evaluate((n) => window.syntheticSearchSignals[n - 1].aborted, index);
+    assert.deepEqual(researchCommands, []);
+    await begin(1);
+    await summary.focus();
+    await page.keyboard.press("Space");
+    await page.waitForFunction(() => window.syntheticSearchSignals[0].aborted);
+    await summary.click();
+    await panel.getByRole("status").filter({ hasText: "검색 결과 대기를 중단" }).waitFor();
+    assert.equal(await lookup.isEnabled(), true);
+    assert.equal(await topic.inputValue(), "services");
+    assert.equal(researchCommands.length, 1);
+    await begin(2);
+    await finish(1);
+    assert.equal(await results.count(), 0);
+    assert.equal(await loading.isDisabled(), true);
+    assert.equal(await wasAborted(2), false);
+    await finish(2);
+    await results.getByText("합성 조회 2", { exact: true }).waitFor();
+    assert.equal(await results.getByText("합성 조회 1", { exact: true }).count(), 0);
+    record(
+      "keyboard collapse aborts search; reopening keeps the topic and late success cannot replace or release a newer explicit lookup",
+    );
+    await begin(3);
+    await page.setViewportSize({ width: 390, height: 844 });
+    const stop = panel.getByRole("button", { name: "검색 대기 중단", exact: true });
+    await stop.scrollIntoViewIfNeeded();
+    assert.equal(
+      await page.evaluate(() => document.documentElement.scrollWidth > innerWidth),
+      false,
+    );
+    await page.screenshot({ path: path.join(output, "research-cancel-mobile.png") });
+    await stop.focus();
+    await page.keyboard.press("Enter");
+    await lookup.waitFor();
+    assert.equal(await wasAborted(3), true);
+    await begin(4);
+    await finish(3, "error");
+    assert.equal(await panel.getByRole("alert").count(), 0);
+    assert.equal(await loading.isDisabled(), true);
+    await finish(4);
+    await results.getByText("합성 조회 4", { exact: true }).waitFor();
+    record(
+      "explicit stop works by keyboard at 390px; a late failure cannot create an error or unlock the new lookup",
+    );
+    await begin(5);
+    await topic.selectOption("manufacturing");
+    assert.equal(await wasAborted(5), true);
+    await finish(5);
+    assert.equal(await results.count(), 0);
+    assert.equal(researchCommands.length, 5);
+    await begin(6);
+    await finish(6, "empty");
+    await panel.getByRole("status").filter({ hasText: "검색 후보가 없습니다" }).waitFor();
+    assert.equal(await title.inputValue(), "보존할 미저장 제목");
+    assert.equal(await quote.inputValue(), "  보존할 미저장 발췌\n회사 해당성 미확인  ");
+    assert.deepEqual(company, original);
+    assert.deepEqual(commands, []);
+    record(
+      "topic changes and empty-result semantics remain intact; all unsaved evidence and stored records survive with no writes or automatic retry",
+    );
+  } else {
+    await page.getByRole("button", { name: "상세 도구", exact: true }).click();
+    await page.locator("#studio-tab-plan").click();
+    const stateButton = page.getByRole("button", { name: "연결 저장 상태 확인", exact: true });
+    await stateButton.click({ trial: true });
+    const area = page.getByRole("region", { name: "주장·근거 검토 기록", exact: true });
+    const box = area
+      .locator("details")
+      .filter({ has: page.locator("summary", { hasText: "공개 근거 비교 입력 미리보기 (선택)" }) });
+    await box.locator(":scope > summary").click();
+    const claim = box.getByRole("combobox");
+    const model = box.getByRole("textbox");
+    const preview = box.getByRole("button", { name: "선택 입력 미리보기", exact: true });
+    const sources = box.getByRole("checkbox");
+    await claim.selectOption(company.claimReviews[0].id);
+    await sources.first().check();
+    await model.fill(fixture.model);
+    await preview.click();
+    let enteredTimer;
+    try {
+      await Promise.race([
+        firstEntered,
+        new Promise((_, reject) => {
+          enteredTimer = setTimeout(
+            () => reject(Error("Synthetic preview route not reached")),
+            10000,
+          );
+        }),
+      ]);
+    } finally {
+      clearTimeout(enteredTimer);
+    }
+    await box.getByRole("button", { name: "로컬 미리보기 확인 중", exact: true }).waitFor();
+    const readsBefore = stateReads;
+    await stateButton.click();
+    await stateButton.click({ trial: true });
+    assert.equal(stateReads, readsBefore + 1);
+    assert.equal(await box.evaluate((element) => element.open), true);
+    assert.equal(await claim.inputValue(), company.claimReviews[0].id);
+    assert.equal(await model.inputValue(), fixture.model);
+    assert.equal(await sources.first().isChecked(), true);
+    assert.equal(await sources.nth(1).isChecked(), false);
+    assert.equal(
+      await box.getByRole("button", { name: "로컬 미리보기 확인 중", exact: true }).count(),
+      0,
+      "Same-revision company refresh must release the canceled preview busy state",
+    );
+    assert.equal(await preview.isEnabled(), true);
+    assert.equal(commands.length, 1);
+    record(
+      "same-revision explicit state read cancels pending preview and preserves exact choices with a ready retry button",
+    );
+    held = false;
+    releasePreview();
+    await page.waitForTimeout(200);
+    assert.equal(
+      await box.getByRole("alert").count(),
+      0,
+      "Canceled response cannot set a stale error",
+    );
+    assert.equal(await preview.isEnabled(), true);
+    record("late canceled HTTP error is ignored without automatic retry");
+    await preview.click();
+    await box.getByRole("alert").waitFor();
+    assert.equal(commands.length, 2);
+    assert.equal(await preview.isEnabled(), true);
+    assert.equal(await claim.inputValue(), company.claimReviews[0].id);
+    assert.equal(await sources.first().isChecked(), true);
+    assert.deepEqual(commands[1], commands[0]);
+    assert.deepEqual(company, original);
+    record(
+      "explicit retry sends the preserved selection once; current HTTP failure releases the button without changing records",
+    );
+    await page.setViewportSize({ width: 390, height: 844 });
+    await box.scrollIntoViewIfNeeded();
+    assert.equal(
+      await page.evaluate(() => document.documentElement.scrollWidth > innerWidth),
+      false,
+    );
+    await box.screenshot({ path: path.join(output, "preview-cancel-mobile.png") });
+    record("mobile selection and retry controls remain usable");
   }
-  await box.getByRole("button", { name: "로컬 미리보기 확인 중", exact: true }).waitFor();
-  const readsBefore = stateReads;
-  await stateButton.click();
-  await stateButton.click({ trial: true });
-  assert.equal(stateReads, readsBefore + 1);
-  assert.equal(await box.evaluate((element) => element.open), true);
-  assert.equal(await claim.inputValue(), company.claimReviews[0].id);
-  assert.equal(await model.inputValue(), fixture.model);
-  assert.equal(await sources.first().isChecked(), true);
-  assert.equal(await sources.nth(1).isChecked(), false);
-  assert.equal(
-    await box.getByRole("button", { name: "로컬 미리보기 확인 중", exact: true }).count(),
-    0,
-    "Same-revision company refresh must release the canceled preview busy state",
-  );
-  assert.equal(await preview.isEnabled(), true);
-  assert.equal(commands.length, 1);
-  record(
-    "same-revision explicit state read cancels pending preview and preserves exact choices with a ready retry button",
-  );
-  held = false;
-  releasePreview();
-  await page.waitForTimeout(200);
-  assert.equal(
-    await box.getByRole("alert").count(),
-    0,
-    "Canceled response cannot set a stale error",
-  );
-  assert.equal(await preview.isEnabled(), true);
-  record("late canceled HTTP error is ignored without automatic retry");
-  await preview.click();
-  await box.getByRole("alert").waitFor();
-  assert.equal(commands.length, 2);
-  assert.equal(await preview.isEnabled(), true);
-  assert.equal(await claim.inputValue(), company.claimReviews[0].id);
-  assert.equal(await sources.first().isChecked(), true);
-  assert.deepEqual(commands[1], commands[0]);
-  assert.deepEqual(company, original);
-  record(
-    "explicit retry sends the preserved selection once; current HTTP failure releases the button without changing records",
-  );
-  await page.setViewportSize({ width: 390, height: 844 });
-  await box.scrollIntoViewIfNeeded();
-  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
-  await box.screenshot({ path: path.join(output, "preview-cancel-mobile.png") });
-  record("mobile selection and retry controls remain usable");
   assert.deepEqual(errors, []);
   assert.deepEqual(unexpected, []);
   assert.ok(!logs.join("").includes("FORBIDDEN_SERVER_FETCH"));
@@ -414,12 +586,16 @@ try {
       {
         checks,
         syntheticPreviewPosts: commands.length,
+        syntheticResearchPosts: researchCommands.length,
+        scenario,
         syntheticStateReads: stateReads,
         syntheticWrites: 0,
         automaticRetry: 0,
         continuousJourneys: 1,
         startingState:
-          "actual app and synthetic stored manuscript/review; delayed HTTP error canceled by explicit same-revision state read, retained choices, explicit retry; no SQL, SDK, writes or valid AI/preview response claim",
+          scenario === "research"
+            ? "actual guided app with held synthetic search responses; collapse/stop and newer reads; no SQL, SDK, writes or KOSIS calls"
+            : "actual app and synthetic stored manuscript/review; delayed HTTP error canceled by explicit same-revision state read, retained choices, explicit retry; no SQL, SDK, writes or valid AI/preview response claim",
         errors,
         unexpected,
         actualBusinessApi: 0,
@@ -444,6 +620,7 @@ try {
   throw error;
 } finally {
   releasePreview?.();
+  for (const release of researchReleases.values()) release("empty");
   await context?.close();
   for (const socket of developmentSockets) socket.destroy();
   proxy.closeAllConnections();

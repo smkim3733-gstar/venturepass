@@ -38,5 +38,5 @@ export function comparisonReviewTestFixture(count = 1) {
       owner: null, runtimeObserved: false, authority: { ...comparisonPlanAuthority },
     };
   }
-  return { prepared, request, query, value };
+  return { company: fixture.company, prepared, request, query, value };
 }

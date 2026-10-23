@@ -1,13 +1,13 @@
 import "server-only";
 import { createHash } from "node:crypto";
 import { z } from "zod";
-import { executionDigest, requestFormat } from "./studio-engine-request-preparation";
+import { executionDigest } from "./studio-engine-request-core";
+import { publicClaimComparisonFormat } from "./studio-public-claim-comparison-format";
 import type { EngineExecutionTransportRequest } from "./studio-engine-execution-types";
 import {
   preparePublicClaimComparison,
   validatePublicClaimComparison,
   publicClaimComparisonLimits,
-  publicClaimComparisonResponseSchema,
   type PublicClaimComparisonPreparation,
 } from "./studio-public-claim-comparison";
 import type { StudioCase } from "./studio-schema";
@@ -33,7 +33,7 @@ const system = [
   "checks는 기간·단위·모집단·회사해당성·출처 등 남은 확인을 최대10개, 각1000 UTF-16 단위로 쓰세요. sourceIds에는 선택 자료만 넣고 특정 자료를 가리키지 않으면 빈 배열로 두세요.",
   "새 원고·사실·수동 판단·승인 상태를 만들거나 저장하지 마세요. 지정 JSON schema만 반환하세요. 결과는 사람이 확인해야 하는 미검증 비교 의견입니다.",
 ].join("\n");
-const format = requestFormat(publicClaimComparisonResponseSchema, "public_claim_comparison_v1");
+const format = publicClaimComparisonFormat();
 export * from "./studio-public-claim-comparison-request-types";
 import {
   publicClaimComparisonRequestVersion,

@@ -540,4 +540,25 @@ describe("deterministic submission review", () => {
     expect(review.some((item) => item.category === "guarantee")).toBe(false);
     expect(review.some((item) => item.category === "review-scope")).toBe(true);
   });
+
+  it.each(["profile", "source"])("checks original numeric boundaries for %s citations", (kind) => {
+    const value = fixture();
+    const text = "매출 15억원, 부족액 -100만원. 별도 비용 3억원.";
+    value.profile.financials = text;
+    value.sources[0].text = text;
+    const content = validPlan(value);
+    const section = content.sections[0];
+    section.content = "매출 5억원, 가용액 100만원, 비용 3억원";
+    section.evidence = [
+      { sourceId: kind === "profile" ? "profile" : sourceId, quote: "5억원", locator: "합성" },
+      { sourceId: kind === "profile" ? "profile" : sourceId, quote: "100만원", locator: "합성" },
+    ];
+    const before = structuredClone(value);
+    const finding = reviewPlan(value, content).find((item) => item.category === "numeric-evidence");
+    expect(finding?.message).toContain("5억원, 100만원, 3억원");
+    expect(finding?.severity).toBe("warning");
+    expect(finding?.action).toContain("부호·단위");
+    expect(value).toEqual(before);
+    expect(constructorMock).not.toHaveBeenCalled();
+  });
 });

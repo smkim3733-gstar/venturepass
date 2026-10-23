@@ -9,14 +9,16 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { chromium } from "playwright-core";
 import { localBuildEnvironment } from "./build-local.mjs";
+import { tmpdir } from "node:os";
 
 // Actual app UI; all business APIs are fulfilled with synthetic, in-memory state.
 // No server business route, SQL, SDK, key, customer record or external service is used.
 const app = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const temporaryRoot = await realpath(path.resolve(app, "../../.venturepass-tools/build-temp"));
+const temporaryRoot = await realpath(tmpdir());
 const staging = await realpath(process.argv[2]);
 const serverMode = process.argv[3] ?? "start";
-const scenario = "numeric-reader";
+const suggestionsOnly = process.argv[4] === "suggestions";
+const scenario = suggestionsOnly ? "numeric-suggestions" : "numeric-reader";
 
 assert.ok(["start", "dev"].includes(serverMode));
 const relative = path.relative(temporaryRoot, staging);
@@ -27,6 +29,9 @@ const sha = (bytes) => createHash("sha256").update(bytes).digest("hex");
 for (const file of [
   "src/components/studio/guided-workspace.tsx",
   "src/components/studio/numeric-checks.tsx",
+  "src/components/studio/numeric-suggestions.tsx",
+  "src/lib/studio-numeric-suggestions.ts",
+  "src/lib/studio-numeric-check-types.ts",
   "src/components/studio/guided-plan-evidence.tsx",
   "scripts/fixtures/manual-source-receipt.ts",
   "scripts/numeric-reader-validation.mjs",
@@ -123,6 +128,13 @@ const boundarySource = {
 company.sources.push(boundarySource);
 assert.equal(new Set(company.sources.map((item) => item.id)).size, company.sources.length);
 const plan = company.plans.at(-1);
+if (suggestionsOnly) {
+  longSource.text =
+    "<script>globalThis.__numericReaderExecuted=true</script>\n첫 수량 1,200.50개\n둘째 수량 1,200.50개와 증감 -25.5개\n지원 밖 1e3 및 (500)";
+  boundarySource.text = "다른 본문의 수량 99개";
+  company.sources.find((s) => s.id === boundarySource.id).text = boundarySource.text;
+  plan.content.sections[0].content = "저장 원고의 합계 3,500.75개";
+}
 
 const companies = [company],
   original = structuredClone(companies),
@@ -375,159 +387,270 @@ try {
   });
   const showAll = () => observation.getByRole("button", { name: "전체 본문 보기", exact: true });
   const showStart = () => observation.getByRole("button", { name: "앞부분만 보기", exact: true });
-  const draft = {
-    title: "  합성 대조안  ",
-    label: "  사용자 수  ",
-    value: "1,200",
-    note: "  수동 범위\n메모  ",
-    quote: "  합성 인용\n보존  ",
-    locator: "  합성 2쪽  ",
-    judgement: "  아직 확인하지 않은 메모  ",
-  };
-  await title.fill(draft.title);
-  await label.fill(draft.label);
-  await value.fill(draft.value);
-  await note.fill(draft.note);
-  await judgement.fill(draft.judgement);
-  await kind.selectOption("source");
-  await sourceSelect.selectOption(longSource.id);
-  await quote.fill(draft.quote);
-  await locator.fill(draft.locator);
-  async function preserved(checkReference = true) {
-    assert.equal(await title.inputValue(), draft.title);
-    assert.equal(await label.inputValue(), draft.label);
-    assert.equal(await value.inputValue(), draft.value);
-    assert.equal(await note.inputValue(), draft.note);
-    assert.equal(await judgement.inputValue(), draft.judgement);
-    if (checkReference) {
-      assert.equal(await sourceSelect.inputValue(), longSource.id);
-      assert.equal(await quote.inputValue(), draft.quote);
-      assert.equal(await locator.inputValue(), draft.locator);
-    }
-    await page.waitForFunction(
-      () => {
-        const event = new Event("beforeunload", { cancelable: true });
-        window.dispatchEvent(event);
-        return event.defaultPrevented;
-      },
-      null,
-      { timeout: 10000 },
+
+  if (suggestionsOnly) {
+    await title.fill("합성 숫자 전사 대조안");
+    await label.fill("직접 쓴 수치 이름");
+    await note.fill("단위와 기간은 담당자가 별도 확인");
+    await kind.selectOption("source");
+    const openSuggestions = observation.getByText("선택 본문에서 숫자 후보 찾기", { exact: true });
+    await openSuggestions.click();
+    const find = observation.getByRole("button", { name: "이 PC에서 숫자 후보 찾기", exact: true });
+    assert.equal(await find.isDisabled(), true);
+    assert.equal(
+      await sourceSelect.locator('option[value="' + company.sources[0].id + '"]').isDisabled(),
+      true,
     );
-    assert.deepEqual(companies, original);
-    assert.equal(commands.length, 0);
-    assert.equal(dialogs.length, 0);
-  }
-  async function shot(name, target) {
-    await target.scrollIntoViewIfNeeded();
+    await sourceSelect.selectOption(longSource.id);
+    await openSuggestions.click();
+    const choose = observation.getByLabel("가져올 숫자와 위치", { exact: true });
+    const take = observation.getByRole("button", {
+      name: "선택한 숫자·인용 가져오기",
+      exact: true,
+    });
+    assert.equal(await choose.count(), 0);
+    await value.fill("99");
+    await quote.fill("이전에 직접 쓴 인용");
+    await locator.fill("직접 쓴 위치");
+    const getsBefore = caseReads;
+    await find.click();
+    await observation
+      .getByText("3개 후보 · 원문과 대조해 직접 선택하세요.", { exact: true })
+      .waitFor();
+    const position = longSource.text.lastIndexOf("1,200.50");
+    await choose.selectOption(position + ":" + (position + "1,200.50".length));
+    assert.equal(await value.inputValue(), "99");
+    assert.equal(await quote.inputValue(), "이전에 직접 쓴 인용");
+    assert.equal(await take.isDisabled(), true);
+    const replace = observation.getByLabel("기존 숫자·인용을 선택한 후보로 바꾸기", {
+      exact: true,
+    });
+    await replace.check();
+    await value.fill("88");
+    assert.equal(await replace.isChecked(), false);
+    assert.equal(await take.isDisabled(), true);
+    await replace.check();
+    await take.click();
+    assert.equal(await value.inputValue(), "1,200.50");
+    assert.equal(await quote.inputValue(), longSource.text.split("\n")[2]);
+    assert.equal(await label.inputValue(), "직접 쓴 수치 이름");
+    assert.equal(await note.inputValue(), "단위와 기간은 담당자가 별도 확인");
+    assert.equal(await locator.inputValue(), "직접 쓴 위치");
+    assert.equal(await value.evaluate((el) => document.activeElement === el), true);
+    assert.equal(caseReads, getsBefore);
+    record(
+      "Explicit local extraction distinguishes repeated numbers by position; replacement consent resets on manual edits and adoption preserves unrelated draft fields without requests.",
+    );
+
+    await page.setViewportSize({ width: 390, height: 844 });
+    const preview = observation.getByLabel("숫자 후보 주변 인용", { exact: true });
+    await preview.scrollIntoViewIfNeeded();
+    assert.equal(await preview.locator("mark").innerText(), "1,200.50");
     assert.equal(
       await page.evaluate(() => document.documentElement.scrollWidth > innerWidth),
       false,
     );
-    for (const control of [region, kind, quote]) {
-      const box = await control.boundingBox();
-      assert.ok(
-        box && box.x >= 0 && box.x + box.width <= 391,
-        "reader and inputs must fit mobile viewport",
+    assert.ok((await take.boundingBox()).height >= 44);
+    await page.screenshot({ path: path.join(output, "numeric-suggestions-mobile.png") });
+    record(
+      "Exact contextual quote highlights the selected literal and fits 390px with a 44px action; no unit, period or judgement is inferred.",
+    );
+
+    nextDialog = "accept";
+    await kind.selectOption("plan");
+    await observation.getByLabel("저장 원고 버전 *", { exact: true }).selectOption(plan.id);
+    await observation
+      .getByLabel("원고 항목 *", { exact: true })
+      .selectOption(plan.content.sections[0].key);
+    await openSuggestions.click();
+    assert.equal(await choose.count(), 0);
+    await value.fill("");
+    await find.click();
+    const pp = plan.content.sections[0].content.indexOf("3,500.75");
+    await choose.selectOption(pp + ":" + (pp + "3,500.75".length));
+    await take.click();
+    assert.equal(await value.inputValue(), "3,500.75");
+    assert.equal(await quote.inputValue(), plan.content.sections[0].content);
+    nextDialog = "accept";
+    await kind.selectOption("source");
+    await sourceSelect.selectOption(boundarySource.id);
+    await openSuggestions.click();
+    assert.equal(await choose.count(), 0);
+    await find.click();
+    await observation
+      .getByText("1개 후보 · 원문과 대조해 직접 선택하세요.", { exact: true })
+      .waitFor();
+    await openSuggestions.click();
+    await openSuggestions.click();
+    assert.equal(await choose.count(), 0);
+    assert.equal(await value.inputValue(), "3,500.75");
+    assert.equal(await note.inputValue(), "단위와 기간은 담당자가 별도 확인");
+    assert.equal(await quote.inputValue(), "");
+    assert.deepEqual(companies, original);
+    assert.equal(commands.length, 0);
+    assert.equal(caseReads, 1);
+    assert.equal(intakeReads, 1);
+    record(
+      "Switching source/plan discards stale candidates, exact saved-plan text can be transcribed, closing clears suggestions while preserving the manual draft; no writes or AI.",
+    );
+  } else {
+    const draft = {
+      title: "  합성 대조안  ",
+      label: "  사용자 수  ",
+      value: "1,200",
+      note: "  수동 범위\n메모  ",
+      quote: "  합성 인용\n보존  ",
+      locator: "  합성 2쪽  ",
+      judgement: "  아직 확인하지 않은 메모  ",
+    };
+    await title.fill(draft.title);
+    await label.fill(draft.label);
+    await value.fill(draft.value);
+    await note.fill(draft.note);
+    await judgement.fill(draft.judgement);
+    await kind.selectOption("source");
+    await sourceSelect.selectOption(longSource.id);
+    await quote.fill(draft.quote);
+    await locator.fill(draft.locator);
+    async function preserved(checkReference = true) {
+      assert.equal(await title.inputValue(), draft.title);
+      assert.equal(await label.inputValue(), draft.label);
+      assert.equal(await value.inputValue(), draft.value);
+      assert.equal(await note.inputValue(), draft.note);
+      assert.equal(await judgement.inputValue(), draft.judgement);
+      if (checkReference) {
+        assert.equal(await sourceSelect.inputValue(), longSource.id);
+        assert.equal(await quote.inputValue(), draft.quote);
+        assert.equal(await locator.inputValue(), draft.locator);
+      }
+      await page.waitForFunction(
+        () => {
+          const event = new Event("beforeunload", { cancelable: true });
+          window.dispatchEvent(event);
+          return event.defaultPrevented;
+        },
+        null,
+        { timeout: 10000 },
       );
+      assert.deepEqual(companies, original);
+      assert.equal(commands.length, 0);
+      assert.equal(dialogs.length, 0);
     }
-    await page.screenshot({ path: path.join(output, "numeric-reader-" + name + "-mobile.png") });
+    async function shot(name, target) {
+      await target.scrollIntoViewIfNeeded();
+      assert.equal(
+        await page.evaluate(() => document.documentElement.scrollWidth > innerWidth),
+        false,
+      );
+      for (const control of [region, kind, quote]) {
+        const box = await control.boundingBox();
+        assert.ok(
+          box && box.x >= 0 && box.x + box.width <= 391,
+          "reader and inputs must fit mobile viewport",
+        );
+      }
+      await page.screenshot({ path: path.join(output, "numeric-reader-" + name + "-mobile.png") });
+    }
+    await page.setViewportSize({ width: 390, height: 844 });
+    await summary.click();
+    await showAll().waitFor({ timeout: 10000 });
+    assert.equal(await region.textContent(), longText.slice(0, 20000));
+    assert.equal(await showAll().getAttribute("aria-expanded"), "false");
+    assert.equal(await showAll().getAttribute("aria-controls"), await region.getAttribute("id"));
+    await observation.getByText("앞 20,000자만 표시합니다.", { exact: true }).waitFor();
+    await shot("partial", showAll());
+    await showAll().focus();
+    await page.keyboard.press("Enter");
+    assert.equal(await region.textContent(), longText);
+    assert.equal(await showStart().getAttribute("aria-expanded"), "true");
+    await observation
+      .getByText("전체 " + longText.length.toLocaleString("ko-KR") + "자 표시", { exact: true })
+      .waitFor();
+    assert.equal(await region.locator("script").count(), 0);
+    assert.equal(await page.evaluate(() => globalThis.__numericReaderExecuted), undefined);
+    await region.focus();
+    await page.keyboard.press("End");
+    await region.evaluate(async (element) => {
+      const end = Date.now() + 10000;
+      while (element.scrollTop + element.clientHeight < element.scrollHeight - 2) {
+        if (Date.now() > end) throw Error("Reader did not reach its end");
+        await new Promise(requestAnimationFrame);
+      }
+    });
+    const focus = await region.evaluate((element) => ({
+      active: document.activeElement === element,
+      atEnd: element.scrollTop + element.clientHeight >= element.scrollHeight - 2,
+    }));
+    assert.deepEqual(focus, { active: true, atEnd: true });
+    focusChecks.push(focus);
+    assert.equal(
+      await page.evaluate(() => document.documentElement.scrollWidth > innerWidth),
+      false,
+    );
+    await page.screenshot({ path: path.join(output, "numeric-reader-end-mobile.png") });
+    await preserved();
+    record(
+      "Long registered source starts with 20000 characters, expands through keyboard activation without changing inputs, preserves literal HTML and whitespace, and permits focused End scrolling to the final line",
+    );
+
+    await showStart().click();
+    assert.equal(await region.textContent(), longText.slice(0, 20000));
+    await preserved();
+    await showAll().click();
+    await summary.click();
+    assert.equal(await region.isVisible(), false);
+    await summary.click();
+    assert.equal(await region.textContent(), longText);
+    await preserved();
+    await sourceSelect.selectOption(boundarySource.id);
+    assert.equal(await region.textContent(), boundarySource.text);
+    assert.equal(await showAll().count(), 0);
+    assert.equal(await showStart().count(), 0);
+    assert.equal(
+      await observation.getByText("앞 20,000자만 표시합니다.", { exact: true }).count(),
+      0,
+    );
+    assert.equal(await quote.inputValue(), "");
+    assert.equal(await locator.inputValue(), "");
+    await preserved(false);
+    await sourceSelect.selectOption(longSource.id);
+    assert.equal(await region.textContent(), longText.slice(0, 20000));
+    await showAll().waitFor();
+    assert.equal(await quote.inputValue(), "");
+    await preserved(false);
+    await shot("reset", showAll());
+    record(
+      "Collapsing and reopening reading preserve drafts; a 20000-character source has no truncation control; changing source resets full display while retaining unrelated fields and the existing reference reset rules",
+    );
+
+    await kind.selectOption("plan");
+    await observation.getByLabel("저장 원고 버전 *", { exact: true }).selectOption(plan.id);
+    await observation
+      .getByLabel("원고 항목 *", { exact: true })
+      .selectOption(plan.content.sections[0].key);
+    assert.equal(await region.textContent(), plan.content.sections[0].content);
+    assert.equal(await showAll().count(), 0);
+    await quote.fill(draft.quote);
+    const planQuote = await quote.inputValue();
+    await summary.click();
+    await summary.click();
+    assert.equal(await quote.inputValue(), planQuote);
+    assert.equal(await region.textContent(), plan.content.sections[0].content);
+    await preserved(false);
+    await shot("plan", region);
+    await kind.selectOption("source");
+    assert.equal(await sourceSelect.inputValue(), "");
+    assert.equal(await region.textContent(), "자료·원고 항목을 선택해 주세요.");
+    assert.equal(await showAll().count(), 0);
+    await sourceSelect.selectOption(longSource.id);
+    assert.equal(await region.textContent(), longText.slice(0, 20000));
+    await preserved(false);
+    assert.equal(caseReads, 1);
+    assert.equal(intakeReads, 1);
+    record(
+      "Stored plan text uses the same reader without changing its quote; an unselected source keeps the existing placeholder, and returning to the long source starts truncated with no automatic read or write",
+    );
   }
-  await page.setViewportSize({ width: 390, height: 844 });
-  await summary.click();
-  await showAll().waitFor({ timeout: 10000 });
-  assert.equal(await region.textContent(), longText.slice(0, 20000));
-  assert.equal(await showAll().getAttribute("aria-expanded"), "false");
-  assert.equal(await showAll().getAttribute("aria-controls"), await region.getAttribute("id"));
-  await observation.getByText("앞 20,000자만 표시합니다.", { exact: true }).waitFor();
-  await shot("partial", showAll());
-  await showAll().focus();
-  await page.keyboard.press("Enter");
-  assert.equal(await region.textContent(), longText);
-  assert.equal(await showStart().getAttribute("aria-expanded"), "true");
-  await observation
-    .getByText("전체 " + longText.length.toLocaleString("ko-KR") + "자 표시", { exact: true })
-    .waitFor();
-  assert.equal(await region.locator("script").count(), 0);
-  assert.equal(await page.evaluate(() => globalThis.__numericReaderExecuted), undefined);
-  await region.focus();
-  await page.keyboard.press("End");
-  await region.evaluate(async (element) => {
-    const end = Date.now() + 10000;
-    while (element.scrollTop + element.clientHeight < element.scrollHeight - 2) {
-      if (Date.now() > end) throw Error("Reader did not reach its end");
-      await new Promise(requestAnimationFrame);
-    }
-  });
-  const focus = await region.evaluate((element) => ({
-    active: document.activeElement === element,
-    atEnd: element.scrollTop + element.clientHeight >= element.scrollHeight - 2,
-  }));
-  assert.deepEqual(focus, { active: true, atEnd: true });
-  focusChecks.push(focus);
-  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
-  await page.screenshot({ path: path.join(output, "numeric-reader-end-mobile.png") });
-  await preserved();
-  record(
-    "Long registered source starts with 20000 characters, expands through keyboard activation without changing inputs, preserves literal HTML and whitespace, and permits focused End scrolling to the final line",
-  );
-
-  await showStart().click();
-  assert.equal(await region.textContent(), longText.slice(0, 20000));
-  await preserved();
-  await showAll().click();
-  await summary.click();
-  assert.equal(await region.isVisible(), false);
-  await summary.click();
-  assert.equal(await region.textContent(), longText);
-  await preserved();
-  await sourceSelect.selectOption(boundarySource.id);
-  assert.equal(await region.textContent(), boundarySource.text);
-  assert.equal(await showAll().count(), 0);
-  assert.equal(await showStart().count(), 0);
-  assert.equal(
-    await observation.getByText("앞 20,000자만 표시합니다.", { exact: true }).count(),
-    0,
-  );
-  assert.equal(await quote.inputValue(), "");
-  assert.equal(await locator.inputValue(), "");
-  await preserved(false);
-  await sourceSelect.selectOption(longSource.id);
-  assert.equal(await region.textContent(), longText.slice(0, 20000));
-  await showAll().waitFor();
-  assert.equal(await quote.inputValue(), "");
-  await preserved(false);
-  await shot("reset", showAll());
-  record(
-    "Collapsing and reopening reading preserve drafts; a 20000-character source has no truncation control; changing source resets full display while retaining unrelated fields and the existing reference reset rules",
-  );
-
-  await kind.selectOption("plan");
-  await observation.getByLabel("저장 원고 버전 *", { exact: true }).selectOption(plan.id);
-  await observation
-    .getByLabel("원고 항목 *", { exact: true })
-    .selectOption(plan.content.sections[0].key);
-  assert.equal(await region.textContent(), plan.content.sections[0].content);
-  assert.equal(await showAll().count(), 0);
-  await quote.fill(draft.quote);
-  const planQuote = await quote.inputValue();
-  await summary.click();
-  await summary.click();
-  assert.equal(await quote.inputValue(), planQuote);
-  assert.equal(await region.textContent(), plan.content.sections[0].content);
-  await preserved(false);
-  await shot("plan", region);
-  await kind.selectOption("source");
-  assert.equal(await sourceSelect.inputValue(), "");
-  assert.equal(await region.textContent(), "자료·원고 항목을 선택해 주세요.");
-  assert.equal(await showAll().count(), 0);
-  await sourceSelect.selectOption(longSource.id);
-  assert.equal(await region.textContent(), longText.slice(0, 20000));
-  await preserved(false);
-  assert.equal(caseReads, 1);
-  assert.equal(intakeReads, 1);
-  record(
-    "Stored plan text uses the same reader without changing its quote; an unselected source keeps the existing placeholder, and returning to the long source starts truncated with no automatic read or write",
-  );
   assert.deepEqual(errors, []);
   assert.deepEqual(unexpected, []);
   assert.ok(!logs.join("").includes("FORBIDDEN_SERVER_FETCH"));
@@ -548,13 +671,14 @@ try {
         commands,
         dialogs,
         focusChecks,
-        longTextCharacters: longText.length,
+        longTextCharacters: suggestionsOnly ? null : longText.length,
 
         automaticRetry: 0,
         continuousJourneys: 1,
         scenario,
-        startingState:
-          "numeric registered-body reading in detailed screen; long and exact-20000-character memory sources, no mutation, export or AI",
+        startingState: suggestionsOnly
+          ? "numeric suggestions from explicit memory source/plan selection; no mutation, export or AI"
+          : "numeric registered-body reading in detailed screen; long and exact-20000-character memory sources, no mutation, export or AI",
         errors,
         unexpected,
         actualBusinessApi: 0,

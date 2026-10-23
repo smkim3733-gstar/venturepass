@@ -7,7 +7,7 @@ import {
   type ProviderCapturedResponse,
   type ProviderReportedResponseMetadata,
 } from "../../scripts/local-data-quality-provider-usage.mjs";
-import { parseProviderResponseOutput } from "./studio-provider-observation";
+import { parseProviderResponseOutput } from "./studio-provider-response-output";
 import {
   inspectPublicClaimComparisonRequest,
   validatePublicClaimComparisonRequestResponse,

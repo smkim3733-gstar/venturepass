@@ -9,7 +9,11 @@ export const runtime = "nodejs";
 export async function POST(request: Request, context: { params: Promise<{ caseId: string }> }) {
   try { assertLocalRequest(request); } catch { return comparisonReviewErrorResponse("LOCAL_ONLY"); }
   const { caseId } = await context.params, data = comparisonReviewExampleData();
-  // This route has no customer lookup or SQL/SDK fallback.
+  if (!request.headers.has(exampleRequestMarker)) {
+    const { storedComparisonRoute } = await import("@/lib/studio-comparison-review-runtime");
+    return storedComparisonRoute(request, caseId, "review");
+  }
+  // Explicit example requests stay on their fixed fixture and never acquire storage.
   if (caseId !== data.frame.snapshot.id || request.headers.get(exampleRequestMarker) !== "1")
     return comparisonReviewErrorResponse("RESULT_UNAVAILABLE");
   const origin = request.headers.get("origin");

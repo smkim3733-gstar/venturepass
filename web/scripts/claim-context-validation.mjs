@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
+import { tmpdir } from "node:os";
 import { mkdtemp, readFile, readdir, realpath, writeFile } from "node:fs/promises";
 import { createServer, connect } from "node:net";
 import { createServer as createHttpServer, request as httpRequest } from "node:http";
@@ -13,10 +14,11 @@ import { localBuildEnvironment } from "./build-local.mjs";
 // Actual app UI; all business APIs are fulfilled with synthetic, in-memory state.
 // No server business route, SQL, SDK, key, customer record or external service is used.
 const app = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const temporaryRoot = await realpath(path.resolve(app, "../../.venturepass-tools/build-temp"));
+const temporaryRoot = await realpath(tmpdir());
 const staging = await realpath(process.argv[2]);
 const serverMode = process.argv[3] ?? "start";
-const scenario = "claim-context";
+const scenario = process.argv[4] ?? "claim-context";
+assert.ok(["claim-context", "plan-entry"].includes(scenario));
 
 assert.ok(["start", "dev"].includes(serverMode));
 const relative = path.relative(temporaryRoot, staging);
@@ -28,6 +30,7 @@ for (const file of [
   "src/components/studio/guided-workspace.tsx",
   "src/components/studio/appeal-preparation.tsx",
   "src/components/studio/claim-reviews.tsx",
+  "src/components/studio/plan-editor.tsx",
   "scripts/fixtures/claim-review-receipt.ts",
   "scripts/claim-context-validation.mjs",
 ])
@@ -155,6 +158,16 @@ company.planReviewDecisions.push({
   staleReasons: ["evidence-changed"],
 });
 
+if (scenario === "plan-entry") {
+  planB.content.sections[0].content = "최신 원고는 다른 본문입니다. 자동 대체 금지.";
+  const originalRecord = company.claimReviews[0];
+  company.claimReviews.push({
+    ...structuredClone(originalRecord),
+    id: fixture.agencyId(490),
+    claimId: fixture.agencyId(490),
+    planVersion: 999,
+  });
+}
 const companies = [company],
   original = structuredClone(companies),
   name = company.profile.companyName;
@@ -386,170 +399,253 @@ try {
   );
   await page.getByRole("tab", { name: /사업계획서/ }).click();
   const panel = page.getByRole("region", { name: "주장·근거 검토 기록", exact: true });
-  await panel.getByRole("button", { name: "새 주장·근거 기록", exact: true }).click();
-  let editor = panel.getByRole("group", { name: "첫 주장 기록", exact: true });
-  const control = (name) => editor.getByLabel(name, { exact: true });
-  const plans = () => control("저장 원고 버전 직접 선택 *");
-  const sections = () => control("고유 원고 항목 *");
-  const quote = () => control("주장 문장을 원문 그대로 인용 *");
-  const reviews = () => control("선택한 원고의 검토 판단 버전 (최대 10개)");
-  const numeric = () => control("수치 대조 참고 버전 (최대 10개)");
-  const planMessage = "작성한 주장 인용과 원고 검토 연결을 비우고 원고 버전을 변경할까요?";
-  const sectionMessage = "작성한 주장 인용을 비우고 원고 항목을 변경할까요?";
-  const selectValues = (el) =>
-    el.locator("option:checked").evaluateAll((nodes) => nodes.map((n) => n.value));
-  async function choose(el, value, message, action) {
-    const count = dialogs.length;
-    nextDialog = action;
-    await el.selectOption(value);
-    assert.equal(dialogs.length, count + 1);
-    assert.deepEqual(dialogs.at(-1), { message, action });
-  }
-  async function unchanged() {
+  if (scenario === "plan-entry") {
+    const jump = panel.getByRole("button", {
+      name: "연결된 원고 v" + planA.version + " 항목 고치기",
+      exact: true,
+    });
+    const missing = panel.getByRole("button", {
+      name: "연결된 원고 v999 항목 고치기",
+      exact: true,
+    });
+    const body = page.locator("#plan-section"),
+      title = page.locator("#plan-title"),
+      version = page.locator("#plan-version");
+    assert.equal(await version.inputValue(), planB.id);
+    assert.equal(await missing.isDisabled(), true);
+    const requestCount = network.filter((v) => v.request?.startsWith("/api/")).length;
+    await jump.focus();
+    await page.keyboard.press("Enter");
+    await page.waitForFunction(() => document.activeElement?.id === "plan-section");
+    assert.equal(await version.inputValue(), planA.id);
+    assert.equal(await title.inputValue(), planA.content.title);
+    assert.equal(await body.inputValue(), planA.content.sections[0].content);
     assert.deepEqual(companies, original);
-    assert.equal(commands.length, 0);
-    assert.equal(await control("확인 담당자 (수동 기록)").inputValue(), "  합성 담당자  ");
+    record(
+      "claim entry opens and focuses its exact historical manuscript; invalid version stays disabled and records are unchanged",
+    );
+    await body.fill("  미저장 원고 보존\n직접 고친 내용  ");
+    assert.equal(await jump.isDisabled(), true);
+    assert.equal(await missing.isDisabled(), true);
+    assert.equal(await body.inputValue(), "  미저장 원고 보존\n직접 고친 내용  ");
+    // Editing also marks the section for confirmation. Discard the whole draft explicitly.
+    nextDialog = "accept";
+    await version.selectOption(planB.id);
+    assert.equal(dialogs.length, 1);
+    assert.equal(dialogs[0].message, "저장하지 않은 수정을 취소하고 다른 버전을 볼까요?");
+    await jump.click({ trial: true });
+    await panel.getByRole("button", { name: "새 주장·근거 기록", exact: true }).click();
+    const editor = panel.getByRole("group", { name: "첫 주장 기록", exact: true });
+    await editor
+      .getByLabel("기업·기간·단위·범위 해석 메모", { exact: true })
+      .fill("  미저장 검토 메모\n보존  ");
+    assert.equal(await jump.isDisabled(), true);
+    assert.equal(await body.isDisabled(), true);
     assert.equal(
-      await control("기업·기간·단위·범위 해석 메모").inputValue(),
-      "  확인 범위\n남는 메모  ",
+      await editor.getByLabel("기업·기간·단위·범위 해석 메모", { exact: true }).inputValue(),
+      "  미저장 검토 메모\n보존  ",
     );
-    await page.waitForFunction(
-      () => {
-        const e = new Event("beforeunload", { cancelable: true });
-        window.dispatchEvent(e);
-        return e.defaultPrevented;
-      },
-      null,
-      { timeout: 10000 },
+    nextDialog = "accept";
+    await editor.getByRole("button", { name: "편집 취소", exact: true }).click();
+    assert.equal(dialogs.length, 2);
+    assert.equal(dialogs[1].message, "저장하지 않은 주장 검토 편집을 취소할까요?");
+    record(
+      "unsaved manuscript and claim edits block navigation; original text and typed review notes are preserved until explicit cancellation",
     );
-  }
-  async function shot(name, target) {
-    await target.scrollIntoViewIfNeeded();
+    await version.selectOption(planB.id);
+    await page.setViewportSize({ width: 390, height: 844 });
+    await jump.focus();
+    await page.keyboard.press("Space");
+    await page.waitForFunction(() => document.activeElement?.id === "plan-section");
+    assert.equal(await version.inputValue(), planA.id);
+    assert.equal(await body.inputValue(), planA.content.sections[0].content);
+    // The app uses smooth scrolling; focus commits before the viewport finishes moving.
+    await page.waitForFunction(() => {
+      const rect = document.getElementById("plan-section")?.getBoundingClientRect();
+      return rect && rect.top >= 0 && rect.bottom <= innerHeight;
+    });
+    const rect = await body.boundingBox();
+    assert.ok(
+      rect && rect.y >= 0 && rect.y < 844 && rect.x >= 0 && rect.x + rect.width <= 391,
+      JSON.stringify(rect),
+    );
     assert.equal(
       await page.evaluate(() => document.documentElement.scrollWidth > innerWidth),
       false,
     );
-    for (const el of [plans(), sections(), quote()]) {
-      const box = await el.boundingBox();
-      assert.ok(box && box.x >= 0 && box.x + box.width <= 391, "claim controls fit mobile");
+    await page.screenshot({ path: path.join(output, "claim-plan-entry-mobile.png") });
+    assert.equal(network.filter((v) => v.request?.startsWith("/api/")).length, requestCount);
+    assert.deepEqual(companies, original);
+    assert.equal(commands.length, 0);
+    record(
+      "mobile keyboard return selects the recorded version and visible body without saving, extra reads or upgrading any judgement",
+    );
+  } else {
+    await panel.getByRole("button", { name: "새 주장·근거 기록", exact: true }).click();
+    let editor = panel.getByRole("group", { name: "첫 주장 기록", exact: true });
+    const control = (name) => editor.getByLabel(name, { exact: true });
+    const plans = () => control("저장 원고 버전 직접 선택 *");
+    const sections = () => control("고유 원고 항목 *");
+    const quote = () => control("주장 문장을 원문 그대로 인용 *");
+    const reviews = () => control("선택한 원고의 검토 판단 버전 (최대 10개)");
+    const numeric = () => control("수치 대조 참고 버전 (최대 10개)");
+    const planMessage = "작성한 주장 인용과 원고 검토 연결을 비우고 원고 버전을 변경할까요?";
+    const sectionMessage = "작성한 주장 인용을 비우고 원고 항목을 변경할까요?";
+    const selectValues = (el) =>
+      el.locator("option:checked").evaluateAll((nodes) => nodes.map((n) => n.value));
+    async function choose(el, value, message, action) {
+      const count = dialogs.length;
+      nextDialog = action;
+      await el.selectOption(value);
+      assert.equal(dialogs.length, count + 1);
+      assert.deepEqual(dialogs.at(-1), { message, action });
     }
-    await page.screenshot({ path: path.join(output, "claim-context-" + name + "-mobile.png") });
+    async function unchanged() {
+      assert.deepEqual(companies, original);
+      assert.equal(commands.length, 0);
+      assert.equal(await control("확인 담당자 (수동 기록)").inputValue(), "  합성 담당자  ");
+      assert.equal(
+        await control("기업·기간·단위·범위 해석 메모").inputValue(),
+        "  확인 범위\n남는 메모  ",
+      );
+      await page.waitForFunction(
+        () => {
+          const e = new Event("beforeunload", { cancelable: true });
+          window.dispatchEvent(e);
+          return e.defaultPrevented;
+        },
+        null,
+        { timeout: 10000 },
+      );
+    }
+    async function shot(name, target) {
+      await target.scrollIntoViewIfNeeded();
+      assert.equal(
+        await page.evaluate(() => document.documentElement.scrollWidth > innerWidth),
+        false,
+      );
+      for (const el of [plans(), sections(), quote()]) {
+        const box = await el.boundingBox();
+        assert.ok(box && box.x >= 0 && box.x + box.width <= 391, "claim controls fit mobile");
+      }
+      await page.screenshot({ path: path.join(output, "claim-context-" + name + "-mobile.png") });
+    }
+    await plans().selectOption(planA.id);
+    await sections().selectOption(sectionA);
+    assert.equal(dialogs.length, 0);
+    await quote().fill("  새 주장 인용\n보존할 원문  ");
+    await control("확인 담당자 (수동 기록)").fill("  합성 담당자  ");
+    await control("기업·기간·단위·범위 해석 메모").fill("  확인 범위\n남는 메모  ");
+    await numeric().selectOption(company.numericChecks[0].id);
+    await choose(sections(), sectionB, sectionMessage, "dismiss");
+    assert.equal(await sections().inputValue(), sectionA);
+    assert.equal(await quote().inputValue(), "  새 주장 인용\n보존할 원문  ");
+    await unchanged();
+    await page.setViewportSize({ width: 390, height: 844 });
+    await shot("section-kept", quote());
+    await choose(sections(), sectionB, sectionMessage, "accept");
+    assert.equal(await quote().inputValue(), "");
+    assert.equal(await sections().inputValue(), sectionB);
+    const noExtra = dialogs.length;
+    await sections().selectOption(sectionA);
+    assert.equal(dialogs.length, noExtra);
+    await quote().fill(" \n ");
+    await choose(sections(), "", sectionMessage, "dismiss");
+    assert.equal(await quote().inputValue(), " \n ");
+    await choose(sections(), "", sectionMessage, "accept");
+    assert.equal(await sections().inputValue(), "");
+    assert.equal(await quote().inputValue(), "");
+    await unchanged();
+    record(
+      "Section change and unlink ask before clearing normal or whitespace-only claim quote; rejection preserves exact input, acceptance clears only the prior quote, and empty-quote change needs no confirmation",
+    );
+
+    await sections().selectOption(sectionA);
+    await reviews().selectOption(decisionId);
+    await choose(plans(), planB.id, planMessage, "dismiss");
+    assert.equal(await plans().inputValue(), planA.id);
+    assert.deepEqual(await selectValues(reviews()), [decisionId]);
+    assert.equal(await quote().inputValue(), "");
+    await shot("review-kept", reviews());
+    await choose(plans(), planB.id, planMessage, "accept");
+    assert.equal(await plans().inputValue(), planB.id);
+    assert.equal(await sections().inputValue(), "");
+    assert.deepEqual(await selectValues(reviews()), []);
+    assert.deepEqual(await selectValues(numeric()), [company.numericChecks[0].id]);
+    await unchanged();
+    const blankVersionCount = dialogs.length;
+    await plans().selectOption(planA.id);
+    assert.equal(dialogs.length, blankVersionCount);
+    await sections().selectOption(sectionA);
+    await reviews().selectOption(decisionId);
+    await quote().fill("  버전 변경 전\n남겨 둔 주장  ");
+    await choose(plans(), "", planMessage, "dismiss");
+    assert.equal(await plans().inputValue(), planA.id);
+    assert.equal(await quote().inputValue(), "  버전 변경 전\n남겨 둔 주장  ");
+    assert.deepEqual(await selectValues(reviews()), [decisionId]);
+    await choose(plans(), "", planMessage, "accept");
+    assert.equal(await plans().inputValue(), "");
+    assert.equal(await quote().inputValue(), "");
+    assert.equal(await sections().inputValue(), "");
+    assert.deepEqual(await selectValues(reviews()), []);
+    await unchanged();
+    record(
+      "Version change protects a selected review reference even with an empty quote; acceptance clears quote/review links and resets the new-claim section while preserving numeric references and other inputs",
+    );
+
+    nextDialog = "accept";
+    const cancelCount = dialogs.length;
+    await editor.getByRole("button", { name: "편집 취소", exact: true }).click();
+    assert.equal(dialogs.length, cancelCount + 1);
+    assert.deepEqual(dialogs.at(-1), {
+      message: "저장하지 않은 주장 검토 편집을 취소할까요?",
+      action: "accept",
+    });
+    await panel
+      .getByRole("button", { name: "이 주장 v1에서 새 검토 버전 작성", exact: true })
+      .click();
+    editor = panel.getByRole("group", {
+      name: "기존 주장 새 버전 · 판단 미검토로 시작",
+      exact: true,
+    });
+    assert.equal(await sections().isDisabled(), true);
+    assert.equal(await sections().inputValue(), sectionA);
+    const savedQuote = company.claimReviews[0].claimQuote;
+    assert.equal(await quote().inputValue(), savedQuote);
+    await control("확인 담당자 (수동 기록)").fill("  합성 담당자  ");
+    await control("기업·기간·단위·범위 해석 메모").fill("  확인 범위\n남는 메모  ");
+    await reviews().selectOption(decisionId);
+    await control("이번 버전의 담당자 판단").selectOption("insufficient");
+    await control("판단자").fill("  판단 담당자  ");
+    await control("판단 이유").fill("  판단 원문\n보존  ");
+    await control("판단 확인일 (직접 입력)").fill("2026-10-12");
+    await choose(plans(), planB.id, planMessage, "dismiss");
+    assert.equal(await quote().inputValue(), savedQuote);
+    assert.equal(await plans().inputValue(), planA.id);
+    assert.deepEqual(await selectValues(reviews()), [decisionId]);
+    assert.equal(await control("이번 버전의 담당자 판단").inputValue(), "insufficient");
+    assert.equal(await control("판단자").inputValue(), "  판단 담당자  ");
+    assert.equal(await control("판단 이유").inputValue(), "  판단 원문\n보존  ");
+    assert.equal(await control("판단 확인일 (직접 입력)").inputValue(), "2026-10-12");
+    await unchanged();
+    await shot("existing-kept", quote());
+    await choose(plans(), planB.id, planMessage, "accept");
+    assert.equal(await sections().inputValue(), sectionA);
+    assert.equal(await sections().isDisabled(), true);
+    assert.equal(await quote().inputValue(), "");
+    assert.deepEqual(await selectValues(reviews()), []);
+    assert.equal(await control("이번 버전의 담당자 판단").inputValue(), "unreviewed");
+    for (const label of ["판단자", "판단 이유", "판단 확인일 (직접 입력)"])
+      assert.equal(await control(label).inputValue(), "");
+    await unchanged();
+    await shot("existing-changed", quote());
+    assert.equal(caseReads, 1);
+    assert.equal(intakeReads, 0);
+    assert.equal(dialogs.length, 11);
+    record(
+      "An existing claim keeps its fixed section key; rejecting a version change preserves quote, review link and full judgement, while acceptance uses the original judgement reset without saving or changing the stored company",
+    );
   }
-  await plans().selectOption(planA.id);
-  await sections().selectOption(sectionA);
-  assert.equal(dialogs.length, 0);
-  await quote().fill("  새 주장 인용\n보존할 원문  ");
-  await control("확인 담당자 (수동 기록)").fill("  합성 담당자  ");
-  await control("기업·기간·단위·범위 해석 메모").fill("  확인 범위\n남는 메모  ");
-  await numeric().selectOption(company.numericChecks[0].id);
-  await choose(sections(), sectionB, sectionMessage, "dismiss");
-  assert.equal(await sections().inputValue(), sectionA);
-  assert.equal(await quote().inputValue(), "  새 주장 인용\n보존할 원문  ");
-  await unchanged();
-  await page.setViewportSize({ width: 390, height: 844 });
-  await shot("section-kept", quote());
-  await choose(sections(), sectionB, sectionMessage, "accept");
-  assert.equal(await quote().inputValue(), "");
-  assert.equal(await sections().inputValue(), sectionB);
-  const noExtra = dialogs.length;
-  await sections().selectOption(sectionA);
-  assert.equal(dialogs.length, noExtra);
-  await quote().fill(" \n ");
-  await choose(sections(), "", sectionMessage, "dismiss");
-  assert.equal(await quote().inputValue(), " \n ");
-  await choose(sections(), "", sectionMessage, "accept");
-  assert.equal(await sections().inputValue(), "");
-  assert.equal(await quote().inputValue(), "");
-  await unchanged();
-  record(
-    "Section change and unlink ask before clearing normal or whitespace-only claim quote; rejection preserves exact input, acceptance clears only the prior quote, and empty-quote change needs no confirmation",
-  );
-
-  await sections().selectOption(sectionA);
-  await reviews().selectOption(decisionId);
-  await choose(plans(), planB.id, planMessage, "dismiss");
-  assert.equal(await plans().inputValue(), planA.id);
-  assert.deepEqual(await selectValues(reviews()), [decisionId]);
-  assert.equal(await quote().inputValue(), "");
-  await shot("review-kept", reviews());
-  await choose(plans(), planB.id, planMessage, "accept");
-  assert.equal(await plans().inputValue(), planB.id);
-  assert.equal(await sections().inputValue(), "");
-  assert.deepEqual(await selectValues(reviews()), []);
-  assert.deepEqual(await selectValues(numeric()), [company.numericChecks[0].id]);
-  await unchanged();
-  const blankVersionCount = dialogs.length;
-  await plans().selectOption(planA.id);
-  assert.equal(dialogs.length, blankVersionCount);
-  await sections().selectOption(sectionA);
-  await reviews().selectOption(decisionId);
-  await quote().fill("  버전 변경 전\n남겨 둔 주장  ");
-  await choose(plans(), "", planMessage, "dismiss");
-  assert.equal(await plans().inputValue(), planA.id);
-  assert.equal(await quote().inputValue(), "  버전 변경 전\n남겨 둔 주장  ");
-  assert.deepEqual(await selectValues(reviews()), [decisionId]);
-  await choose(plans(), "", planMessage, "accept");
-  assert.equal(await plans().inputValue(), "");
-  assert.equal(await quote().inputValue(), "");
-  assert.equal(await sections().inputValue(), "");
-  assert.deepEqual(await selectValues(reviews()), []);
-  await unchanged();
-  record(
-    "Version change protects a selected review reference even with an empty quote; acceptance clears quote/review links and resets the new-claim section while preserving numeric references and other inputs",
-  );
-
-  nextDialog = "accept";
-  const cancelCount = dialogs.length;
-  await editor.getByRole("button", { name: "편집 취소", exact: true }).click();
-  assert.equal(dialogs.length, cancelCount + 1);
-  assert.deepEqual(dialogs.at(-1), {
-    message: "저장하지 않은 주장 검토 편집을 취소할까요?",
-    action: "accept",
-  });
-  await panel
-    .getByRole("button", { name: "이 주장 v1에서 새 검토 버전 작성", exact: true })
-    .click();
-  editor = panel.getByRole("group", {
-    name: "기존 주장 새 버전 · 판단 미검토로 시작",
-    exact: true,
-  });
-  assert.equal(await sections().isDisabled(), true);
-  assert.equal(await sections().inputValue(), sectionA);
-  const savedQuote = company.claimReviews[0].claimQuote;
-  assert.equal(await quote().inputValue(), savedQuote);
-  await control("확인 담당자 (수동 기록)").fill("  합성 담당자  ");
-  await control("기업·기간·단위·범위 해석 메모").fill("  확인 범위\n남는 메모  ");
-  await reviews().selectOption(decisionId);
-  await control("이번 버전의 담당자 판단").selectOption("insufficient");
-  await control("판단자").fill("  판단 담당자  ");
-  await control("판단 이유").fill("  판단 원문\n보존  ");
-  await control("판단 확인일 (직접 입력)").fill("2026-10-12");
-  await choose(plans(), planB.id, planMessage, "dismiss");
-  assert.equal(await quote().inputValue(), savedQuote);
-  assert.equal(await plans().inputValue(), planA.id);
-  assert.deepEqual(await selectValues(reviews()), [decisionId]);
-  assert.equal(await control("이번 버전의 담당자 판단").inputValue(), "insufficient");
-  assert.equal(await control("판단자").inputValue(), "  판단 담당자  ");
-  assert.equal(await control("판단 이유").inputValue(), "  판단 원문\n보존  ");
-  assert.equal(await control("판단 확인일 (직접 입력)").inputValue(), "2026-10-12");
-  await unchanged();
-  await shot("existing-kept", quote());
-  await choose(plans(), planB.id, planMessage, "accept");
-  assert.equal(await sections().inputValue(), sectionA);
-  assert.equal(await sections().isDisabled(), true);
-  assert.equal(await quote().inputValue(), "");
-  assert.deepEqual(await selectValues(reviews()), []);
-  assert.equal(await control("이번 버전의 담당자 판단").inputValue(), "unreviewed");
-  for (const label of ["판단자", "판단 이유", "판단 확인일 (직접 입력)"])
-    assert.equal(await control(label).inputValue(), "");
-  await unchanged();
-  await shot("existing-changed", quote());
-  assert.equal(caseReads, 1);
-  assert.equal(intakeReads, 0);
-  assert.equal(dialogs.length, 11);
-  record(
-    "An existing claim keeps its fixed section key; rejecting a version change preserves quote, review link and full judgement, while acceptance uses the original judgement reset without saving or changing the stored company",
-  );
   assert.deepEqual(errors, []);
   assert.deepEqual(unexpected, []);
   assert.ok(!logs.join("").includes("FORBIDDEN_SERVER_FETCH"));
@@ -574,7 +670,9 @@ try {
         continuousJourneys: 1,
         scenario,
         startingState:
-          "claim plan and section transition guards; synthetic versions/review links, fixed existing claim; no API mutation",
+          scenario === "plan-entry"
+            ? "claim record to exact historical manuscript; dirty-state blocking and keyboard focus; no API mutation"
+            : "claim plan and section transition guards; synthetic versions/review links, fixed existing claim; no API mutation",
         errors,
         unexpected,
         actualBusinessApi: 0,

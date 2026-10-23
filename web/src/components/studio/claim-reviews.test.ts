@@ -1,5 +1,10 @@
 import { createElement } from "react";
-import { renderToStaticMarkup } from "react-dom/server";
+import { renderToStaticMarkup as renderHtml } from "react-dom/server";
+import type { ReactNode } from "react";
+import { ComparisonBookingProvider } from "./comparison-booking-provider";
+import { ComparisonCancellationProvider } from "./comparison-cancellation-provider";
+import { ComparisonExecutionProvider } from "./comparison-execution-provider";
+import { StoredComparisonProvider } from "./stored-comparison-provider";
 import { describe, expect, it, vi } from "vitest";
 import { caseSchema, emptyProfile, type StudioCase } from "@/lib/studio-schema";
 import {
@@ -14,10 +19,21 @@ import {
   claimReviewInputFor,
   claimReviewSaveAcknowledged,
   resetClaimJudgementAfterEdit,
+  claimReviewPlanTarget,
 } from "./claim-reviews";
 import { PlanEditor, resolvePlanReviewTarget, type PlanReviewTarget } from "./plan-editor";
 
 const id = (number: number) => `${String(number).padStart(8, "0")}-1111-4111-8111-111111111111`;
+function renderToStaticMarkup(node: ReactNode) {
+  for (const Provider of [
+    StoredComparisonProvider,
+    ComparisonExecutionProvider,
+    ComparisonCancellationProvider,
+    ComparisonBookingProvider,
+  ])
+    node = createElement(Provider, null, node);
+  return renderHtml(node);
+}
 const now = "2026-09-25T00:00:00.000Z";
 const quote = "합성 제품은 연간 100개를 공급할 계획입니다.";
 function company(): StudioCase {
@@ -473,5 +489,41 @@ describe("exact review target navigation and PlanEditor mount", () => {
     expect(html).toContain("최신 원고로 자동 대체하지 않습니다");
     expect(html).toContain("보려는 저장 원고 직접 선택");
     expect(html).not.toContain('id="plan-title"');
+  });
+});
+
+describe("claim record to saved manuscript navigation", () => {
+  it("opens the exact historical version without selecting the newest or changing records", () => {
+    const state = company();
+    state.claimReviews = [record()];
+    const before = structuredClone(state);
+    const target = claimReviewPlanTarget(state, id(5));
+    expect(target?.plan).toBe(state.plans[0]);
+    expect(target?.section).toBe(state.plans[0].content.sections[0]);
+    expect(target?.plan.id).not.toBe(state.plans.at(-1)?.id);
+    expect(state).toEqual(before);
+  });
+  it.each([
+    "missing-record",
+    "duplicate-record",
+    "missing-plan",
+    "duplicate-plan",
+    "version",
+    "missing-section",
+    "duplicate-section",
+  ])("rejects %s without falling back to another draft", (kind) => {
+    const state = company();
+    state.claimReviews = [record()];
+    if (kind === "missing-record") state.claimReviews = [];
+    if (kind === "duplicate-record") state.claimReviews.push(record());
+    if (kind === "missing-plan") state.plans.shift();
+    if (kind === "duplicate-plan") state.plans.push(structuredClone(state.plans[0]));
+    if (kind === "version") state.claimReviews[0].planVersion = 2;
+    if (kind === "missing-section") state.claimReviews[0].sectionKey = "missing";
+    if (kind === "duplicate-section")
+      state.plans[0].content.sections.push(structuredClone(state.plans[0].content.sections[0]));
+    const before = structuredClone(state);
+    expect(claimReviewPlanTarget(state, id(5))).toBeNull();
+    expect(state).toEqual(before);
   });
 });

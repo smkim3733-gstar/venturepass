@@ -59,7 +59,8 @@ describe("기본 신청 화면의 수동 기록 요약", () => {
     expect(html).toContain("기록 v2");
     expect(html).toContain("2026-09-28");
     expect(html).toContain("사용자 기록");
-    expect(html).toContain("2026. 9. 27. 오전 9:00");
+    // ICU versions differ in Korean day-period wording; the Seoul date/hour must stay exact.
+    expect(html).toMatch(/2026\. 9\. 27\. (?:오전|AM) 9:00/);
     expect(html).toContain("공식 사이트 자동 조회 미연결");
     expect(html).not.toContain("확인 완료");
     expect(html).not.toContain("<button");

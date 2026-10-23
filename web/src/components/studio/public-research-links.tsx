@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { publicResearchTopics, publicStatisticsSearch } from "@/lib/studio-public-research";
 import {
   publicResearchCandidateFields,
@@ -43,15 +43,45 @@ export function PublicResearchLinks({
   const [result, setResult] = useState<PublicResearchResult | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [stopped, setStopped] = useState(false);
+  const details = useRef<HTMLDetailsElement | null>(null);
   const flight = useRef<AbortController | null>(null);
   const mounted = useRef(true);
+  const stopLookup = useCallback(() => {
+    const controller = flight.current;
+    if (!controller) return;
+    // Release ownership before aborting: an old response/finally cannot affect a new read.
+    flight.current = null;
+    controller.abort();
+    setLoading(false);
+    setStopped(true);
+  }, []);
+  function visible() {
+    let node: HTMLElement | null = details.current;
+    while (node) {
+      if (node instanceof HTMLDetailsElement && !node.open) return false;
+      node = node.parentElement;
+    }
+    return !!details.current;
+  }
   useEffect(() => {
     mounted.current = true;
+    const ancestors: HTMLDetailsElement[] = [];
+    let node: HTMLElement | null = details.current;
+    while (node) {
+      if (node instanceof HTMLDetailsElement) ancestors.push(node);
+      node = node.parentElement;
+    }
+    const onToggle = () => {
+      if (ancestors.some((node) => !node.open)) stopLookup();
+    };
+    ancestors.forEach((node) => node.addEventListener("toggle", onToggle));
     return () => {
       mounted.current = false;
       flight.current?.abort();
+      ancestors.forEach((node) => node.removeEventListener("toggle", onToggle));
     };
-  }, []);
+  }, [stopLookup]);
   useEffect(() => {
     if (disabled) flight.current?.abort();
   }, [disabled]);
@@ -63,14 +93,16 @@ export function PublicResearchLinks({
     setTopic(value);
     setResult(null);
     setError("");
+    setStopped(false);
   }
   async function lookup() {
-    if (!search || disabled || flight.current) return;
+    if (!search || disabled || flight.current || !visible()) return;
     const controller = new AbortController();
     flight.current = controller;
     setLoading(true);
     setResult(null);
     setError("");
+    setStopped(false);
     try {
       const raw = await studioFetch<unknown>("/api/studio/public-research/search", {
         method: "POST",
@@ -78,10 +110,20 @@ export function PublicResearchLinks({
         signal: controller.signal,
       });
       const value = readPublicResearchResult(raw, search.topic);
-      if (mounted.current && !controller.signal.aborted && flight.current === controller)
+      if (
+        mounted.current &&
+        !controller.signal.aborted &&
+        flight.current === controller &&
+        visible()
+      )
         setResult(value);
     } catch {
-      if (mounted.current && !controller.signal.aborted && flight.current === controller)
+      if (
+        mounted.current &&
+        !controller.signal.aborted &&
+        flight.current === controller &&
+        visible()
+      )
         setError("검색 결과가 미확인입니다. 아래 새 창 검색을 이용하거나 다시 조회해 주세요.");
     } finally {
       if (flight.current === controller) {
@@ -91,7 +133,7 @@ export function PublicResearchLinks({
     }
   }
   return (
-    <details className={styles.details}>
+    <details ref={details} className={styles.details}>
       <summary>공개 통계 찾기 (선택)</summary>
       <div className="mt-3 grid min-w-0 gap-3" aria-label="공개 통계 검색 준비">
         <label className={styles.label}>
@@ -126,6 +168,16 @@ export function PublicResearchLinks({
             >
               {loading ? "공개 검색 후보 조회 중" : "공개 검색 후보 10개 조회"}
             </button>
+            {loading && (
+              <button type="button" className={styles.link} onClick={stopLookup}>
+                검색 대기 중단
+              </button>
+            )}
+            {!disabled && stopped && (
+              <p role="status">
+                검색 결과 대기를 중단했습니다. 다시 조회하려면 조회 버튼을 눌러 주세요.
+              </p>
+            )}
             {!disabled ? (
               <a
                 className={styles.link}

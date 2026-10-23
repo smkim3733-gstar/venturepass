@@ -78,6 +78,8 @@ export function PlanSupplementPanel({
     mounted = useRef(true);
   const current = status?.company ?? company,
     plan = current.plans.at(-1);
+  const sectionMatches = plan?.content.sections.filter((item) => item.key === sectionKey) ?? [];
+  const selectedSection = sectionMatches.length === 1 ? sectionMatches[0] : null;
   const unresolved =
     !!pending ||
     !!status?.active ||
@@ -395,6 +397,33 @@ export function PlanSupplementPanel({
               ))}
             </select>
           </label>
+          {selectedSection ? (
+            <details
+              key={`${current.id}:${current.revision}:${plan.id}:${sectionKey}`}
+              className={styles.details}
+            >
+              <summary>선택한 항목의 현재 원고 읽기</summary>
+              <p className={styles.helper}>
+                원고 v{plan.version} · {selectedSection.title}. 저장된 본문이며, 펼쳐 읽어도
+                수정하거나 확인 완료로 표시하지 않습니다.
+              </p>
+              <p
+                role="region"
+                aria-label="보완할 항목의 저장 원고"
+                tabIndex={0}
+                className="max-h-64 overflow-y-auto whitespace-pre-wrap break-words rounded border p-3 text-base"
+              >
+                {selectedSection.content || "저장된 본문이 없습니다."}
+              </p>
+            </details>
+          ) : (
+            sectionKey && (
+              <p className={styles.helper}>
+                선택한 항목의 저장 원고를 하나로 확인하지 못했습니다. 수정할 항목을 다시 확인해
+                주세요.
+              </p>
+            )
+          )}
           <div
             className="max-h-64 overflow-y-auto rounded border p-3"
             aria-label="보완에 사용할 자료"
@@ -402,26 +431,50 @@ export function PlanSupplementPanel({
             <p className={styles.helper}>
               본문이 준비된 자료 중 최대 6개 · 60,000자. 답변·메모도 자료에서 선택합니다.
             </p>
-            {current.sources.map((source) => {
+            {current.sources.map((source, index) => {
               const usable = source.extraction !== "pending" && !!source.text.trim();
               return (
-                <label key={source.id} className="my-2 flex items-start gap-2 break-all">
-                  <input
-                    type="checkbox"
-                    checked={sourceIds.includes(source.id)}
-                    disabled={!usable}
-                    onChange={(event) => {
-                      invalidate();
-                      setSourceIds((previous) =>
-                        event.target.checked
-                          ? [...previous, source.id]
-                          : previous.filter((id) => id !== source.id),
-                      );
-                    }}
-                  />
-                  {source.name} ·{" "}
-                  {usable ? `${source.text.length.toLocaleString()}자` : "본문 판독·채택 필요"}
-                </label>
+                <div key={`${source.id}:${index}`} className="my-3 min-w-0">
+                  <label className="flex items-start gap-2 break-all">
+                    <input
+                      type="checkbox"
+                      checked={sourceIds.includes(source.id)}
+                      disabled={!usable}
+                      onChange={(event) => {
+                        invalidate();
+                        setSourceIds((previous) =>
+                          event.target.checked
+                            ? [...previous, source.id]
+                            : previous.filter((id) => id !== source.id),
+                        );
+                      }}
+                    />
+                    {source.name} ·{" "}
+                    {usable ? `${source.text.length.toLocaleString()}자` : "본문 판독·채택 필요"}
+                  </label>
+                  {source.originalName && (
+                    <p className={`${styles.helper} break-all`}>{source.originalName}</p>
+                  )}
+                  {usable && (
+                    <details className="mt-2 min-w-0">
+                      <summary className="cursor-pointer py-2 text-sm underline">
+                        보완 자료 본문 읽기
+                      </summary>
+                      <p className={styles.helper}>
+                        현재 저장된 본문입니다. 펼쳐 읽어도 자료 선택이나 전송 동의는 바뀌지
+                        않습니다. 원본 파일과 사실 여부는 별도 확인해 주세요.
+                      </p>
+                      <p
+                        role="region"
+                        aria-label={`보완 자료 ${index + 1} 저장 본문`}
+                        tabIndex={0}
+                        className="max-h-48 overflow-y-auto whitespace-pre-wrap break-words rounded border p-3 text-base"
+                      >
+                        {source.text}
+                      </p>
+                    </details>
+                  )}
+                </div>
               );
             })}
           </div>

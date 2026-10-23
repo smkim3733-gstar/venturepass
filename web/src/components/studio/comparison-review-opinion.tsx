@@ -22,7 +22,7 @@ const noOpinionMessages = {
 } satisfies Record<Exclude<DisplayResult["historical"]["result"]["state"], "comparison-ready">, string>;
 
 /** Receives only the current display accepted by the existing review hook. */
-export function ComparisonReviewOpinion({ result }: { result: DisplayResult | null }) {
+export function ComparisonReviewOpinion({ result, synthetic = false }: { result: DisplayResult | null; synthetic?: boolean }) {
   if (!result) return null;
   const stored = result.historical.result;
   if (stored.state !== "comparison-ready") {
@@ -31,7 +31,7 @@ export function ComparisonReviewOpinion({ result }: { result: DisplayResult | nu
       className="space-y-3 rounded-xl border bg-white p-5 text-sm">
       <h2 className="font-semibold">비교 의견이 없는 저장 결과</h2>
       <p data-testid="stored-state-message">{noOpinionMessages[stored.state]}</p>
-      <p className="text-muted-foreground">합성 자료의 저장 상태입니다. 자동으로 다시 요청하지 않습니다.</p>
+      <p className="text-muted-foreground">{synthetic ? "합성 자료의 저장 상태입니다. " : "보관된 응답의 상태입니다. "}자동으로 다시 요청하지 않습니다.</p>
     </div>;
   }
   const { prepared } = result.historical;
@@ -45,7 +45,7 @@ export function ComparisonReviewOpinion({ result }: { result: DisplayResult | nu
   return <div data-testid="example-result" className="space-y-5 rounded-xl border border-primary/20 bg-white p-5">
     <div>
       <h2 className="font-semibold">저장된 검토 의견</h2>
-      <p className="mt-1 text-sm text-muted-foreground">합성 자료로 만든 의견입니다. 실제 AI 분석이나 사실 확인 결과가 아닙니다.</p>
+      <p className="mt-1 text-sm text-muted-foreground">{synthetic ? "합성 자료로 만든 의견입니다. 실제 AI 분석이나 사실 확인 결과가 아닙니다." : "제공된 응답과 수동 입력 근거에 대한 보관 의견입니다. 실제 AI 실행이나 사실 확인을 인증하지 않습니다."}</p>
     </div>
     <div className="space-y-2 text-sm">
       <p className="whitespace-pre-wrap break-words">검토한 주장: {opinion.claimQuote}</p>

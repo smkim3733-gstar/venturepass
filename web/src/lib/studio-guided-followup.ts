@@ -11,6 +11,11 @@ import {
 import { isAgencyNoticeRecord, type AgencyNoticeRecord } from "./studio-agency-records";
 import { applicationMetadata, currentApplicationLinks } from "./studio-application-types";
 import type { StudioCase } from "./studio-schema";
+import {
+  guidedProcedureDeadline,
+  type GuidedProcedureDeadline,
+  type GuidedProcedureDeadlines,
+} from "./studio-guided-procedure-deadlines";
 
 type TargetContext = { caseId: string; companyRevision: number };
 /** Navigation only. Never approves a mutation, an official action, or a newer record version. */
@@ -37,6 +42,10 @@ export type GuidedFollowupItem = {
   version: number | null;
   provenance: "manual";
   actionLabel: string | null;
+  procedureDeadline?: GuidedProcedureDeadline & {
+    originalDueOn: string | null;
+    originalDueNote: string;
+  };
 };
 export type GuidedFollowupSummary = {
   state: "none" | "action-required" | "waiting";
@@ -50,7 +59,10 @@ export type GuidedFollowupSummary = {
   lastCheckedAt: null;
   provenance: "manual" | "none";
 };
-export type GuidedFollowupOptions = { today?: string };
+export type GuidedFollowupOptions = {
+  today?: string;
+  procedureDeadlines?: GuidedProcedureDeadlines;
+};
 
 function date(value: string | undefined): string | null {
   if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
@@ -171,6 +183,12 @@ export function deriveGuidedFollowup(
   const add = (item: Omit<GuidedFollowupItem, "provenance" | "deadlineStatus">) =>
     items.push({ ...item, provenance: "manual", deadlineStatus: deadline(item.dueOn, today) });
   for (const { root, latest, response } of requests) {
+    const procedure = guidedProcedureDeadline(
+      company,
+      root.id,
+      latest.id,
+      options.procedureDeadlines,
+    );
     const sent =
       response?.responseStatus === "reported-sent" && response.requestVersionId === latest.id;
     add({
@@ -185,8 +203,26 @@ export function deriveGuidedFollowup(
       description: sent
         ? "최신 요청에 답변을 발송했다고 기록했습니다. 기관 수신·검토 결과는 아직 확인되지 않았습니다."
         : "최신 요청 원문과 기한을 확인하고 답변을 준비해 주세요. 이전 버전의 발송 기록은 새 요청의 답변이 아닙니다.",
-      dueOn: date(latest.dueOn),
-      dueNote: latest.dueNote,
+      dueOn:
+        procedure?.state === "pending"
+          ? null
+          : procedure?.state === "current"
+            ? date(procedure.dueOn ?? undefined)
+            : date(latest.dueOn),
+      dueNote:
+        procedure?.state === "current" &&
+        (procedure.record?.dueOn || procedure.record?.extendedDueOn)
+          ? "절차에 기록한 수동 기한"
+          : latest.dueNote,
+      ...(procedure
+        ? {
+            procedureDeadline: {
+              ...procedure,
+              originalDueOn: date(latest.dueOn),
+              originalDueNote: latest.dueNote,
+            },
+          }
+        : {}),
       recordedAt: recordedAt(response?.recordedAt ?? latest.recordedAt),
       version: latest.version,
       actionLabel: sent ? null : "답변 준비하기",

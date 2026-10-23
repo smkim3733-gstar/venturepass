@@ -194,6 +194,14 @@ export function ResponsePreparationEvidence({ record }: { record: ResponsePrepar
   );
 }
 
+function FieldError({ id, error }: { id: string; error?: string }) {
+  return error ? (
+    <p id={`${id}-error`} className="text-sm text-destructive">
+      {error}
+    </p>
+  ) : null;
+}
+
 function Field({
   id,
   label,
@@ -201,6 +209,7 @@ function Field({
   max = 2000,
   onChange,
   describedBy,
+  error,
 }: {
   id: string;
   label: string;
@@ -208,6 +217,7 @@ function Field({
   max?: number;
   onChange: (value: string) => void;
   describedBy?: string;
+  error?: string;
 }) {
   return (
     <div className="space-y-2">
@@ -216,9 +226,13 @@ function Field({
         id={id}
         value={value}
         maxLength={max}
-        aria-describedby={describedBy}
+        aria-invalid={error ? true : undefined}
+        aria-describedby={
+          [describedBy, error && `${id}-error`].filter(Boolean).join(" ") || undefined
+        }
         onChange={(event) => onChange(event.target.value)}
       />
+      <FieldError id={id} error={error} />
     </div>
   );
 }
@@ -234,6 +248,7 @@ export function ResponseItemEditor({
   onSuggestionBusyChange = () => {},
   onSuggestionApply,
   suggestionContextFingerprint,
+  validation,
 }: {
   company: StudioCase;
   request: AgencyRequestRecord;
@@ -245,8 +260,11 @@ export function ResponseItemEditor({
   onSuggestionBusyChange?: (busy: boolean) => void;
   onSuggestionApply?: (item: ResponsePreparationItem) => string | null;
   suggestionContextFingerprint?: string;
+  validation?: { fieldId: string | null; message: string };
 }) {
   const id = `response-item-${item.id}`;
+  const fieldError = (suffix: string) =>
+    validation?.fieldId === `${id}-${suffix}` ? validation.message : undefined;
   const plans = company.plans.filter((entry) => entry.id === item.planClaim?.planId);
   const plan = plans.length === 1 ? plans[0] : undefined;
   const sections =
@@ -267,6 +285,7 @@ export function ResponseItemEditor({
         value={item.requestQuote}
         max={1500}
         describedBy={`${id}-request-match ${id}-request-comparison-note`}
+        error={fieldError("request")}
         onChange={(requestQuote) => onChange({ ...item, requestQuote })}
       />
       <p id={`${id}-request-match`} role="status" className="text-xs leading-6">
@@ -311,8 +330,11 @@ export function ResponseItemEditor({
           id={`${id}-summary`}
           value={item.summary}
           maxLength={200}
+          aria-invalid={fieldError("summary") ? true : undefined}
+          aria-describedby={fieldError("summary") ? `${id}-summary-error` : undefined}
           onChange={(event) => onChange({ ...item, summary: event.target.value })}
         />
+        <FieldError id={`${id}-summary`} error={fieldError("summary")} />
       </div>
       <div className="space-y-2">
         <Label htmlFor={`${id}-plan`}>관련 원고 버전 (선택)</Label>
@@ -320,6 +342,8 @@ export function ResponseItemEditor({
           id={`${id}-plan`}
           className={selectClass}
           value={item.planClaim?.planId ?? ""}
+          aria-invalid={fieldError("plan") ? true : undefined}
+          aria-describedby={fieldError("plan") ? `${id}-plan-error` : undefined}
           onChange={(event) => {
             if (
               (item.planClaim?.sectionKey || item.planClaim?.quote) &&
@@ -341,6 +365,7 @@ export function ResponseItemEditor({
             </option>
           ))}
         </select>
+        <FieldError id={`${id}-plan`} error={fieldError("plan")} />
       </div>
       {item.planClaim && (
         <div className="space-y-3 rounded-lg border p-3">
@@ -349,6 +374,8 @@ export function ResponseItemEditor({
             id={`${id}-section`}
             className={selectClass}
             value={item.planClaim.sectionKey}
+            aria-invalid={fieldError("section") ? true : undefined}
+            aria-describedby={fieldError("section") ? `${id}-section-error` : undefined}
             onChange={(event) => {
               if (
                 item.planClaim?.quote &&
@@ -368,6 +395,7 @@ export function ResponseItemEditor({
               </option>
             ))}
           </select>
+          <FieldError id={`${id}-section`} error={fieldError("section")} />
           {item.planClaim.planId && !plan ? (
             <p role="alert" className="text-xs leading-6 text-amber-900">
               연결한 원고 버전을 하나로 확인할 수 없어 본문을 표시하지 않습니다. 원고 버전을 다시
@@ -393,6 +421,7 @@ export function ResponseItemEditor({
             label="해당 원고 부분 그대로 인용 *"
             value={item.planClaim.quote}
             max={1500}
+            error={fieldError("plan-quote")}
             onChange={(quote) => onChange({ ...item, planClaim: { ...item.planClaim!, quote } })}
           />
         </div>
@@ -412,6 +441,7 @@ export function ResponseItemEditor({
         id={`${id}-gap`}
         label="부족한 자료와 확보할 이유"
         value={item.gap}
+        error={fieldError("gap")}
         onChange={(gap) => onChange({ ...item, gap })}
       />
       <Button
@@ -436,6 +466,7 @@ export function ResponseItemEditor({
         label="담당자가 검토할 답변 초안"
         value={item.draft}
         max={responsePreparationLimits.body}
+        error={fieldError("draft")}
         onChange={(draft) => onChange({ ...item, draft })}
       />
       <Button
@@ -654,11 +685,27 @@ export function ResponsePreparations({
   const [saving, setSaving] = useState(false);
   const [suggestionBusy, setSuggestionBusy] = useState(false);
   const [error, setError] = useState("");
+  const [validationFocus, setValidationFocus] = useState<{
+    fieldId: string | null;
+    binding: string;
+  } | null>(null);
+  const panelRef = useRef<HTMLElement>(null);
+  const errorRef = useRef<HTMLParagraphElement>(null);
   const pending = useRef(false);
   const mounted = useRef(false);
   const registrations = useRef(new Map<string, string>());
   const binding = `${company.id}:${company.revision}`;
   const context = useRef(binding);
+  useEffect(() => {
+    if (!validationFocus || validationFocus.binding !== binding) return;
+    const matches = Array.from(
+      panelRef.current?.querySelectorAll<HTMLElement>("[id]") ?? [],
+    ).filter((element) => element.id === validationFocus.fieldId);
+    const target = matches.length === 1 ? matches[0] : errorRef.current;
+    if (!target || target.matches(":disabled")) return;
+    target.scrollIntoView({ block: "center" });
+    target.focus({ preventScroll: true });
+  }, [validationFocus, binding]);
   useEffect(() => {
     if (!guidedFocus) return;
     const element = document.getElementById(guidedFocus);
@@ -709,22 +756,30 @@ export function ResponsePreparations({
       request: structuredClone(request),
     });
     setError("");
+    setValidationFocus(null);
   }
   function edit(input: ResponsePreparationInput) {
-    if (form && !blocked) setForm({ ...form, input, nonce: crypto.randomUUID() });
+    if (form && !blocked) {
+      setForm({ ...form, input, nonce: crypto.randomUUID() });
+      setValidationFocus(null);
+    }
   }
   async function save() {
     if (!form || blocked || pending.current) return;
     if (form.binding !== binding) {
+      setValidationFocus(null);
       setError("기업 기록이 변경되었습니다. 최신 요청과 자료를 다시 확인해 주세요.");
       return;
     }
     const parsed = responsePreparationInputSchema.safeParse(form.input);
     if (!parsed.success) {
       const path = parsed.error.issues[0]?.path ?? [];
+      let fieldId: string | null = null;
       let message = "답변 준비안의 필수 항목과 입력 형식을 확인해 주세요.";
-      if (path[0] === "title") message = "답변 준비안 제목을 1~300자로 입력해 주세요.";
-      else if (path[0] === "items" && typeof path[1] === "number") {
+      if (path[0] === "title") {
+        message = "답변 준비안 제목을 1~300자로 입력해 주세요.";
+        fieldId = "response-preparation-title";
+      } else if (path[0] === "items" && typeof path[1] === "number") {
         const fields: Record<string, string> = {
           requestQuote: "요청 원문 인용을 1~1,500자로 입력해 주세요.",
           summary: "담당자 요약을 1~200자로 입력해 주세요.",
@@ -743,14 +798,32 @@ export function ResponsePreparations({
               ? "근거 자료의 연결·인용·위치와 입력 한도를 확인해 주세요."
               : (fields[String(path[2])] ?? "필수 항목과 입력 형식을 확인해 주세요.");
         message = `대응 항목 ${path[1] + 1} · ${detail}`;
+        const item = form.input.items[path[1]];
+        const suffixes: Record<string, string> = {
+          requestQuote: "request",
+          summary: "summary",
+          gap: "gap",
+          draft: "draft",
+        };
+        const planSuffixes: Record<string, string> = {
+          planId: "plan",
+          sectionKey: "section",
+          quote: "plan-quote",
+        };
+        const suffix =
+          path[2] === "planClaim" ? planSuffixes[String(path[3])] : suffixes[String(path[2])];
+        if (item && suffix && form.input.items.filter((entry) => entry.id === item.id).length === 1)
+          fieldId = `response-item-${item.id}-${suffix}`;
       } else if (path[0] === "items")
         message = "대응 항목을 1~10개로 구성하고 중복 항목이 없는지 확인해 주세요.";
       setError(message);
+      setValidationFocus({ fieldId, binding });
       return;
     }
     pending.current = true;
     setSaving(true);
     setError("");
+    setValidationFocus(null);
     try {
       const saved = await mutate({
         action: "append-response-preparation",
@@ -783,6 +856,7 @@ export function ResponsePreparations({
     pending.current = true;
     setSaving(true);
     setError("");
+    setValidationFocus(null);
     try {
       const saved = await mutate({
         action: "register-prepared-response",
@@ -808,7 +882,11 @@ export function ResponsePreparations({
     }
   }
   return (
-    <section aria-label="보완 답변 작성 보조" className="my-7 space-y-4 rounded-2xl border p-5">
+    <section
+      ref={panelRef}
+      aria-label="보완 답변 작성 보조"
+      className="my-7 space-y-4 rounded-2xl border p-5"
+    >
       <h3 className="font-bold">보완 답변 작성 보조</h3>
       <p className="text-sm leading-6 text-muted-foreground">
         요청의 정확한 부분과 원고·자료를 연결해 답변 틀을 만들고 수정 전후를 비교합니다. 로컬 제안이
@@ -897,7 +975,28 @@ export function ResponsePreparations({
               id="response-preparation-title"
               value={form.input.title}
               maxLength={300}
+              aria-invalid={
+                validationFocus?.binding === binding &&
+                validationFocus.fieldId === "response-preparation-title"
+                  ? true
+                  : undefined
+              }
+              aria-describedby={
+                validationFocus?.binding === binding &&
+                validationFocus.fieldId === "response-preparation-title"
+                  ? "response-preparation-title-error"
+                  : undefined
+              }
               onChange={(event) => edit({ ...form.input, title: event.target.value })}
+            />
+            <FieldError
+              id="response-preparation-title"
+              error={
+                validationFocus?.binding === binding &&
+                validationFocus.fieldId === "response-preparation-title"
+                  ? error
+                  : undefined
+              }
             />
           </div>
           {form.input.items.map((item, index) => (
@@ -908,6 +1007,11 @@ export function ResponsePreparations({
               item={item}
               index={index}
               disabled={blocked || form.binding !== binding}
+              validation={
+                validationFocus?.binding === binding
+                  ? { fieldId: validationFocus.fieldId, message: error }
+                  : undefined
+              }
               suggestionContextFingerprint={responseSuggestionContext(company, form.input)}
               onSuggestionBusyChange={(value) => {
                 setSuggestionBusy(value);
@@ -962,6 +1066,7 @@ export function ResponsePreparations({
                 if (!dirty || window.confirm("작성 중인 답변 준비를 취소할까요?")) {
                   setForm(null);
                   setError("");
+                  setValidationFocus(null);
                 }
               }}
             >
@@ -971,7 +1076,7 @@ export function ResponsePreparations({
         </fieldset>
       )}
       {error && (
-        <p role="alert" className="text-sm text-destructive">
+        <p ref={errorRef} role="alert" tabIndex={-1} className="text-sm text-destructive">
           {error}
         </p>
       )}

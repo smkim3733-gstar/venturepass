@@ -76,11 +76,13 @@ import {
   type GuidedReviewTarget,
 } from "./guided-plan-review";
 import { PlanComparison } from "./plan-comparison";
+import { PlanClaimSummary } from "./plan-claim-summary";
 import { GuidedPlanChecklists, GuidedPlanHistory } from "./guided-plan-history";
 import { GuidedPlanEvidence } from "./guided-plan-evidence";
 import { GuidedVentureConnection } from "./guided-venture-connection";
 import { GuidedApplicationHistory } from "./guided-application-history";
 import { GuidedFollowupStatus } from "./guided-followup-status";
+import { useGuidedProcedureDeadlines } from "./use-guided-procedure-deadlines";
 import { useLocalDay } from "./case-attention";
 import type { GuidedWorkflowTarget } from "@/lib/studio-guided-followup";
 import { jsonBody, studioFetch, useDirty, type StudioMutation } from "./shared";
@@ -129,7 +131,12 @@ export function GuidedWorkspace({
   useFileDropNavigationGuard();
   const [currentApproval, setCurrentApproval] = useState<GuidedPreparationApproval | null>(null);
   const today = useLocalDay();
-  const flow = deriveGuidedFlow(company, { guidedApproval: currentApproval ?? undefined, today });
+  const procedureDeadlines = useGuidedProcedureDeadlines(company);
+  const flow = deriveGuidedFlow(company, {
+    guidedApproval: currentApproval ?? undefined,
+    today,
+    procedureDeadlines,
+  });
   const [step, setStep] = useState<GuidedStep>(flow.step);
   const [describing, setDescribing] = useState(false);
   const [description, setDescription] = useState(company.profile.technologySummary);
@@ -1774,6 +1781,11 @@ export function GuidedWorkspace({
                     함께 확인해 주세요. 필요한 항목만 고치거나 보완할 수 있습니다.
                   </p>
                 )}
+                <PlanClaimSummary
+                  company={company}
+                  plan={latestPlan}
+                  blocked={locked || editingDirty || existingRunUnknown}
+                />
                 <div className={styles.actions}>
                   <button
                     type="button"

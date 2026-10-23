@@ -12,6 +12,7 @@ import type { VentureScreenField } from "@/lib/venturein-inspection";
 import {
   ventureFieldSupport,
   ventureFinancialContext,
+  type VenturePreflightIssue,
   type VentureSubmissionDraft,
   type VentureTextSource,
 } from "@/lib/venturein-preflight";
@@ -24,6 +25,7 @@ import { VentureinDisclosure } from "./venturein-disclosure";
 import { VentureinMyStatusPanel } from "./venturein-my-status-panel";
 import { VentureinGuidedEntry } from "./venturein-guided-entry";
 import type { VentureOverview } from "@/lib/venturein-overview-types";
+import { ventureIssueFieldTarget } from "./venturein-issue-navigation";
 
 const profileLabels: Record<keyof CompanyProfile, string> = {
   companyName: "기업명",
@@ -181,6 +183,7 @@ export function VentureinWorkflowPanel({
   executionBlocked = false,
   onDirtyChange,
 }: Props) {
+  const root = useRef<HTMLDivElement>(null);
   const [workflow, setWorkflow] = useState<VentureWorkflowStatus | null>(null);
   const [draft, setDraft] = useState<VentureSubmissionDraft | null>(null);
   const [dirty, setDirty] = useState(false);
@@ -393,6 +396,41 @@ export function VentureinWorkflowPanel({
   const textFields = fields.filter((field) => ventureFieldSupport(field) === "text");
   const fileFields = fields.filter((field) => ventureFieldSupport(field) === "file");
   const unsupportedFields = fields.filter((field) => ventureFieldSupport(field) === "unsupported");
+  const issueNavigationBlocked =
+    !canEdit ||
+    !!busy ||
+    executionBusy ||
+    executionBlocked ||
+    snapshot?.caseId !== company.id ||
+    workflow?.report.caseId !== company.id ||
+    workflow.report.snapshotId !== screen?.id;
+
+  function issueLink(issue: VenturePreflightIssue) {
+    const target = ventureIssueFieldTarget(fields, issue.fieldKey);
+    if (!target) return null;
+    return (
+      <Button
+        type="button"
+        variant="outline"
+        className="mt-2 h-auto min-h-11 max-w-full whitespace-normal text-left"
+        disabled={issueNavigationBlocked}
+        onClick={() => {
+          if (issueNavigationBlocked) return;
+          const current = ventureIssueFieldTarget(fields, issue.fieldKey);
+          const input = current && root.current?.querySelector<HTMLSelectElement>(`#${current.id}`);
+          if (!input || input.matches(":disabled")) return;
+          for (let parent = input.parentElement; parent; parent = parent.parentElement) {
+            if (parent instanceof HTMLDetailsElement) parent.open = true;
+            if (parent === root.current) break;
+          }
+          input.focus({ preventScroll: true });
+          input.scrollIntoView({ block: "center", behavior: "instant" });
+        }}
+      >
+        {target.label} 연결 항목 확인
+      </Button>
+    );
+  }
   const mappingPlan = editableDraft?.planId
     ? company.plans.find((plan) => plan.id === editableDraft.planId)
     : latestPlan;
@@ -440,7 +478,7 @@ export function VentureinWorkflowPanel({
   }
 
   return (
-    <div aria-label="신청서와 첨부자료 연결" className="space-y-5">
+    <div ref={root} aria-label="신청서와 첨부자료 연결" className="space-y-5">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h3 className="text-base font-bold">신청기업 확인부터 제출 전 점검까지</h3>
         <Button
@@ -482,11 +520,17 @@ export function VentureinWorkflowPanel({
             />
           )}
           <Notice>
-            공식 화면에서 읽은 항목을 확인합니다. 입력 가능한 항목이 있는 경우 원고와 첨부 원본을
-            이 PC에서 연결해 제출 전 점검과 검토용 다운로드에 사용할 수 있습니다.
+            공식 화면에서 읽은 항목을 확인합니다. 입력 가능한 항목이 있는 경우 원고와 첨부 원본을 이
+            PC에서 연결해 제출 전 점검과 검토용 다운로드에 사용할 수 있습니다.
           </Notice>
-          <VentureinMyStatusPanel company={company} connection={connection} workflow={workflow}
-            blocked={executionBlocked || dirty || !!busy || executionBusy || !!error || !!requestError} />
+          <VentureinMyStatusPanel
+            company={company}
+            connection={connection}
+            workflow={workflow}
+            blocked={
+              executionBlocked || dirty || !!busy || executionBusy || !!error || !!requestError
+            }
+          />
           <VentureinJourneyPanel
             journey={workflow.journey}
             currentSnapshotId={screen?.id ?? null}
@@ -911,7 +955,8 @@ export function VentureinWorkflowPanel({
                         key={`${issue.code}:${index}`}
                         className="rounded-lg bg-destructive/5 p-2"
                       >
-                        {issue.message}
+                        <p>{issue.message}</p>
+                        {issueLink(issue)}
                       </li>
                     ))}
                   </ul>
@@ -945,6 +990,11 @@ export function VentureinWorkflowPanel({
               필요합니다.
             </p>
             <h4 className="font-semibold">전체 제출 전 점검 결과</h4>
+            <p className="text-xs leading-6 text-muted-foreground">
+              연결 항목 확인을 누르면 해당 선택칸으로 이동합니다. 미저장 선택은 유지하며 연결
+              저장·확인 표시·기관 입력은 실행하지 않습니다.
+              {issueNavigationBlocked && " 현재 연결과 점검 결과를 확인한 뒤 이동할 수 있습니다."}
+            </p>
             <ul className="space-y-2 text-sm leading-6">
               {workflow.report.issues.map((issue, index) => (
                 <li
@@ -957,6 +1007,7 @@ export function VentureinWorkflowPanel({
                     {issue.severity === "error" ? "보완" : "안내"}
                   </span>
                   {issue.message}
+                  <div>{issueLink(issue)}</div>
                 </li>
               ))}
             </ul>

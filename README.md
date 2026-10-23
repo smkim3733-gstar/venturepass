@@ -2,16 +2,24 @@
 
 벤처기업확인 **혁신성장유형 전용** 신청 준비 앱입니다. 회사 자료를 모아 아이템 분석, 사업계획서 작성·검토, 증빙 관리, 신청 진행 관리로 연결합니다.
 
+## Claude에서 개발 이어가기 — 2026-10-23
+
+최신 공개 개발본은 **`claude/continue-development`**입니다. [Claude 시작 안내](기획/개발환경인계/2026_10_23_Claude_이어가기.md)에 현황·실행·검증 방법과 다음 작업을 정리했습니다. 루트 `CLAUDE.md`가 지침을 불러옵니다. Windows의 `Start-Claude.ps1`로 프로젝트에서 Claude Code를 실행할 수 있습니다.
+
+고객 원본·보고서·DB·키와 고객별 작업 기록은 제외했습니다. [합성 행사 시연](examples/scheduling-simulation)은 별도 예제이며 실제 계약·납품·실증이나 전체 완료를 뜻하지 않습니다. 제품은 **15/20(75%)**이며 아래 10월13~14일 인계는 과거 기록입니다.
+
+2026-10-14 새 PC에서 개발 환경 복원과 연속 개발을 재개했습니다. [현재 구조·개발 상태·실행 및 검증 기록](기획/개발환경인계/20261014_새PC_연속개발.md)을 참고하세요.
+
 ## 다른 PC에서 개발 이어가기 (2026-10-13)
 
-최신 개발은 **codex/continue-development** 브랜치입니다. [새 PC 시작·개발 인계](기획/개발환경인계/20261013_다른PC에서_이어가기.md)를 먼저 읽어 주세요. 소스·기획·보존 변경과 상위 폴더의 인계 기록을 포함하며, 실제 키·고객 자료·운영 DB·임시 빌드는 포함하지 않습니다.
+당시 개발은 **codex/continue-development** 브랜치였습니다. 현재는 위 Claude 인계 브랜치를 사용합니다. [새 PC 시작·개발 인계](기획/개발환경인계/20261013_다른PC에서_이어가기.md)를 먼저 읽어 주세요. 소스·기획·보존 변경과 상위 폴더의 인계 기록을 포함하며, 실제 키·고객 자료·운영 DB·임시 빌드는 포함하지 않습니다.
 
 ## 시작하기
 
 Node.js 24와 pnpm 11.19.0을 사용합니다.
 
 ```sh
-git clone --branch codex/continue-development https://github.com/smkim3733-gstar/venturepass.git
+git clone --branch claude/continue-development https://github.com/smkim3733-gstar/venturepass.git
 cd venturepass/web
 pnpm install --frozen-lockfile
 pnpm dev

@@ -1,5 +1,6 @@
 import OpenAI, { toFile } from "openai";
 import { getAiStatus } from "@/lib/studio-engine";
+import { extractDocxText } from "./studio-docx-text";
 import {
   normalizeSourceLocations,
   pageSourceLocationSegments,
@@ -256,8 +257,7 @@ export async function extractSource(
     }
     if (extension === ".docx") {
       validateOfficeArchive(buffer);
-      const mammoth = await import("mammoth");
-      const result = await mammoth.extractRawText({ buffer });
+      const result = await extractDocxText(buffer);
       return finish(result.value, "local", [
         "Word 본문에서 텍스트를 추출했습니다. 이미지·도표·문서 배치는 원본을 확인해 주세요.",
         ...result.messages

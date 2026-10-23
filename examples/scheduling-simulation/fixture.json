@@ -1,0 +1,787 @@
+{
+  "schema": "synthetic-scheduling-fixture-v1",
+  "createdOn": "2026-10-23",
+  "classification": "synthetic",
+  "note": "공개 개발 예제용 합성 입력. 모든 인물·기업·행사 ID는 가상이며 실제 실적이나 고객 자료가 아니다.",
+  "event": {
+    "id": "DEMO-01",
+    "date": null,
+    "timezone": "Asia/Seoul",
+    "start": "09:00",
+    "end": "12:00"
+  },
+  "rules": {
+    "durationMinutes": 20,
+    "interpreterBufferMinutes": 10,
+    "windowSemantics": "start-inclusive/end-exclusive",
+    "hard": [
+      "동일 시간 통역사·바이어·참가기업·공간 중복 금지",
+      "요청 언어 충족",
+      "자원 가용시간·행사시간 내 배치",
+      "통역사 연속 상담 간 10분 간격"
+    ],
+    "soft": [
+      "변경 영향 밖 기존 배치 유지",
+      "변경 건수와 이동 시간 제시"
+    ],
+    "proposalOnly": true,
+    "requiresOperatorConfirmation": true
+  },
+  "interpreters": [
+    {
+      "id": "I01",
+      "languages": [
+        "en"
+      ],
+      "available": [
+        {
+          "start": "09:00",
+          "end": "12:00"
+        }
+      ]
+    },
+    {
+      "id": "I02",
+      "languages": [
+        "ja"
+      ],
+      "available": [
+        {
+          "start": "09:00",
+          "end": "12:00"
+        }
+      ]
+    },
+    {
+      "id": "I03",
+      "languages": [
+        "en",
+        "ja"
+      ],
+      "available": [
+        {
+          "start": "09:00",
+          "end": "12:00"
+        }
+      ]
+    },
+    {
+      "id": "I04",
+      "languages": [
+        "zh"
+      ],
+      "available": [
+        {
+          "start": "09:00",
+          "end": "12:00"
+        }
+      ]
+    }
+  ],
+  "rooms": [
+    {
+      "id": "R01",
+      "available": [
+        {
+          "start": "09:00",
+          "end": "12:00"
+        }
+      ]
+    },
+    {
+      "id": "R02",
+      "available": [
+        {
+          "start": "09:00",
+          "end": "12:00"
+        }
+      ]
+    },
+    {
+      "id": "R03",
+      "available": [
+        {
+          "start": "09:00",
+          "end": "12:00"
+        }
+      ]
+    },
+    {
+      "id": "R04",
+      "available": [
+        {
+          "start": "09:00",
+          "end": "12:00"
+        }
+      ]
+    },
+    {
+      "id": "R05",
+      "available": [
+        {
+          "start": "09:00",
+          "end": "12:00"
+        }
+      ]
+    }
+  ],
+  "buyers": [
+    {
+      "id": "B01",
+      "available": [
+        {
+          "start": "09:00",
+          "end": "12:00"
+        }
+      ]
+    },
+    {
+      "id": "B02",
+      "available": [
+        {
+          "start": "09:00",
+          "end": "12:00"
+        }
+      ]
+    },
+    {
+      "id": "B03",
+      "available": [
+        {
+          "start": "09:00",
+          "end": "12:00"
+        }
+      ]
+    },
+    {
+      "id": "B04",
+      "available": [
+        {
+          "start": "09:00",
+          "end": "12:00"
+        }
+      ]
+    },
+    {
+      "id": "B05",
+      "available": [
+        {
+          "start": "09:00",
+          "end": "12:00"
+        }
+      ]
+    },
+    {
+      "id": "B06",
+      "available": [
+        {
+          "start": "09:00",
+          "end": "12:00"
+        }
+      ]
+    },
+    {
+      "id": "B07",
+      "available": [
+        {
+          "start": "09:00",
+          "end": "12:00"
+        }
+      ]
+    },
+    {
+      "id": "B08",
+      "available": [
+        {
+          "start": "09:00",
+          "end": "12:00"
+        }
+      ]
+    },
+    {
+      "id": "B09",
+      "available": [
+        {
+          "start": "09:00",
+          "end": "12:00"
+        }
+      ]
+    },
+    {
+      "id": "B10",
+      "available": [
+        {
+          "start": "09:00",
+          "end": "12:00"
+        }
+      ]
+    },
+    {
+      "id": "B11",
+      "available": [
+        {
+          "start": "09:00",
+          "end": "12:00"
+        }
+      ]
+    },
+    {
+      "id": "B12",
+      "available": [
+        {
+          "start": "09:00",
+          "end": "12:00"
+        }
+      ]
+    },
+    {
+      "id": "B13",
+      "available": [
+        {
+          "start": "09:00",
+          "end": "12:00"
+        }
+      ]
+    },
+    {
+      "id": "B14",
+      "available": [
+        {
+          "start": "09:00",
+          "end": "12:00"
+        }
+      ]
+    },
+    {
+      "id": "B15",
+      "available": [
+        {
+          "start": "09:00",
+          "end": "12:00"
+        }
+      ]
+    },
+    {
+      "id": "B16",
+      "available": [
+        {
+          "start": "09:00",
+          "end": "12:00"
+        }
+      ]
+    },
+    {
+      "id": "B17",
+      "available": [
+        {
+          "start": "09:00",
+          "end": "12:00"
+        }
+      ]
+    },
+    {
+      "id": "B18",
+      "available": [
+        {
+          "start": "09:00",
+          "end": "12:00"
+        }
+      ]
+    },
+    {
+      "id": "B19",
+      "available": [
+        {
+          "start": "09:00",
+          "end": "12:00"
+        }
+      ]
+    },
+    {
+      "id": "B20",
+      "available": [
+        {
+          "start": "09:00",
+          "end": "12:00"
+        }
+      ]
+    }
+  ],
+  "exhibitors": [
+    {
+      "id": "E01",
+      "available": [
+        {
+          "start": "09:00",
+          "end": "12:00"
+        }
+      ]
+    },
+    {
+      "id": "E02",
+      "available": [
+        {
+          "start": "09:00",
+          "end": "12:00"
+        }
+      ]
+    },
+    {
+      "id": "E03",
+      "available": [
+        {
+          "start": "09:00",
+          "end": "12:00"
+        }
+      ]
+    },
+    {
+      "id": "E04",
+      "available": [
+        {
+          "start": "09:00",
+          "end": "12:00"
+        }
+      ]
+    },
+    {
+      "id": "E05",
+      "available": [
+        {
+          "start": "09:00",
+          "end": "12:00"
+        }
+      ]
+    },
+    {
+      "id": "E06",
+      "available": [
+        {
+          "start": "09:00",
+          "end": "12:00"
+        }
+      ]
+    },
+    {
+      "id": "E07",
+      "available": [
+        {
+          "start": "09:00",
+          "end": "12:00"
+        }
+      ]
+    },
+    {
+      "id": "E08",
+      "available": [
+        {
+          "start": "09:00",
+          "end": "12:00"
+        }
+      ]
+    },
+    {
+      "id": "E09",
+      "available": [
+        {
+          "start": "09:00",
+          "end": "12:00"
+        }
+      ]
+    },
+    {
+      "id": "E10",
+      "available": [
+        {
+          "start": "09:00",
+          "end": "12:00"
+        }
+      ]
+    },
+    {
+      "id": "E11",
+      "available": [
+        {
+          "start": "09:00",
+          "end": "12:00"
+        }
+      ]
+    },
+    {
+      "id": "E12",
+      "available": [
+        {
+          "start": "09:00",
+          "end": "12:00"
+        }
+      ]
+    },
+    {
+      "id": "E13",
+      "available": [
+        {
+          "start": "09:00",
+          "end": "12:00"
+        }
+      ]
+    },
+    {
+      "id": "E14",
+      "available": [
+        {
+          "start": "09:00",
+          "end": "12:00"
+        }
+      ]
+    },
+    {
+      "id": "E15",
+      "available": [
+        {
+          "start": "09:00",
+          "end": "12:00"
+        }
+      ]
+    },
+    {
+      "id": "E16",
+      "available": [
+        {
+          "start": "09:00",
+          "end": "12:00"
+        }
+      ]
+    },
+    {
+      "id": "E17",
+      "available": [
+        {
+          "start": "09:00",
+          "end": "12:00"
+        }
+      ]
+    },
+    {
+      "id": "E18",
+      "available": [
+        {
+          "start": "09:00",
+          "end": "12:00"
+        }
+      ]
+    },
+    {
+      "id": "E19",
+      "available": [
+        {
+          "start": "09:00",
+          "end": "12:00"
+        }
+      ]
+    },
+    {
+      "id": "E20",
+      "available": [
+        {
+          "start": "09:00",
+          "end": "12:00"
+        }
+      ]
+    }
+  ],
+  "sessions": [
+    {
+      "id": "S01",
+      "buyerId": "B01",
+      "exhibitorId": "E01",
+      "language": "en",
+      "interpreterId": "I01",
+      "roomId": "R01",
+      "start": "09:00",
+      "end": "09:20"
+    },
+    {
+      "id": "S02",
+      "buyerId": "B02",
+      "exhibitorId": "E02",
+      "language": "ja",
+      "interpreterId": "I02",
+      "roomId": "R02",
+      "start": "09:00",
+      "end": "09:20"
+    },
+    {
+      "id": "S03",
+      "buyerId": "B03",
+      "exhibitorId": "E03",
+      "language": "en",
+      "interpreterId": "I03",
+      "roomId": "R03",
+      "start": "09:00",
+      "end": "09:20"
+    },
+    {
+      "id": "S04",
+      "buyerId": "B04",
+      "exhibitorId": "E04",
+      "language": "zh",
+      "interpreterId": "I04",
+      "roomId": "R04",
+      "start": "09:00",
+      "end": "09:20"
+    },
+    {
+      "id": "S05",
+      "buyerId": "B05",
+      "exhibitorId": "E05",
+      "language": "en",
+      "interpreterId": "I01",
+      "roomId": "R01",
+      "start": "09:30",
+      "end": "09:50"
+    },
+    {
+      "id": "S06",
+      "buyerId": "B06",
+      "exhibitorId": "E06",
+      "language": "ja",
+      "interpreterId": "I02",
+      "roomId": "R02",
+      "start": "09:30",
+      "end": "09:50"
+    },
+    {
+      "id": "S07",
+      "buyerId": "B07",
+      "exhibitorId": "E07",
+      "language": "en",
+      "interpreterId": "I03",
+      "roomId": "R03",
+      "start": "09:30",
+      "end": "09:50"
+    },
+    {
+      "id": "S08",
+      "buyerId": "B08",
+      "exhibitorId": "E08",
+      "language": "zh",
+      "interpreterId": "I04",
+      "roomId": "R04",
+      "start": "09:30",
+      "end": "09:50"
+    },
+    {
+      "id": "S09",
+      "buyerId": "B09",
+      "exhibitorId": "E09",
+      "language": "en",
+      "interpreterId": "I01",
+      "roomId": "R01",
+      "start": "10:00",
+      "end": "10:20"
+    },
+    {
+      "id": "S10",
+      "buyerId": "B10",
+      "exhibitorId": "E10",
+      "language": "ja",
+      "interpreterId": "I02",
+      "roomId": "R02",
+      "start": "10:00",
+      "end": "10:20"
+    },
+    {
+      "id": "S11",
+      "buyerId": "B11",
+      "exhibitorId": "E11",
+      "language": "en",
+      "interpreterId": "I03",
+      "roomId": "R03",
+      "start": "10:00",
+      "end": "10:20"
+    },
+    {
+      "id": "S12",
+      "buyerId": "B12",
+      "exhibitorId": "E12",
+      "language": "zh",
+      "interpreterId": "I04",
+      "roomId": "R04",
+      "start": "10:00",
+      "end": "10:20"
+    },
+    {
+      "id": "S13",
+      "buyerId": "B13",
+      "exhibitorId": "E13",
+      "language": "en",
+      "interpreterId": "I01",
+      "roomId": "R01",
+      "start": "10:30",
+      "end": "10:50"
+    },
+    {
+      "id": "S14",
+      "buyerId": "B14",
+      "exhibitorId": "E14",
+      "language": "ja",
+      "interpreterId": "I02",
+      "roomId": "R02",
+      "start": "10:30",
+      "end": "10:50"
+    },
+    {
+      "id": "S15",
+      "buyerId": "B15",
+      "exhibitorId": "E15",
+      "language": "en",
+      "interpreterId": "I03",
+      "roomId": "R03",
+      "start": "10:30",
+      "end": "10:50"
+    },
+    {
+      "id": "S16",
+      "buyerId": "B16",
+      "exhibitorId": "E16",
+      "language": "zh",
+      "interpreterId": "I04",
+      "roomId": "R04",
+      "start": "10:30",
+      "end": "10:50"
+    },
+    {
+      "id": "S17",
+      "buyerId": "B17",
+      "exhibitorId": "E17",
+      "language": "en",
+      "interpreterId": "I01",
+      "roomId": "R01",
+      "start": "11:00",
+      "end": "11:20"
+    },
+    {
+      "id": "S18",
+      "buyerId": "B18",
+      "exhibitorId": "E18",
+      "language": "ja",
+      "interpreterId": "I02",
+      "roomId": "R02",
+      "start": "11:00",
+      "end": "11:20"
+    },
+    {
+      "id": "S19",
+      "buyerId": "B19",
+      "exhibitorId": "E19",
+      "language": "en",
+      "interpreterId": "I03",
+      "roomId": "R03",
+      "start": "11:00",
+      "end": "11:20"
+    },
+    {
+      "id": "S20",
+      "buyerId": "B20",
+      "exhibitorId": "E20",
+      "language": "zh",
+      "interpreterId": "I04",
+      "roomId": "R04",
+      "start": "11:00",
+      "end": "11:20"
+    }
+  ],
+  "scenarios": [
+    {
+      "id": "SC01",
+      "basis": "each-from-base",
+      "change": {
+        "type": "interpreter-availability",
+        "id": "I02",
+        "start": "09:20",
+        "end": "12:00"
+      },
+      "initialAffected": [
+        "S02"
+      ],
+      "expected": "I02의 09:20 이전 배치는 금지. 영향 전파와 대안을 제시하고 확정 전 기본 배치 유지.",
+      "result": "not-run"
+    },
+    {
+      "id": "SC02",
+      "basis": "each-from-base",
+      "change": {
+        "type": "room-unavailable",
+        "id": "R03",
+        "start": "09:00",
+        "end": "12:00"
+      },
+      "initialAffected": [
+        "S03",
+        "S07",
+        "S11",
+        "S15",
+        "S19"
+      ],
+      "expected": "R03 배정 5건을 영향 대상으로 표시. R05 대체 가능 여부를 검사. 다른 배치는 유지.",
+      "result": "not-run"
+    },
+    {
+      "id": "SC03",
+      "basis": "each-from-base",
+      "change": {
+        "type": "buyer-availability",
+        "id": "B04",
+        "start": "10:00",
+        "end": "12:00"
+      },
+      "initialAffected": [
+        "S04"
+      ],
+      "expected": "S04를 새 가용시간에 맞춰 검토. 자원 조건을 재검사하며 다른 배치 변경은 사유 제시.",
+      "result": "not-run"
+    },
+    {
+      "id": "SC04",
+      "basis": "each-from-base",
+      "change": {
+        "type": "interpreters-unavailable",
+        "ids": [
+          "I02",
+          "I03"
+        ],
+        "start": "09:00",
+        "end": "12:00"
+      },
+      "initialAffected": [
+        "S02",
+        "S03",
+        "S06",
+        "S07",
+        "S10",
+        "S11",
+        "S14",
+        "S15",
+        "S18",
+        "S19"
+      ],
+      "expectedUnassignable": [
+        "S02",
+        "S06",
+        "S10",
+        "S14",
+        "S18"
+      ],
+      "expected": "일본어 가능 통역사 부재로 5건의 미배정 사유를 표시. 나머지 5건은 별도 재검토하며 자동으로 불가능 판정하지 않음.",
+      "result": "not-run"
+    }
+  ],
+  "measurement": {
+    "status": "not-run",
+    "productVersion": null,
+    "runner": null,
+    "durationMs": null,
+    "passCount": null,
+    "note": "입력 무결성 검사는 제품 검수나 고객 실증 결과가 아니다."
+  }
+}

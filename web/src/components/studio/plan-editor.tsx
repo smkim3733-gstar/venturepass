@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { BadgeCheck, Copy, Download, FileCheck2, Save, Sparkles } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -26,9 +26,13 @@ import { PackagePanel } from "./package-panel";
 import { PlanComparison } from "./plan-comparison";
 import { PlanReviewDecisions } from "./plan-review-decisions";
 import { NumericChecks } from "./numeric-checks";
-import { ClaimReviews } from "./claim-reviews";
+import { ClaimReviews, claimReviewPlanTarget } from "./claim-reviews";
 import { PlanLanguagePanel } from "./plan-language-panel";
 import { PlanReviewPanel } from "./plan-review-panel";
+import { PlanClaimSummary } from "./plan-claim-summary";
+import { resolveComparisonPlanReference } from "@/lib/studio-comparison-plan-reference";
+import type { ComparisonPlanReview } from "@/lib/studio-comparison-plan-reference";
+import { ComparisonReviewOpinion } from "./comparison-review-opinion";
 
 export type PlanReviewTarget = {
   companyId: string;
@@ -96,7 +100,10 @@ export function PlanEditor({
   const [sectionKey, setSectionKey] = useState(
     initialTarget ? initialTarget.sectionKey : plan?.content.sections[0]?.key || "",
   );
-  const pendingLanguageFocus = useRef<PlanLanguageSuggestion | null>(null);
+  const pendingLanguageFocus = useRef<Pick<
+    PlanLanguageSuggestion,
+    "fieldId" | "sectionKey"
+  > | null>(null);
   const [languageFocusRequest, setLanguageFocusRequest] = useState(0);
   const [reviewDecisionDirty, setReviewDecisionDirty] = useState(false);
   const [numericDirty, setNumericDirty] = useState(false);
@@ -104,6 +111,20 @@ export function PlanEditor({
   const supportingEditDirty = reviewDecisionDirty || numericDirty || claimDirty;
   const contentDirty = !!plan && JSON.stringify(content) !== JSON.stringify(plan.content);
   const dirty = contentDirty || supportingEditDirty;
+  const [comparisonReference, setComparisonReference] = useState<{
+    snapshot: StudioCase;
+    planId: string;
+    sectionKey: string;
+    result: ComparisonPlanReview;
+  } | null>(null);
+  const comparisonFrame = useRef<{ company: StudioCase; dirty: boolean } | null>(null);
+  const comparisonSequence = useRef(0);
+  useLayoutEffect(() => {
+    comparisonFrame.current = { company, dirty };
+    return () => {
+      comparisonFrame.current = null;
+    };
+  }, [company, dirty, content, planId, sectionKey]);
   const selection = currentCandidateSelection(company);
   useDirty(dirty, setDirty);
   useEffect(() => {
@@ -135,7 +156,44 @@ export function PlanEditor({
     if (target.sectionKey !== null) setSectionKey(target.sectionKey);
     setLanguageFocusRequest((previous) => previous + 1);
   }
-  const section = content?.sections.find((item) => item.key === sectionKey);
+  function editClaimPlan(recordId: string) {
+    if (dirty) return;
+    const target = claimReviewPlanTarget(company, recordId);
+    if (!target) return;
+    setComparisonReference(null);
+    setPlanId(target.plan.id);
+    setContent(structuredClone(target.plan.content));
+    setSectionKey(target.section.key);
+    pendingLanguageFocus.current = { fieldId: "plan-section", sectionKey: target.section.key };
+    setLanguageFocusRequest((previous) => previous + 1);
+  }
+  async function editComparisonPlan(result: ComparisonPlanReview, isCurrent: () => boolean) {
+    const frame = comparisonFrame.current;
+    if (!frame || frame.company !== company || frame.dirty || !isCurrent()) return false;
+    const sequence = ++comparisonSequence.current;
+    const target = await resolveComparisonPlanReference(company, result);
+    if (
+      !target ||
+      comparisonFrame.current !== frame ||
+      comparisonSequence.current !== sequence ||
+      !isCurrent()
+    )
+      return false;
+    setComparisonReference({
+      snapshot: company,
+      planId: target.plan.id,
+      sectionKey: target.section.key,
+      result: target.result,
+    });
+    setPlanId(target.plan.id);
+    setContent(structuredClone(target.plan.content));
+    setSectionKey(target.section.key);
+    pendingLanguageFocus.current = { fieldId: "plan-section", sectionKey: target.section.key };
+    setLanguageFocusRequest((previous) => previous + 1);
+    return true;
+  }
+  const sectionMatches = content?.sections.filter((item) => item.key === sectionKey) ?? [];
+  const section = sectionMatches.length === 1 ? sectionMatches[0] : undefined;
   function selectVersion(id: string) {
     if (supportingEditDirty) {
       toast.error("검토 판단·수치 대조·주장 근거 편집을 먼저 저장하거나 취소해 주세요.");
@@ -146,14 +204,15 @@ export function PlanEditor({
     const selected = matches.length === 1 ? matches[0] : undefined;
     if (!selected) return;
     pendingLanguageFocus.current = null;
+    setComparisonReference(null);
     setPlanId(id);
     setContent(structuredClone(selected.content));
     setSectionKey(selected.content.sections[0]?.key || "");
   }
   function changeSection(value: string, field: "title" | "content" = "content") {
-    if (supportingEditDirty) return;
+    if (supportingEditDirty || !section) return;
     setContent((current) =>
-      current
+      current && current.sections.filter((item) => item.key === sectionKey).length === 1
         ? {
             ...current,
             sections: current.sections.map((item) =>
@@ -393,7 +452,7 @@ export function PlanEditor({
                   {content.sections.map((item, index) => (
                     <button
                       type="button"
-                      key={item.key}
+                      key={`${item.key}:${index}`}
                       onClick={() => setSectionKey(item.key)}
                       className={cn(
                         "flex min-w-36 shrink-0 items-start gap-2 rounded-lg px-3 py-3 text-left text-xs leading-5 transition-colors xl:min-w-0",
@@ -417,6 +476,31 @@ export function PlanEditor({
                   ))}
                 </nav>
                 <div className="min-w-0 bg-white p-4 sm:p-5">
+                  {sectionMatches.length > 1 && (
+                    <section aria-label="수정 대상 확인이 필요한 원문" className="space-y-4">
+                      <Notice tone="warning">
+                        선택한 항목의 원문이 여러 개여서 수정 대상을 하나로 확인하지 못했습니다.
+                        아래 원문들을 읽고 작성 내용을 확인해 주세요. 이 항목의 제목·본문·확인
+                        표시는 변경하지 않습니다.
+                      </Notice>
+                      {sectionMatches.map((item, index) => (
+                        <article key={index} className="space-y-3 rounded-lg border p-4">
+                          <h4 className="whitespace-pre-wrap break-words text-sm font-bold">
+                            원문 {index + 1} · {item.title}
+                          </h4>
+                          <p className="whitespace-pre-wrap break-words text-sm leading-8">
+                            {item.content}
+                          </p>
+                          <p className="text-xs text-muted-foreground">
+                            {item.needsConfirmation
+                              ? "항목 확인 필요"
+                              : "저장된 항목 확인 표시 있음"}
+                          </p>
+                          <EvidenceList company={company} evidence={item.evidence} />
+                        </article>
+                      ))}
+                    </section>
+                  )}
                   {section && (
                     <>
                       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
@@ -449,13 +533,40 @@ export function PlanEditor({
                         maxLength={18000}
                         onChange={(event) => changeSection(event.target.value)}
                       />
+                      {comparisonReference?.snapshot === company &&
+                        comparisonReference.planId === plan.id &&
+                        comparisonReference.sectionKey === section.key && (
+                          <section
+                            aria-label="원고 보완 참고 의견"
+                            className="mt-4 min-w-0 space-y-3 [overflow-wrap:anywhere]"
+                          >
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <h4 className="font-semibold">원고 보완 참고 의견</h4>
+                              <Button
+                                type="button"
+                                variant="outline"
+                                className="min-h-11"
+                                onClick={() => setComparisonReference(null)}
+                              >
+                                참고 의견 닫기
+                              </Button>
+                            </div>
+                            <Notice>
+                              원고 v{plan.version}의 보관된 의견을 참고 중입니다. 이 의견은 지금
+                              편집한 문장을 다시 검토한 결과가 아닙니다. 의견을 여는 것으로 사실
+                              확인이나 담당자 판단이 완료 처리되지 않습니다.
+                            </Notice>
+                            <ComparisonReviewOpinion result={comparisonReference.result} />
+                          </section>
+                        )}
                       <label className="mt-4 flex items-start gap-2 text-xs leading-6 text-muted-foreground">
                         <input
                           type="checkbox"
                           disabled={supportingEditDirty}
                           className="mt-1.5 accent-teal-700"
                           checked={!section.needsConfirmation}
-                          onChange={(event) =>
+                          onChange={(event) => {
+                            if (supportingEditDirty || !section) return;
                             setContent({
                               ...content,
                               sections: content.sections.map((item) =>
@@ -463,8 +574,8 @@ export function PlanEditor({
                                   ? { ...item, needsConfirmation: !event.target.checked }
                                   : item,
                               ),
-                            })
-                          }
+                            });
+                          }}
                         />
                         <span>이 항목의 사실·수치·증빙과 실행계획을 확인했습니다.</span>
                       </label>
@@ -526,6 +637,9 @@ export function PlanEditor({
                   기업이 설명할 수 있는 내용인지 확인하세요. 검토 완료는 심사 통과나 기관 접수를
                   의미하지 않습니다.
                 </p>
+                <div className="mb-3">
+                  <PlanClaimSummary company={company} plan={plan} blocked={dirty} />
+                </div>
                 <Button
                   className="w-full"
                   variant="outline"
@@ -571,6 +685,8 @@ export function PlanEditor({
                 : ""
             }
             onDirtyChange={setClaimDirty}
+            onEditClaimPlan={editClaimPlan}
+            onEditComparisonPlan={editComparisonPlan}
           />
           <div className="flex items-center justify-end gap-3 border-t pt-4">
             <span className="text-xs text-muted-foreground">

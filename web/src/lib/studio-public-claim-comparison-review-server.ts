@@ -1,5 +1,5 @@
 import "server-only";
-import type { IsolatedPublicComparisonService } from "./studio-public-claim-comparison-database-v11";
+import type { StoredComparisonReview } from "./studio-public-claim-comparison-review-display";
 import { assertPublicComparisonDataOnly } from "./studio-public-claim-comparison-data-only";
 import { privateHeaders } from "./studio-http";
 import {
@@ -12,6 +12,7 @@ const blocked = new Set([
   "PUBLIC_COMPARISON_POSTCAPTURE_CLEANUP_REQUIRED", "PUBLIC_COMPARISON_STORAGE_SESSION_BUSY",
   "PUBLIC_COMPARISON_RECOVERY_REQUIRED", "PUBLIC_COMPARISON_LEASE_CLEANUP_REQUIRED",
   "PUBLIC_COMPARISON_COMPANY_CLEANUP_REQUIRED", "PUBLIC_COMPARISON_STORAGE_RECOVERY_REQUIRED", "PUBLIC_COMPARISON_COMPANY_TRANSACTION_ACTIVE",
+  "PUBLIC_COMPARISON_STORED_READER_CLOSED",
 ]);
 export function comparisonReviewErrorResponse(code: ComparisonReviewErrorCode) {
   return new Response(comparisonReviewErrorWire(code), {
@@ -19,7 +20,7 @@ export function comparisonReviewErrorResponse(code: ComparisonReviewErrorCode) {
       ...(code === "METHOD_NOT_ALLOWED" ? { Allow: "POST" } : {}) },
   });
 }
-export type ComparisonReviewReadPort = Pick<IsolatedPublicComparisonService, "readStoredReviewByRun">;
+export type ComparisonReviewReadPort = { readStoredReviewByRun(query: unknown): StoredComparisonReview };
 
 /** Inactive internal composition only. Caller retains this authentic service/session.
  * No store getter, installation, recovery, write, server retire or HTTP route here. */

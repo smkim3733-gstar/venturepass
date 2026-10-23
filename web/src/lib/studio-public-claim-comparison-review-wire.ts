@@ -88,7 +88,7 @@ const unavailableReasons = ["PUBLIC_CLAIM_HISTORY", "PUBLIC_CLAIM_FORMAT", "PUBL
   "PUBLIC_CLAIM_UNSUPPORTED", "PUBLIC_CLAIM_REQUEST_LIMIT", "CURRENT_AUDIT_UNAVAILABLE",
   "COMPANY_BUSY", "COMPANY_ROW_INVALID", "CURRENT_READ_UNAVAILABLE"] as const;
 const units = z.string().regex(/^(0|[1-9][0-9]{0,29})$/);
-const resultSchema = z.object({
+const legacyResultSchema = z.object({
   source: z.literal("synthetic-comparison-stored-review"),
   resultIdentity: z.object({
     runId: z.string().uuid(), dispatchCommandDigest: hash, comparisonEventDigest: hash,
@@ -111,11 +111,16 @@ const resultSchema = z.object({
   owner: z.null(), runtimeObserved: z.literal(false),
   authority: z.object(comparisonLiteralShape(comparisonPlanAuthority)).strict(),
 }).strict();
+const ownedResultSchema = legacyResultSchema.extend({ source: z.literal("comparison-stored-review") });
+const resultSchema = z.union([legacyResultSchema, ownedResultSchema]);
 export type ComparisonReviewWireResult = z.infer<typeof resultSchema>;
-const successSchema = z.object({
+const successSchema = z.discriminatedUnion("wireVersion", [z.object({
   wireVersion: z.literal(1), kind: z.literal("public-comparison-stored-review"),
-  query: querySchema, result: resultSchema,
-}).strict();
+  query: querySchema, result: legacyResultSchema,
+}).strict(), z.object({
+  wireVersion: z.literal(2), kind: z.literal("public-comparison-stored-review"),
+  query: querySchema, result: ownedResultSchema,
+}).strict()]);
 const errorSchema = z.object({
   wireVersion: z.literal(1), kind: z.literal("public-comparison-stored-review-error"),
   code: z.enum(["INVALID_QUERY", "LOCAL_ONLY", "RESULT_UNAVAILABLE", "READ_BLOCKED", "TOO_LARGE", "CONTENT_TYPE", "READ_FAILED",
@@ -163,7 +168,9 @@ function checkResult(r: ComparisonReviewWireResult, query: ComparisonReviewQuery
 /** Trusted server composition additionally owns SQL/response authenticity. This checks data only. */
 export function comparisonReviewSuccessWire(query: ComparisonReviewQuery, raw: unknown): string {
   try {
-    const value = successSchema.parse({ wireVersion: 1, kind: "public-comparison-stored-review", query, result: raw });
+    const result = resultSchema.parse(raw);
+    const value = successSchema.parse({ wireVersion: result.source === "comparison-stored-review" ? 2 : 1,
+      kind: "public-comparison-stored-review", query, result });
     // No silently trimmed/defaulted fields. The service has already supplied data-only objects.
     if (!equal(value.result, raw)) invalid();
     checkResult(value.result, value.query);

@@ -490,6 +490,29 @@ export function evaluateNumericCheck(
   };
 }
 
+/** Check one exact occurrence; callers must not substitute another matching number. */
+export function numericLiteralAt(text: string, start: number, value: string): boolean {
+  if (
+    !Number.isSafeInteger(start) ||
+    start < 0 ||
+    !numericLiteralPattern.test(value) ||
+    text.slice(start, start + value.length) !== value
+  )
+    return false;
+  const before = text.slice(0, start),
+    after = text.slice(start + value.length);
+  if (/[A-Za-z0-9.,+\-−]$/.test(before) || /^[A-Za-z0-9.,+\-−]/.test(after)) return false;
+  return !(
+    /[+\-−－﹣△▲▵]\s*[$₩￦€¥£]?\s*$/.test(before) ||
+    /\(\s*[$₩￦€¥£]?\s*$/.test(before) ||
+    /^\s*[/⁄∕]/.test(after) ||
+    /\d\s*[*/⁄∕~～–—]\s*[$₩￦€¥£]?\s*$/.test(before) ||
+    /^\s*[*/⁄∕~～–—+\-−]\s*[$₩￦€¥£]?\s*[+\-−]?\d/.test(after) ||
+    /\d\s*:\s*$/.test(before) ||
+    /^\s*:\s*\d/.test(after)
+  );
+}
+
 /** The transcription must be a whole token in the actual source, not a cropped quote of 100 as 10. */
 export function numericLiteralOccurs(text: string, quote: string, value: string): boolean {
   if (!value || !numericLiteralPattern.test(value)) return false;
@@ -499,22 +522,7 @@ export function numericLiteralOccurs(text: string, quote: string, value: string)
     if (occurrence < 0) return false;
     let within = -1;
     while ((within = quote.indexOf(value, within + 1)) >= 0) {
-      const start = occurrence + within,
-        end = start + value.length;
-      const before = text.slice(0, start),
-        after = text.slice(end);
-      if (/[A-Za-z0-9.,+\-−]$/.test(before) || /^[A-Za-z0-9.,+\-−]/.test(after)) continue;
-      if (
-        /[+\-−－﹣△▲▵]\s*[$₩￦€¥£]?\s*$/.test(before) ||
-        /\(\s*[$₩￦€¥£]?\s*$/.test(before) ||
-        /^\s*[/⁄∕]/.test(after) ||
-        /\d\s*[*/⁄∕~～–—]\s*[$₩￦€¥£]?\s*$/.test(before) ||
-        /^\s*[*/⁄∕~～–—+\-−]\s*[$₩￦€¥£]?\s*[+\-−]?\d/.test(after) ||
-        /\d\s*:\s*$/.test(before) ||
-        /^\s*:\s*\d/.test(after)
-      )
-        continue;
-      return true;
+      if (numericLiteralAt(text, occurrence + within, value)) return true;
     }
   }
   return false;
