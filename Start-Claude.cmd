@@ -1,7 +1,7 @@
 @echo off
 cd /d "%~dp0"
 if exist "%USERPROFILE%\.local\bin\claude.exe" (
-  "%USERPROFILE%\.local\bin\claude.exe"
+  "%USERPROFILE%\.local\bin\claude.exe" %*
 ) else (
   where claude >nul 2>nul
   if errorlevel 1 (
@@ -9,5 +9,5 @@ if exist "%USERPROFILE%\.local\bin\claude.exe" (
     pause
     exit /b 1
   )
-  call claude
+  call claude %*
 )
