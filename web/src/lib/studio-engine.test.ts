@@ -18,6 +18,7 @@ vi.mock("openai", () => ({
 import { analyzeCompany, generatePlan, getAiStatus, reviewPlan } from "./studio-engine";
 import {
   emptyProfile,
+  guidedAnswerSourceHeader,
   sectionDefinitions,
   type AnalysisContent,
   type PlanContent,
@@ -175,6 +176,28 @@ describe("assisted company analysis and plan assembly", () => {
     const title = (await analyzeCompany(value, "assisted")).candidates[0].title;
     expect(title.length).toBeLessThanOrEqual(100);
     expect(title).toMatch(/단어…$/);
+  });
+  it("quotes only the answers of a simple-view answer source, not its header or questions", async () => {
+    const value = fixture();
+    const question = "신청 기술의 작동 원리와 직접 개발한 부분을 구분해 주세요.";
+    const answer = "답변: 냉각 유로 해석 모델은 회사가 직접 개발했습니다.";
+    value.sources.push({
+      ...value.sources[0],
+      id: "9b0d6c2e-7f3a-4d1b-8c5e-2a6f4e3d1c0b",
+      name: "사업계획서 준비 답변",
+      kind: "consultation",
+      text: `${guidedAnswerSourceHeader}\n\n${question}\n${answer}`,
+    });
+    const analysis = await analyzeCompany(value, "assisted");
+    const content = await generatePlan(value, analysis.candidates[0], "assisted");
+    const quotes = [
+      ...analysis.facts.flatMap((fact) => fact.evidence),
+      ...content.sections.flatMap((section) => section.evidence),
+    ]
+      .filter((ref) => ref.sourceId === "9b0d6c2e-7f3a-4d1b-8c5e-2a6f4e3d1c0b")
+      .map((ref) => ref.quote);
+    expect(quotes.length).toBeGreaterThan(0);
+    expect(quotes.every((quote) => quote === answer)).toBe(true);
   });
   it("quotes the first body line of a technology source rather than its short title", async () => {
     const value = fixture();

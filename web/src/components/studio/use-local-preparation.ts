@@ -34,6 +34,14 @@ class PreparationHttpError extends Error {
   }
 }
 
+/** Browser network/parse failures carry English engine text; show what the user can do instead. */
+export function preparationErrorMessage(caught: unknown, fallback: string) {
+  if (caught instanceof PreparationHttpError) return caught.message;
+  if (caught instanceof TypeError || caught instanceof SyntaxError)
+    return "앱에서 응답을 받지 못했습니다. 이 PC에서 앱이 실행 중인지 확인한 뒤 저장 상태를 확인해 주세요.";
+  return caught instanceof Error ? caught.message : fallback;
+}
+
 async function sendPreparation(endpoint: string, request: PreparationRequest): Promise<unknown> {
   const response = await fetch(endpoint, {
     method: "POST",
@@ -214,7 +222,7 @@ export function useLocalPreparation({
       pendingRejected.current = caught instanceof PreparationHttpError && caught.rejected;
       setUncertain(!pendingRejected.current);
       setCheckRequired(true);
-      setError(caught instanceof Error ? caught.message : "로컬 준비 결과를 확인하지 못했습니다.");
+      setError(preparationErrorMessage(caught, "로컬 준비 결과를 확인하지 못했습니다."));
     } finally {
       inFlight.current = false;
       if (mounted.current) {
@@ -263,7 +271,7 @@ export function useLocalPreparation({
       onCompany(next);
     } catch (caught) {
       if (sameContext(binding))
-        setError(caught instanceof Error ? caught.message : "저장 상태를 확인하지 못했습니다.");
+        setError(preparationErrorMessage(caught, "저장 상태를 확인하지 못했습니다."));
     } finally {
       inFlight.current = false;
       if (mounted.current) {

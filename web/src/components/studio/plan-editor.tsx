@@ -286,7 +286,7 @@ export function PlanEditor({
             </div>
           </div>
           <PackagePanel
-            key={`${company.id}:${company.revision}:${plan.id}`}
+            key={`package:${company.id}:${company.revision}:${plan.id}`}
             company={company}
             plan={plan}
             dirty={dirty}
@@ -468,7 +468,7 @@ export function PlanEditor({
             </aside>
           </div>
           <PlanReviewDecisions
-            key={`${company.id}:${company.revision}:${plan.id}`}
+            key={`review-decisions:${company.id}:${company.revision}:${plan.id}`}
             company={company}
             plan={plan}
             mutate={mutate}

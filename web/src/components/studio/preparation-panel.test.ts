@@ -11,6 +11,18 @@ import {
   validatePreparationResponse,
   validatePreparationSnapshot,
 } from "./preparation-panel";
+import { preparationErrorMessage } from "./use-local-preparation";
+
+describe("local preparation error text", () => {
+  it("replaces browser network and parse errors with a Korean next step", () => {
+    for (const caught of [new TypeError("Failed to fetch"), new SyntaxError("Unexpected token")])
+      expect(preparationErrorMessage(caught, "기본")).toContain("저장 상태를 확인해 주세요");
+    expect(preparationErrorMessage(new Error("기업 버전이 달라졌습니다."), "기본")).toBe(
+      "기업 버전이 달라졌습니다.",
+    );
+    expect(preparationErrorMessage("unknown", "기본")).toBe("기본");
+  });
+});
 
 const companyId = "11111111-1111-4111-8111-111111111111";
 const runId = "22222222-2222-4222-8222-222222222222";

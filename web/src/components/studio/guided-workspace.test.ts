@@ -288,6 +288,8 @@ describe("일반 작업 화면의 실제 상태별 렌더링", () => {
     expect(buttonLabels(html)).toContain("AI 연결 상태 확인");
     // The usable no-AI path is the local draft, offered as the primary action.
     expect(buttonLabels(html)).toContain("자료로 정리본 만들기");
+    expect(buttonLabels(html)).toContain("2계획서");
+    expect(buttonLabels(html)).not.toContain("2AI 계획서");
     expect(html).not.toContain("AI 연결 전 할 수 있는 일");
     expect(buttonLabels(html)).not.toContain("AI로 계획서 준비");
     expect(html).not.toContain("AI 작성 · 사용자 검토 필요");

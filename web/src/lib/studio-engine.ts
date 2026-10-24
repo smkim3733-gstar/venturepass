@@ -42,6 +42,7 @@ import {
 import {
   analysisContentSchema,
   candidateSchema,
+  guidedAnswerSourceHeader,
   planContentSchema,
   sectionDefinitions,
   type AnalysisContent,
@@ -184,16 +185,27 @@ function fieldRefs(value: StudioCase, fields: (keyof CompanyProfile)[]): Referen
   );
 }
 
+/**
+ * Quotable lines of a source. A simple-view answer source repeats its header and the
+ * questions; only the "답변:" lines are company statements.
+ */
+function referenceLines(source: StudioCase["sources"][number]) {
+  const lines = source.text
+    .split(/\n+/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  return lines[0] === guidedAnswerSourceHeader
+    ? lines.filter((line) => line.startsWith("답변:"))
+    : lines;
+}
+
 function collectReferences(value: StudioCase, key: SectionKey): Reference[] {
   const rule = sectionRules[key];
   const refs = fieldRefs(value, rule.fields);
   for (const source of value.sources) {
     if (source.extraction === "pending") continue;
     if (!rule.kinds.includes(source.kind)) continue;
-    const matching = source.text
-      .split(/\n+/)
-      .map((line) => line.trim())
-      .filter((line) => line && rule.keywords.test(line));
+    const matching = referenceLines(source).filter((line) => rule.keywords.test(line));
     // Kind alone only permits a neutral excerpt in its directly corresponding section.
     const blocks = matching.length
       ? matching
@@ -310,7 +322,9 @@ function buildAssistedAnalysis(value: StudioCase): AnalysisContent {
   }
   for (const source of value.sources) {
     if (source.extraction === "pending") continue;
-    for (const quote of excerpts(source.text, 1)) {
+    for (const quote of referenceLines(source)
+      .slice(0, 1)
+      .map((line) => line.slice(0, 1200))) {
       facts.push({
         id: `fact-${facts.length + 1}`,
         statement: quote,

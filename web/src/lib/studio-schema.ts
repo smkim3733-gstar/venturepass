@@ -99,6 +99,8 @@ export const sourceKinds = [
   "team",
   "other",
 ] as const;
+/** First line of a simple-view answer source; its other lines alternate question / "답변:". */
+export const guidedAnswerSourceHeader = "담당자가 입력한 설명입니다. 별도 증빙 확인은 필요합니다.";
 export const sourceKindLabels: Record<(typeof sourceKinds)[number], string> = {
   consultation: "상담·녹취",
   patent: "특허·지식재산",

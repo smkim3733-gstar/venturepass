@@ -12,6 +12,7 @@ import {
 } from "@/components/ui/dialog";
 import {
   caseSchema,
+  guidedAnswerSourceHeader,
   sourceKindLabels,
   sourceKinds,
   type SourceDocument,
@@ -138,6 +139,9 @@ export function GuidedWorkspace({
     onUnsettledChange: setLocalUnsettled,
   });
   const localDraft = status !== null && !status.aiConfigured;
+  // A saved source/profile change marks the local run stale and clears the analysis.
+  const localDraftOutdated =
+    localDraft && company.plans.length > 0 && (!company.analysis || !!local.run?.stale);
   useEffect(() => {
     mounted.current = true;
     return () => {
@@ -171,8 +175,12 @@ export function GuidedWorkspace({
     ) ?? company.analysis?.candidates[0];
   const selectedRecord = currentCandidateSelection(company);
   const selection = selectedRecord?.candidateId === candidate?.id ? selectedRecord : null;
+  const waiting = ["awaiting_choice", "awaiting_materials"];
   const showPlan =
-    !!latestPlan && !["awaiting_choice", "awaiting_materials"].includes(lastRun?.status ?? "");
+    !!latestPlan &&
+    !waiting.includes(lastRun?.status ?? "") &&
+    // A fresh local run waiting for a topic must not be hidden behind the previous draft.
+    !(localDraft && !local.run?.stale && waiting.includes(local.run?.status ?? ""));
   const questions = guidedQuestions(company, showPlan ? latestPlan : undefined);
   const shownQuestions = (answering ? (answerContext?.questions ?? questions) : questions).slice(
     0,
@@ -555,7 +563,7 @@ export function GuidedWorkspace({
       return;
     }
     const answerText =
-      "담당자가 입력한 설명입니다. 별도 증빙 확인은 필요합니다.\n\n" +
+      `${guidedAnswerSourceHeader}\n\n` +
       answered
         .map((question) => `${question.question}\n답변: ${questionAnswers[question.id].trim()}`)
         .join("\n\n");
@@ -586,7 +594,8 @@ export function GuidedWorkspace({
       setAnswerContext(null);
       setVisibleQuestionCount(3);
       setAnswering(false);
-      await preparePreview(next);
+      // Without AI the answers are kept; the local draft is remade from the plan view.
+      if (!localDraft) await preparePreview(next);
     }
   }
   async function saveSection() {
@@ -636,7 +645,8 @@ export function GuidedWorkspace({
             onClick={() => goTo(item.id)}
           >
             <span className={styles.number}>{index + 1}</span>
-            {item.label}
+            {/* Without AI the plan step produces a source-based draft, not an AI plan. */}
+            {item.id === "plan" && localDraft ? "계획서" : item.label}
           </button>
         ))}
       </nav>
@@ -778,7 +788,9 @@ export function GuidedWorkspace({
                     company.sources.length
                       ? "필요한 자료만 추가해 주세요"
                       : "회사 자료만 올려 주세요",
-                    "가진 자료부터 보관하고, AI가 사업계획서를 준비할 수 있도록 내용을 정리합니다.",
+                    localDraft
+                      ? "가진 자료부터 보관하고, 이 PC에서 사업계획서 정리본을 준비할 수 있도록 내용을 정리합니다."
+                      : "가진 자료부터 보관하고, AI가 사업계획서를 준비할 수 있도록 내용을 정리합니다.",
                   )}
               {needsDescription && (
                 <div className={styles.actions}>
@@ -1151,7 +1163,7 @@ export function GuidedWorkspace({
                   )}
                 </div>
               )}
-              {flow.guidedInputState === "changed" && (
+              {(flow.guidedInputState === "changed" || localDraftOutdated) && (
                 <p className={styles.notice}>
                   자료가 바뀌어 이전 원고를 보여 드리고 있습니다. 현재 자료로 다시 준비한 뒤 검토를
                   이어가세요.
@@ -1166,7 +1178,18 @@ export function GuidedWorkspace({
                 >
                   내용 고치기
                 </button>
-                {flow.guidedInputState === "changed" ? (
+                {localDraftOutdated && local.action ? (
+                  <PrimaryAction
+                    disabled={locked || local.disabled}
+                    onClick={() => void local.execute()}
+                  >
+                    {local.action.action === "continue"
+                      ? "선택한 주제로 정리본 만들기"
+                      : local.action.action === "resume"
+                        ? "저장된 지점부터 정리본 이어가기"
+                        : "현재 자료로 정리본 다시 만들기"}
+                  </PrimaryAction>
+                ) : flow.guidedInputState === "changed" ? (
                   <PrimaryAction disabled={locked} onClick={() => void preparePreview()}>
                     {"현재 자료로 다시 준비"}
                   </PrimaryAction>

@@ -115,7 +115,9 @@ afterEach(() => {
   rmSync(target, { recursive: true, force: true });
 }, 15000);
 
-describe("synthetic cost-ledger observed-engine runner", () => {
+// SQLite-backed runs exceed the 5 s default on Windows under load, as the hooks above allow.
+const runnerTimeout = process.platform === "win32" ? 15000 : 5000;
+describe("synthetic cost-ledger observed-engine runner", { timeout: runnerTimeout }, () => {
   it("durably connects exact requests, two responses, original validation and final output", async () => {
     const result = await runQualityActualSimulation(store, start, options);
     expect(result).toMatchObject({
