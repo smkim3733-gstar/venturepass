@@ -12,6 +12,8 @@ import {
 } from "@/components/ui/dialog";
 import {
   caseSchema,
+  sourceKindLabels,
+  sourceKinds,
   type SourceDocument,
   type StudioCase,
   type StudioStatus,
@@ -85,6 +87,7 @@ export function GuidedWorkspace({
   const [describing, setDescribing] = useState(false);
   const [description, setDescription] = useState(company.profile.technologySummary);
   const [descriptionTouched, setDescriptionTouched] = useState(false);
+  const [uploadKind, setUploadKind] = useState<SourceDocument["kind"]>("other");
   const [error, setError] = useState("");
   const [unsettled, setUnsettled] = useState(false);
   const [approval, setApproval] = useState<GuidedPreparationApproval | null>(null);
@@ -394,7 +397,7 @@ export function GuidedWorkspace({
         const originalOnly = /\.(png|jpe?g|webp)$/i.test(file.name);
         const form = new FormData();
         form.append("file", file);
-        form.append("kind", "other");
+        form.append("kind", uploadKind);
         form.append("revision", String(current.revision));
         form.append("allowAi", "false");
         form.append("extractionMode", originalOnly ? "original-only" : "extract");
@@ -736,6 +739,26 @@ export function GuidedWorkspace({
                 <p className={styles.helper}>
                   여러 파일을 함께 선택할 수 있습니다. 파일당 12MB까지 지원합니다.
                 </p>
+                <div className={styles.kindField}>
+                  <label className={styles.label} htmlFor="guided-upload-kind">
+                    자료 종류 · 이번에 고른 파일 모두에 적용
+                  </label>
+                  <select
+                    id="guided-upload-kind"
+                    className={styles.select}
+                    value={uploadKind}
+                    disabled={locked}
+                    onChange={(event) =>
+                      setUploadKind(event.target.value as SourceDocument["kind"])
+                    }
+                  >
+                    {sourceKinds.map((kind) => (
+                      <option key={kind} value={kind}>
+                        {sourceKindLabels[kind]}
+                      </option>
+                    ))}
+                  </select>
+                </div>
                 {needsDescription ? (
                   <button
                     type="button"
@@ -788,6 +811,7 @@ export function GuidedWorkspace({
                       <li className={styles.file} key={source.id}>
                         <span>{source.name}</span>
                         <span className={styles.helper}>
+                          {sourceKindLabels[source.kind]} ·{" "}
                           {source.extraction === "pending"
                             ? "원본 보관 · 본문 확인 필요"
                             : "본문 추출 · 사실 확인은 별도"}
@@ -1266,8 +1290,9 @@ export function GuidedWorkspace({
                   )}
                   {!status?.aiConfigured && (
                     <div className={styles.notice}>
-                      <strong>AI 서비스 연결이 필요해요</strong>자료는 보관되어 있습니다. 운영자가
-                      연결을 마치면 같은 자료로 이어서 작성할 수 있습니다.
+                      <strong>AI 서비스 연결이 필요해요</strong>자료는 보관되어 있습니다. 지금은 이
+                      PC에서 자료를 항목별로 정리한 정리본을 만들 수 있고, 운영자가 연결을 마치면
+                      같은 자료로 AI 작성을 이어갈 수 있습니다.
                     </div>
                   )}
                 </section>
@@ -1302,8 +1327,10 @@ export function GuidedWorkspace({
                       {"AI로 계획서 준비"}
                     </PrimaryAction>
                   ) : (
-                    <PrimaryAction disabled={locked} onClick={onSettings}>
-                      {"AI 연결 상태 확인"}
+                    // Without AI the usable path is the local draft; it runs in the detailed
+                    // preparation panel, which owns replay and result reconciliation.
+                    <PrimaryAction disabled={locked} onClick={() => onDetails("analysis")}>
+                      {"자료로 정리본 만들기"}
                     </PrimaryAction>
                   )
                 ) : (
@@ -1335,14 +1362,21 @@ export function GuidedWorkspace({
                   설명과 준비 과제를 보관했습니다. 자료가 생기면 이 화면에서 이어 가세요.
                 </p>
               )}
-              {!status?.aiConfigured && (
-                <details className={styles.details}>
-                  <summary>AI 연결 전 할 수 있는 일</summary>
-                  {detailLink("저장 자료로 정리본 준비", "analysis")}
+              {!status?.aiConfigured && (hasSourceText || hasDescription) && (
+                <div className={styles.support}>
+                  <button
+                    type="button"
+                    className={styles.link}
+                    disabled={locked}
+                    onClick={onSettings}
+                  >
+                    AI 연결 상태 확인
+                  </button>
                   <p className={styles.helper}>
-                    자료를 항목별로 정리하는 기능입니다. AI 사업계획서 작성과 구분합니다.
+                    정리본은 자료를 항목별로 배치한 초안이며 AI 사업계획서 작성과 구분합니다. 상세
+                    도구의 로컬 준비에서 이어갑니다.
                   </p>
-                </details>
+                </div>
               )}
             </>
           )}

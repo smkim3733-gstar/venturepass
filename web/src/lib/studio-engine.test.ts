@@ -176,6 +176,17 @@ describe("assisted company analysis and plan assembly", () => {
     expect(title.length).toBeLessThanOrEqual(100);
     expect(title).toMatch(/단어…$/);
   });
+  it("quotes the first body line of a technology source rather than its short title", async () => {
+    const value = fixture();
+    value.profile.technologySummary = "";
+    value.sources[0].text =
+      "기술소개서\n시제품 냉각 구조를 개발 중이며 성능시험은 아직 진행하지 않았습니다.";
+    const [candidate] = (await analyzeCompany(value, "assisted")).candidates;
+    expect(candidate.solution).toBe(
+      "시제품 냉각 구조를 개발 중이며 성능시험은 아직 진행하지 않았습니다.",
+    );
+    expect(value.sources[0].text).toContain(candidate.evidence[0].quote);
+  });
   it("uses actual company statements and valid citations without making an AI request", async () => {
     const value = fixture();
     const result = await analyzeCompany(value, "assisted");

@@ -257,8 +257,8 @@ export function deriveGuidedFlow(company: StudioCase, options: GuidedFlowOptions
   }
   if (!guided && (run?.status === "awaiting_materials" || batch?.status === "awaiting_materials")) {
     // Local preparation only builds a candidate from the company description or a
-    // technology/patent source. Simple-view uploads are stored as "other", so more files alone
-    // cannot resolve this; say so instead of inviting another upload.
+    // technology/patent source. Simple-view uploads default to "other", so more files of that
+    // kind cannot resolve this; say so instead of inviting another upload.
     const hasTechnologyBasis =
       company.profile.technologySummary.trim().length > 0 ||
       company.sources.some(
@@ -272,7 +272,7 @@ export function deriveGuidedFlow(company: StudioCase, options: GuidedFlowOptions
       title: "회사 설명을 조금 더 알려 주세요",
       description: hasTechnologyBasis
         ? "현재 기술과 사업을 설명할 근거가 부족합니다. 가진 자료를 더하거나 회사 설명부터 보완할 수 있습니다."
-        : "올린 자료는 분류 없이 '기타 서류'로 보관되어 AI 없이 하는 정리에서는 기술 근거로 쓰지 않습니다. 회사 설명에 제품·기술과 고객을 적어 주시면 그 설명으로 신청 방향을 정리합니다.",
+        : "'기타 서류'로 보관한 자료는 AI 없이 하는 정리에서 기술 근거로 쓰지 않습니다. 회사 설명에 제품·기술과 고객을 적거나, 기술 자료를 '기술·제품' 종류로 골라 올려 주세요.",
       action: { label: "회사 설명 보완하기", destination: "profile" },
     });
   }

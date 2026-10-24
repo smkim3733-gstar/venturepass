@@ -267,6 +267,13 @@ describe("일반 작업 화면의 실제 상태별 렌더링", () => {
     expect(html).not.toContain("검토 마치고 신청 준비");
   });
 
+  it("자료 단계에서 업로드 자료 종류를 고를 수 있고 기본값은 기타 서류다", () => {
+    const html = render(company());
+    expect(html).toContain('id="guided-upload-kind"');
+    expect(html).toContain("기술·제품");
+    expect(html).toMatch(/<option value="other" selected="">기타 서류<\/option>/);
+  });
+
   it("AI 미연결이면 회사 설명을 보관한 상태로 연결 필요를 알린다", () => {
     const value = company({
       profile: {
@@ -279,6 +286,9 @@ describe("일반 작업 화면의 실제 상태별 렌더링", () => {
     expect(html).toContain("AI 서비스 연결이 필요해요");
     expect(html).toContain("자료는 보관되어 있습니다");
     expect(buttonLabels(html)).toContain("AI 연결 상태 확인");
+    // The usable no-AI path is the local draft, offered as the primary action.
+    expect(buttonLabels(html)).toContain("자료로 정리본 만들기");
+    expect(html).not.toContain("AI 연결 전 할 수 있는 일");
     expect(buttonLabels(html)).not.toContain("AI로 계획서 준비");
     expect(html).not.toContain("AI 작성 · 사용자 검토 필요");
   });

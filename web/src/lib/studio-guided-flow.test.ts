@@ -488,7 +488,7 @@ describe("일반 화면의 3단계 안내", () => {
   it("기타 서류만 있고 회사 설명이 없으면 추가 업로드 대신 회사 설명이 필요한 이유를 알린다", () => {
     const value = company();
     value.preparationRuns = [run("awaiting_materials")];
-    expect(deriveGuidedFlow(value).description).toContain("'기타 서류'로 보관되어");
+    expect(deriveGuidedFlow(value).description).toContain("'기타 서류'로 보관한 자료는");
   });
 
   it.each(["profile", "technology-source"] as const)(

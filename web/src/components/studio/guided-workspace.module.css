@@ -264,6 +264,22 @@
   line-height: 1.8;
   resize: vertical;
 }
+.kindField {
+  width: 100%;
+  max-width: 320px;
+  margin: 4px auto 18px;
+  text-align: left;
+}
+.select {
+  width: 100%;
+  min-height: 44px;
+  padding: 0 12px;
+  border: 1px solid #dce1e8;
+  border-radius: 6px;
+  background: white;
+  color: #172d4d;
+  font-size: 16px;
+}
 .files {
   margin: 0;
   padding: 0;

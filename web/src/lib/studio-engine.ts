@@ -282,6 +282,12 @@ function assistedCandidateTitle(quote: string) {
   return `${space > 40 ? cut.slice(0, space) : cut}…`;
 }
 
+/** Skip a short leading document title so the candidate quotes the first body line verbatim. */
+function techBodyLine(text: string) {
+  const blocks = excerpts(text, 5);
+  return blocks.find((block) => block.length >= 30) ?? blocks[0];
+}
+
 function buildAssistedAnalysis(value: StudioCase): AnalysisContent {
   const facts: AnalysisContent["facts"] = [];
   const usefulFields: (keyof CompanyProfile)[] = [
@@ -326,7 +332,7 @@ function buildAssistedAnalysis(value: StudioCase): AnalysisContent {
   const evidence = directTech.length
     ? directTech
     : techSource
-      ? excerpts(techSource.text, 1).map((quote) => ({
+      ? [techBodyLine(techSource.text)].map((quote) => ({
           sourceId: techSource.id,
           quote,
           locator: techSource.name.slice(0, 150),
