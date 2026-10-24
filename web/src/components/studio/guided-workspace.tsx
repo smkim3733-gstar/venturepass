@@ -89,6 +89,8 @@ export function GuidedWorkspace({
   const [describing, setDescribing] = useState(false);
   const [description, setDescription] = useState(company.profile.technologySummary);
   const [descriptionTouched, setDescriptionTouched] = useState(false);
+  const [foundedOn, setFoundedOn] = useState(company.profile.foundedOn);
+  const [applicationDate, setApplicationDate] = useState(company.profile.applicationDate);
   const [uploadKind, setUploadKind] = useState<SourceDocument["kind"]>("other");
   const [error, setError] = useState("");
   const [unsettled, setUnsettled] = useState(false);
@@ -121,7 +123,10 @@ export function GuidedWorkspace({
   const pendingRequest = useRef<GuidedPreparationRequest | null>(null);
   const editingDirty =
     sourceReviewDirty ||
-    (descriptionTouched && description !== company.profile.technologySummary) ||
+    (descriptionTouched &&
+      (description !== company.profile.technologySummary ||
+        foundedOn !== company.profile.foundedOn ||
+        applicationDate !== company.profile.applicationDate)) ||
     editingSection !== null ||
     Object.values(questionAnswers).some((value) => value.trim()) ||
     reason.trim().length > 0;
@@ -490,9 +495,19 @@ export function GuidedWorkspace({
   }
   async function saveDescription() {
     if (!description.trim() || locked || inFlight.current) return;
+    if (foundedOn && applicationDate && applicationDate < foundedOn) {
+      setError("신청 예정일은 설립일 이후여야 합니다. 날짜를 확인해 주세요.");
+      return;
+    }
+    setError("");
     const next = await mutateOnce({
       action: "profile",
-      profile: { ...company.profile, technologySummary: description.trim() },
+      profile: {
+        ...company.profile,
+        technologySummary: description.trim(),
+        foundedOn,
+        applicationDate,
+      },
     });
     if (!next || !mounted.current) return;
     setDescribing(false);
@@ -765,6 +780,41 @@ export function GuidedWorkspace({
                   maxLength={10000}
                   placeholder="예: 어떤 고객의 문제를 어떤 방법으로 해결하고 있나요?"
                 />
+                <div className={styles.dateFields}>
+                  <div>
+                    <label className={styles.label} htmlFor="guided-founded-on">
+                      설립일(개업일) · 선택
+                    </label>
+                    <input
+                      id="guided-founded-on"
+                      type="date"
+                      className={styles.select}
+                      value={foundedOn}
+                      onChange={(event) => {
+                        setFoundedOn(event.target.value);
+                        setDescriptionTouched(true);
+                      }}
+                    />
+                  </div>
+                  <div>
+                    <label className={styles.label} htmlFor="guided-application-date">
+                      신청 예정일 · 선택
+                    </label>
+                    <input
+                      id="guided-application-date"
+                      type="date"
+                      className={styles.select}
+                      value={applicationDate}
+                      onChange={(event) => {
+                        setApplicationDate(event.target.value);
+                        setDescriptionTouched(true);
+                      }}
+                    />
+                  </div>
+                </div>
+                <p className={styles.helper}>
+                  업력 3년 미만·이상에 따라 준비할 내용이 달라집니다. 모르면 비워 두세요.
+                </p>
               </section>
               <div className={styles.actions}>
                 <button type="button" className={styles.link} onClick={() => setDescribing(false)}>
