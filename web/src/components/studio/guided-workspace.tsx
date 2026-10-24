@@ -43,6 +43,7 @@ import { PreparedPackagesPanel } from "./prepared-packages-panel";
 import { GuidedPlanEvidence } from "./guided-plan-evidence";
 import { GuidedFollowupStatus } from "./guided-followup-status";
 import { useLocalDay } from "./case-attention";
+import { useLocalPreparation } from "./use-local-preparation";
 import type { GuidedWorkflowTarget } from "@/lib/studio-guided-followup";
 import { jsonBody, studioFetch, useDirty, type StudioMutation } from "./shared";
 import styles from "./guided-workspace.module.css";
@@ -112,6 +113,7 @@ export function GuidedWorkspace({
   const [sourceReviewDirty, setSourceReviewDirty] = useState(false);
   const [packagePlanId, setPackagePlanId] = useState<string | null>(null);
   const [packageUnsettled, setPackageUnsettled] = useState(false);
+  const [localUnsettled, setLocalUnsettled] = useState(false);
   const inFlight = useRef(false);
   const fileInput = useRef<HTMLInputElement>(null);
   const mounted = useRef(true);
@@ -124,9 +126,18 @@ export function GuidedWorkspace({
     reason.trim().length > 0;
   useDirty(editingDirty, setDirty);
   useEffect(() => {
-    onUnsettledChange(unsettled || packageUnsettled);
+    onUnsettledChange(unsettled || packageUnsettled || localUnsettled);
     return () => onUnsettledChange(false);
-  }, [unsettled, packageUnsettled, onUnsettledChange]);
+  }, [unsettled, packageUnsettled, localUnsettled, onUnsettledChange]);
+  // Without AI the simple view runs the same local preparation as the detailed panel.
+  const local = useLocalPreparation({
+    company,
+    disabled: !!busy || blocked || unsettled || editingDirty,
+    onBusyChange,
+    onCompany,
+    onUnsettledChange: setLocalUnsettled,
+  });
+  const localDraft = status !== null && !status.aiConfigured;
   useEffect(() => {
     mounted.current = true;
     return () => {
@@ -150,7 +161,7 @@ export function GuidedWorkspace({
       active = false;
     };
   }, [company.id, company.revision]);
-  const locked = !!busy || blocked || unsettled;
+  const locked = !!busy || blocked || unsettled || localUnsettled;
   const latestPlan = [...company.plans].sort((a, b) => b.version - a.version)[0];
   const lastRun = (company.guidedPreparationRuns ?? []).at(-1);
   const retainedDraft = lastRun?.repair?.initialPlanId === latestPlan?.id && !!latestPlan;
@@ -503,6 +514,8 @@ export function GuidedWorkspace({
       return;
     }
     setReason("");
+    // Without AI the selection is saved and the local draft button takes over; never send to AI.
+    if (localDraft) return;
     const run = (next.guidedPreparationRuns ?? []).at(-1);
     if (run?.status === "awaiting_choice")
       await runPreparation(
@@ -677,6 +690,35 @@ export function GuidedWorkspace({
               </button>
             </div>
           )}
+        </>
+      ) : local.uncertain || local.checkRequired ? (
+        <>
+          {title(
+            "정리본의 저장 상태를 먼저 확인할게요",
+            local.serverRunning
+              ? "이 PC에서 정리본 준비가 아직 진행 중입니다. 잠시 뒤 저장 상태를 다시 확인해 주세요."
+              : "응답을 확인하지 못해도 일부 단계가 저장되었을 수 있습니다. 자동으로 다시 실행하지 않습니다.",
+          )}
+          {local.error && (
+            <div role="alert" className={styles.error}>
+              {local.error}
+            </div>
+          )}
+          <div className={styles.actions}>
+            {local.uncertain && (
+              <button
+                type="button"
+                className={styles.link}
+                disabled={local.disabled || local.serverRunning}
+                onClick={() => void local.execute(true)}
+              >
+                같은 요청으로 결과 확인
+              </button>
+            )}
+            <PrimaryAction disabled={local.disabled} onClick={() => void local.refresh()}>
+              {"저장 상태 확인"}
+            </PrimaryAction>
+          </div>
         </>
       ) : step === "materials" ? (
         <>
@@ -1128,7 +1170,9 @@ export function GuidedWorkspace({
                 )}
               </div>
               <details className={styles.details}>
-                <summary>추가 자료·AI 다시 작성·내려받기</summary>
+                <summary>
+                  {localDraft ? "추가 자료·내려받기" : "추가 자료·AI 다시 작성·내려받기"}
+                </summary>
                 <div className={styles.support}>
                   <button
                     type="button"
@@ -1138,14 +1182,16 @@ export function GuidedWorkspace({
                   >
                     자료 추가
                   </button>
-                  <button
-                    type="button"
-                    className={styles.link}
-                    disabled={locked}
-                    onClick={() => void preparePreview()}
-                  >
-                    현재 자료로 AI 다시 작성
-                  </button>
+                  {!localDraft && (
+                    <button
+                      type="button"
+                      className={styles.link}
+                      disabled={locked}
+                      onClick={() => void preparePreview()}
+                    >
+                      현재 자료로 AI 다시 작성
+                    </button>
+                  )}
                   <button
                     type="button"
                     className={styles.link}
@@ -1218,7 +1264,24 @@ export function GuidedWorkspace({
                 >
                   회사 설명·자료 고치기
                 </button>
-                {selection && lastRun?.status === "awaiting_choice" ? (
+                {selection && localDraft ? (
+                  local.action ? (
+                    <PrimaryAction
+                      disabled={locked || local.disabled}
+                      onClick={() => void local.execute()}
+                    >
+                      {local.action.action === "continue"
+                        ? "선택한 주제로 정리본 만들기"
+                        : local.action.action === "resume"
+                          ? "저장된 지점부터 정리본 이어가기"
+                          : "자료로 정리본 만들기"}
+                    </PrimaryAction>
+                  ) : (
+                    <PrimaryAction disabled={locked} onClick={() => onDetails("analysis")}>
+                      {"정리본 준비 상태 확인"}
+                    </PrimaryAction>
+                  )
+                ) : selection && lastRun?.status === "awaiting_choice" ? (
                   <PrimaryAction
                     disabled={locked}
                     onClick={() =>
@@ -1241,7 +1304,7 @@ export function GuidedWorkspace({
                     disabled={locked || !reason.trim()}
                     onClick={() => void chooseCandidate()}
                   >
-                    {"이 주제로 작성"}
+                    {localDraft ? "이 주제로 정하기" : "이 주제로 작성"}
                   </PrimaryAction>
                 )}
               </div>
@@ -1326,11 +1389,19 @@ export function GuidedWorkspace({
                     <PrimaryAction disabled={locked} onClick={() => void preparePreview()}>
                       {"AI로 계획서 준비"}
                     </PrimaryAction>
+                  ) : local.action ? (
+                    // Without AI the usable path is the local draft (no external transmission).
+                    <PrimaryAction
+                      disabled={locked || local.disabled}
+                      onClick={() => void local.execute()}
+                    >
+                      {local.action.action === "resume"
+                        ? "저장된 지점부터 정리본 이어가기"
+                        : "자료로 정리본 만들기"}
+                    </PrimaryAction>
                   ) : (
-                    // Without AI the usable path is the local draft; it runs in the detailed
-                    // preparation panel, which owns replay and result reconciliation.
                     <PrimaryAction disabled={locked} onClick={() => onDetails("analysis")}>
-                      {"자료로 정리본 만들기"}
+                      {"정리본 준비 상태 확인"}
                     </PrimaryAction>
                   )
                 ) : (
@@ -1373,8 +1444,8 @@ export function GuidedWorkspace({
                     AI 연결 상태 확인
                   </button>
                   <p className={styles.helper}>
-                    정리본은 자료를 항목별로 배치한 초안이며 AI 사업계획서 작성과 구분합니다. 상세
-                    도구의 로컬 준비에서 이어갑니다.
+                    정리본은 이 PC에서 자료를 항목별로 배치한 초안이며 AI 사업계획서 작성과
+                    구분합니다. 외부로 전송하지 않습니다.
                   </p>
                 </div>
               )}
