@@ -488,7 +488,13 @@ describe("통보·확인서·수기 근거", () => {
           completionBasis: "",
         });
       if (change === "current") {
-        completed.recordedAt = "2026-09-27T18:00:00.000Z";
+        // Mutations stamp events with the wall clock; stay after them on any run date.
+        const latest = Math.max(
+          ...[...value.agencyRecords, ...value.applicationEvents].map((record) =>
+            Date.parse(record.recordedAt),
+          ),
+        );
+        completed.recordedAt = new Date(latest + 60_000).toISOString();
         expect(derive(value).action).toBeNull();
         expect(derive(value).primary?.description).toContain("완료했다고 기록");
         expect(derive(value).lastCheckedAt).toBeNull();

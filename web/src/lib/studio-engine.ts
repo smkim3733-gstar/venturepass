@@ -272,6 +272,16 @@ function assistedPreparationQuestions(value: StudioCase, candidate: Candidate): 
   return questions;
 }
 
+/** First sentence of the quote, or a word-boundary cut marked with an ellipsis. */
+function assistedCandidateTitle(quote: string) {
+  const flat = quote.replace(/\s+/g, " ").trim();
+  const sentence = flat.match(/^.+?[.!?。](?=\s|$)/)?.[0] ?? flat;
+  if (sentence.length <= 100) return sentence;
+  const cut = sentence.slice(0, 99);
+  const space = cut.lastIndexOf(" ");
+  return `${space > 40 ? cut.slice(0, space) : cut}…`;
+}
+
 function buildAssistedAnalysis(value: StudioCase): AnalysisContent {
   const facts: AnalysisContent["facts"] = [];
   const usefulFields: (keyof CompanyProfile)[] = [
@@ -344,7 +354,7 @@ function buildAssistedAnalysis(value: StudioCase): AnalysisContent {
         {
           id: "candidate-1",
           classification: "unknown",
-          title: evidence[0].quote.replace(/\s+/g, " ").slice(0, 100),
+          title: assistedCandidateTitle(evidence[0].quote),
           problem: "[확인 필요] " + sectionRules.problem.question,
           solution: evidence[0].quote,
           targetCustomer: value.profile.customers.trim()

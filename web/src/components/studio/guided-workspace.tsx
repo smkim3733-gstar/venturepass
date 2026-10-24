@@ -178,6 +178,8 @@ export function GuidedWorkspace({
     (source) => source.extraction !== "pending" && source.text.trim(),
   );
   const hasDescription = company.profile.technologySummary.trim().length > 0;
+  // Local preparation is waiting for a company description; another upload alone won't help.
+  const needsDescription = flow.step === "materials" && flow.action?.destination === "profile";
 
   function title(value: string, lead: string) {
     return (
@@ -713,9 +715,20 @@ export function GuidedWorkspace({
             </>
           ) : (
             <>
-              {title(
-                company.sources.length ? "필요한 자료만 추가해 주세요" : "회사 자료만 올려 주세요",
-                "가진 자료부터 보관하고, AI가 사업계획서를 준비할 수 있도록 내용을 정리합니다.",
+              {needsDescription
+                ? title(flow.title, flow.description)
+                : title(
+                    company.sources.length
+                      ? "필요한 자료만 추가해 주세요"
+                      : "회사 자료만 올려 주세요",
+                    "가진 자료부터 보관하고, AI가 사업계획서를 준비할 수 있도록 내용을 정리합니다.",
+                  )}
+              {needsDescription && (
+                <div className={styles.actions}>
+                  <PrimaryAction disabled={locked} onClick={() => setDescribing(true)}>
+                    {hasDescription ? "회사 설명 고치기" : "회사 설명 쓰기"}
+                  </PrimaryAction>
+                </div>
               )}
               <section className={`${styles.sheet} ${styles.upload}`}>
                 <FolderUp aria-hidden="true" className={styles.uploadIcon} />
@@ -723,11 +736,20 @@ export function GuidedWorkspace({
                 <p className={styles.helper}>
                   여러 파일을 함께 선택할 수 있습니다. 파일당 12MB까지 지원합니다.
                 </p>
-                {
+                {needsDescription ? (
+                  <button
+                    type="button"
+                    className={styles.link}
+                    disabled={locked}
+                    onClick={() => fileInput.current?.click()}
+                  >
+                    자료 더 올리기
+                  </button>
+                ) : (
                   <PrimaryAction disabled={locked} onClick={() => fileInput.current?.click()}>
                     {"자료 올리기"}
                   </PrimaryAction>
-                }
+                )}
                 <input
                   ref={fileInput}
                   type="file"
@@ -740,14 +762,16 @@ export function GuidedWorkspace({
                 />
               </section>
               <div className={styles.support}>
-                <button
-                  type="button"
-                  className={styles.link}
-                  disabled={locked}
-                  onClick={() => setDescribing(true)}
-                >
-                  {hasDescription ? "회사 설명 고치기" : "자료 없이 회사 설명부터 시작"}
-                </button>
+                {!needsDescription && (
+                  <button
+                    type="button"
+                    className={styles.link}
+                    disabled={locked}
+                    onClick={() => setDescribing(true)}
+                  >
+                    {hasDescription ? "회사 설명 고치기" : "자료 없이 회사 설명부터 시작"}
+                  </button>
+                )}
                 {company.sources.length > 0 && detailLink("자료 내용 확인·정리", "sources")}
               </div>
               <p className={styles.helper}>
@@ -1012,7 +1036,14 @@ export function GuidedWorkspace({
                   <ul className={styles.reviewList}>
                     {[
                       ...aiFindings,
-                      ...findings.map((finding) => finding.action || finding.message),
+                      ...findings.map((finding) => {
+                        // The same rule fires per section; name the section so items differ.
+                        const where = latestPlan.content.sections.find(
+                          (item) => item.key === finding.sectionKey,
+                        )?.title;
+                        const text = finding.action || finding.message;
+                        return where ? `${where}: ${text}` : text;
+                      }),
                       ...needsReview.map((item) => `${item.title}: 사실과 근거 확인`),
                     ]
                       .slice(0, 3)

@@ -164,6 +164,18 @@ describe("assisted company analysis and plan assembly", () => {
     expect(value.analysis).toBeNull();
     expect(constructorMock).not.toHaveBeenCalled();
   });
+  it("titles a local candidate with its first sentence and never cuts mid-word", async () => {
+    const value = fixture();
+    value.profile.technologySummary =
+      "공장 설비에 부착하는 무선 진동 센서와 예지보전 대시보드를 공급합니다. 센서 단말 안에서 경량 이상탐지 알고리즘을 실행합니다.";
+    expect((await analyzeCompany(value, "assisted")).candidates[0].title).toBe(
+      "공장 설비에 부착하는 무선 진동 센서와 예지보전 대시보드를 공급합니다.",
+    );
+    value.profile.technologySummary = `${"단어 ".repeat(40)}끝`;
+    const title = (await analyzeCompany(value, "assisted")).candidates[0].title;
+    expect(title.length).toBeLessThanOrEqual(100);
+    expect(title).toMatch(/단어…$/);
+  });
   it("uses actual company statements and valid citations without making an AI request", async () => {
     const value = fixture();
     const result = await analyzeCompany(value, "assisted");

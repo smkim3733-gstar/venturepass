@@ -484,6 +484,39 @@ describe("일반 화면의 3단계 안내", () => {
     });
     expect(value).toEqual(before);
   });
+
+  it("기타 서류만 있고 회사 설명이 없으면 추가 업로드 대신 회사 설명이 필요한 이유를 알린다", () => {
+    const value = company();
+    value.preparationRuns = [run("awaiting_materials")];
+    expect(deriveGuidedFlow(value).description).toContain("'기타 서류'로 보관되어");
+  });
+
+  it.each(["profile", "technology-source"] as const)(
+    "기술 근거(%s)가 이미 있으면 분류 안내 없이 기존 보강 안내를 유지한다",
+    (basis) => {
+      const value = company();
+      value.preparationRuns = [run("awaiting_materials")];
+      if (basis === "profile") value.profile.technologySummary = "합성 기술 설명";
+      else
+        value.sources = [
+          {
+            id: randomUUID(),
+            name: "합성 기술자료.txt",
+            kind: "technology",
+            text: "합성 기술 본문",
+            originalName: null,
+            mimeType: null,
+            extraction: "manual",
+            warnings: [],
+            createdAt: earlier,
+            updatedAt: earlier,
+          },
+        ];
+      const flow = deriveGuidedFlow(value);
+      expect(flow.description).not.toContain("기타 서류");
+      expect(flow.action).toMatchObject({ destination: "profile" });
+    },
+  );
 });
 
 describe("새 AI 준비 기록과 이전 원고를 구분하는 안내", () => {
