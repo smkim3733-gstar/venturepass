@@ -41,7 +41,7 @@ import {
   type StudioCase,
   type StudioStatus,
 } from "@/lib/studio-schema";
-import { summarizeCase } from "@/lib/studio-case-summary";
+import { guidedProgressLabel, summarizeCase } from "@/lib/studio-case-summary";
 import { cn } from "@/lib/utils";
 import { ProfileEditor } from "./profile-editor";
 import { SourcesPanel, type SourceExtractionMode } from "./sources-panel";
@@ -557,14 +557,20 @@ export function StudioWorkspace() {
           <>
             <section className="rounded-xl border border-gold/25 bg-white p-6 sm:p-8">
               <h2 className="text-xl font-semibold leading-relaxed">
-                자료를 올리면, AI가 계획서 준비를 도와드립니다.
+                {status?.aiConfigured === false
+                  ? "자료를 올리면, 사업계획서 정리본 준비를 도와드립니다."
+                  : "자료를 올리면, AI가 계획서 준비를 도와드립니다."}
               </h2>
               <p className="mt-3 max-w-2xl text-sm leading-7 text-muted-foreground">
                 회사 자료를 모으고, 필요한 내용만 확인하세요. 사업계획서 작성·검토와 신청 준비를
                 차례로 안내합니다.
               </p>
               <ol className="mt-7 grid grid-cols-3 gap-3 text-center text-xs font-medium sm:text-sm">
-                {["자료 올리기", "AI 계획서", "신청·진행"].map((label, index) => (
+                {[
+                  "자료 올리기",
+                  status?.aiConfigured === false ? "계획서" : "AI 계획서",
+                  "신청·진행",
+                ].map((label, index) => (
                   <li key={label} className="min-w-0">
                     <span className="mx-auto mb-2 flex size-7 items-center justify-center rounded-full bg-primary text-[#f5dfb4]">
                       {index + 1}
@@ -603,7 +609,7 @@ export function StudioWorkspace() {
                     <span className="min-w-0">
                       <span className="block break-words font-semibold">{item.companyName}</span>
                       <span className="mt-1 block text-xs leading-6 text-muted-foreground">
-                        {item.industry || "회사 자료 준비"}
+                        {[item.industry, guidedProgressLabel(item)].filter(Boolean).join(" · ")}
                       </span>
                     </span>
                     <span className="inline-flex shrink-0 items-center gap-2 text-sm">

@@ -5,7 +5,7 @@ import { join, relative, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { StudioStore } from "./studio-storage";
 import { caseSchema, emptyProfile, type StudioCase } from "./studio-schema";
-import { summarizeCase, caseAttentionAt } from "./studio-case-summary";
+import { summarizeCase, caseAttentionAt, guidedProgressLabel } from "./studio-case-summary";
 
 let directory: string;
 let store: StudioStore;
@@ -53,6 +53,47 @@ function request() {
   );
   return company.agencyRecords.at(-1)!;
 }
+
+describe("간단 화면 목록의 진행 표시", () => {
+  it("자료·원고·할 일 수를 기록 그대로 표시하고 기관 상태로 단정하지 않는다", () => {
+    expect(guidedProgressLabel(summarizeCase(company))).toBe("자료 준비 전");
+    const withTask = caseSchema.parse({ ...company, tasks: [task("2026-11-05")] });
+    expect(guidedProgressLabel(summarizeCase(withTask))).toBe("자료 준비 전 · 할 일 1개");
+    const summary = summarizeCase(company);
+    const attention = summary.attention!;
+    expect(guidedProgressLabel({ ...summary, sourceCount: 2 })).toBe("자료 2개 보관");
+    expect(
+      guidedProgressLabel({
+        ...summary,
+        sourceCount: 2,
+        attention: { ...attention, preparationState: "awaiting_choice" },
+      }),
+    ).toBe("신청 주제 선택 필요");
+    expect(
+      guidedProgressLabel({
+        ...summary,
+        attention: { ...attention, preparationState: "awaiting_materials" },
+      }),
+    ).toBe("기술 설명 보강 필요");
+    expect(
+      guidedProgressLabel({
+        ...summary,
+        planCount: 1,
+        attention: { ...attention, planReviewRequired: true },
+      }),
+    ).toBe("계획서 검토 중");
+    expect(
+      guidedProgressLabel({
+        ...summary,
+        planCount: 1,
+        attention: { ...attention, planReviewRequired: false },
+      }),
+    ).toBe("계획서 검토 완료");
+    expect(guidedProgressLabel({ ...summary, planCount: 1, attention: undefined })).toBe(
+      "계획서 보관",
+    );
+  });
+});
 
 describe("다기업 목록의 직접 기록 기반 준비 상태", () => {
   it("미추출 원본과 항목 확인을 마쳤지만 내부검토 전인 원고를 각각 표시한다", () => {

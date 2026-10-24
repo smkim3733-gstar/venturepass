@@ -79,6 +79,26 @@ export function summarizeCase(company: StudioCase): CaseSummary {
   };
 }
 
+/** Plain progress hint for the simple company list; not an agency or review status. */
+export function guidedProgressLabel(item: CaseSummary) {
+  // Older stored summaries have no attention block; never infer a completed review from that.
+  const attention = item.attention;
+  const progress = item.planCount
+    ? !attention
+      ? "계획서 보관"
+      : attention.planReviewRequired
+        ? "계획서 검토 중"
+        : "계획서 검토 완료"
+    : attention?.preparationState === "awaiting_choice"
+      ? "신청 주제 선택 필요"
+      : attention?.preparationState === "awaiting_materials"
+        ? "기술 설명 보강 필요"
+        : item.sourceCount
+          ? `자료 ${item.sourceCount}개 보관`
+          : "자료 준비 전";
+  return item.pendingTaskCount ? `${progress} · 할 일 ${item.pendingTaskCount}개` : progress;
+}
+
 export function caseAttentionAt(summary: CaseSummary, today: string) {
   const attention = summary.attention;
   const validDate =
