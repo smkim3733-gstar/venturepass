@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { StudioStore } from "./studio-storage";
 import {
   emptyProfile,
+  originalOnlyWarnings,
   type AnalysisContent,
   type PlanContent,
   type SourceDocument,
@@ -410,6 +411,84 @@ describe("로컬 기업 저장소", () => {
         ],
       ),
     ).toThrow("검토");
+  });
+  it("자료 종류만 바꾸면 본문·추출 방식·원본을 보존하고 분석 근거를 무효화한다", () => {
+    let record = store.create(profile);
+    const upload = source({ kind: "other", originalName: "원문.txt", extraction: "local" });
+    record = store.addUpload(
+      record.id,
+      record.revision,
+      upload,
+      new TextEncoder().encode("original"),
+    );
+    record = store.saveAnalysis(record.id, record.revision, analysis, "assisted");
+    const before = record.sources[0];
+    record = store.mutate(
+      record.id,
+      {
+        action: "set-source-kind",
+        revision: record.revision,
+        sourceId: upload.id,
+        kind: "technology",
+      },
+      review,
+    );
+    const after = record.sources[0];
+    expect(after).toEqual({ ...before, kind: "technology", updatedAt: after.updatedAt });
+    expect(Date.parse(after.updatedAt)).toBeGreaterThan(Date.parse(before.updatedAt));
+    expect(record.analysis).toBeNull();
+    expect(store.original(record.id, upload.id).buffer.toString()).toBe("original");
+    expect(() =>
+      store.mutate(
+        record.id,
+        {
+          action: "set-source-kind",
+          revision: record.revision,
+          sourceId: upload.id,
+          kind: "technology",
+        },
+        review,
+      ),
+    ).toThrow("이미 같은 종류");
+    expect(() =>
+      store.mutate(
+        record.id,
+        {
+          action: "set-source-kind",
+          revision: record.revision,
+          sourceId: randomUUID(),
+          kind: "patent",
+        },
+        review,
+      ),
+    ).toThrow("찾을 수 없습니다");
+  });
+  it("원본만 보관한 자료도 본문 없이 종류를 바꾸며 본문 미추출 상태는 유지한다", () => {
+    let record = store.create(profile);
+    const pending = source({
+      kind: "other",
+      text: "",
+      originalName: "스캔.pdf",
+      extraction: "pending",
+      warnings: [...originalOnlyWarnings],
+    });
+    record = store.addUpload(record.id, record.revision, pending, new TextEncoder().encode("pdf"));
+    record = store.mutate(
+      record.id,
+      {
+        action: "set-source-kind",
+        revision: record.revision,
+        sourceId: pending.id,
+        kind: "patent",
+      },
+      review,
+    );
+    expect(record.sources[0]).toMatchObject({
+      kind: "patent",
+      extraction: "pending",
+      text: "",
+      warnings: [...originalOnlyWarnings],
+    });
   });
   it("공백 자료를 거절하고 추출 파일의 본문 수정도 원본 다운로드를 유지한다", () => {
     let record = store.create(profile);

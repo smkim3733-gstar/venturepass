@@ -1752,6 +1752,21 @@ export class StudioStore {
           invalidateEvidence(record);
           return true;
         }
+        case "set-source-kind": {
+          const existing = record.sources.find((source) => source.id === mutation.sourceId);
+          if (!existing) throw new StudioError("자료를 찾을 수 없습니다.", 404, "SOURCE_NOT_FOUND");
+          if (existing.kind === mutation.kind)
+            throw new StudioError("이미 같은 종류입니다.", 409, "SOURCE_KIND_UNCHANGED");
+          // Kind only: text, extraction provenance and original metadata stay as stored.
+          const source: SourceDocument = {
+            ...existing,
+            kind: mutation.kind,
+            updatedAt: nextSourceTimestamp(existing.updatedAt),
+          };
+          record.sources = record.sources.map((entry) => (entry.id === source.id ? source : entry));
+          invalidateEvidence(record);
+          return true;
+        }
         case "delete-source": {
           if (!record.sources.some((source) => source.id === mutation.sourceId))
             throw new StudioError("자료를 찾을 수 없습니다.", 404, "SOURCE_NOT_FOUND");

@@ -493,6 +493,18 @@ export function GuidedWorkspace({
     setDeferred(false);
     if (status?.aiConfigured) await preparePreview(next);
   }
+  async function changeSourceKind(source: SourceDocument, kind: SourceDocument["kind"]) {
+    if (kind === source.kind || locked || inFlight.current) return;
+    // The kind decides which sources count as evidence, so prior results need a fresh look.
+    if (
+      (company.analysis || company.plans.length > 0) &&
+      !window.confirm(
+        `‘${source.name}’을(를) ${sourceKindLabels[kind]}(으)로 바꿀까요? 이전 신청 주제와 정리본은 보관되며, 현재 자료로 다시 준비해야 할 수 있습니다.`,
+      )
+    )
+      return;
+    await mutateOnce({ action: "set-source-kind", sourceId: source.id, kind });
+  }
   async function chooseCandidate() {
     if (!candidate || !reason.trim() || locked || inFlight.current) return;
     const request = candidateSelectionRequest(
@@ -853,11 +865,28 @@ export function GuidedWorkspace({
                       <li className={styles.file} key={source.id}>
                         <span>{source.name}</span>
                         <span className={styles.helper}>
-                          {sourceKindLabels[source.kind]} ·{" "}
                           {source.extraction === "pending"
                             ? "원본 보관 · 본문 확인 필요"
                             : "본문 추출 · 사실 확인은 별도"}
                         </span>
+                        <select
+                          className={styles.select}
+                          aria-label={`${source.name} 자료 종류`}
+                          value={source.kind}
+                          disabled={locked}
+                          onChange={(event) =>
+                            void changeSourceKind(
+                              source,
+                              event.target.value as SourceDocument["kind"],
+                            )
+                          }
+                        >
+                          {sourceKinds.map((kind) => (
+                            <option key={kind} value={kind}>
+                              {sourceKindLabels[kind]}
+                            </option>
+                          ))}
+                        </select>
                         <button
                           type="button"
                           className={styles.link}

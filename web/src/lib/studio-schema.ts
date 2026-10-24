@@ -499,6 +499,14 @@ export const mutationSchema = z.discriminatedUnion("action", [
     profile: companyProfileSchema,
   }),
   z.object({ action: z.literal("source"), revision: z.number().int(), source: sourceSchema }),
+  z
+    .object({
+      action: z.literal("set-source-kind"),
+      revision: z.number().int(),
+      sourceId: z.string().uuid(),
+      kind: z.enum(sourceKinds),
+    })
+    .strict(),
   z.object({
     action: z.literal("delete-source"),
     revision: z.number().int(),

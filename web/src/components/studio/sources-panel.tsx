@@ -199,6 +199,19 @@ export function SourcesPanel({
   }
   async function saveSource() {
     if (otherEditingBlocked()) return;
+    // A kind-only change keeps the extraction method (and evidence grade) and works for
+    // original-only sources; a full save would turn the source into a manual entry.
+    if (editing && editing.kind !== kind && name.trim() === editing.name && text === editing.text) {
+      inFlight.current = true;
+      setMutationBusy(true);
+      try {
+        await mutate({ action: "set-source-kind", sourceId: editing.id, kind });
+      } finally {
+        inFlight.current = false;
+        if (mounted.current) setMutationBusy(false);
+      }
+      return;
+    }
     if (!name.trim() || !text.trim()) {
       toast.error("자료 제목과 내용을 입력해 주세요.");
       return;
