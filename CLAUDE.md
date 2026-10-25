@@ -12,7 +12,7 @@
 - **자동 연속 개발**: 기능 하나 끝날 때마다 멈추고 묻지 않는다. 다음 독립 작업으로 계속 이어간다. 사용자 결정이나 사용자 작업이 꼭 필요할 때만 멈춘다.
 - **커밋·push 자동 승인**(2026-10-25): 아래 점검을 모두 통과한 작업은 묻지 않고 커밋해서 `origin main`에 push한다.
 - 커밋 전 점검(하나라도 실패하면 커밋하지 않는다). `web` 폴더에서 실행한다:
-  `pnpm lint` → `pnpm exec tsc --noEmit` → `pnpm exec vitest run`(전체) → `pnpm build:local`(격리 배포용 빌드)
+  `pnpm lint` → `pnpm exec tsc --noEmit` → `pnpm exec vitest run --maxWorkers=4`(전체) → `pnpm build:local`(격리 배포용 빌드)
   - 전체 시험은 화면 묶음을 만들지 않는다. 화면 코드가 서버 전용 파일을 끌어오는 문제는 빌드나 `studio-client-boundary.test.ts`에서만 드러난다.
 - 이 PC 등 git 전역 작성자 설정이 없는 컴퓨터에서는 전역 설정을 바꾸지 말고 커밋할 때만 지정한다:
   `git -c user.name=smkim3733-gstar -c user.email=smkim3733-gstar@users.noreply.github.com commit ...`
@@ -46,4 +46,7 @@
 - 같은 코드가 두 방식으로 돈다. `VENTUREPASS_MODE=server`면 웹 서비스(로그인·Postgres·Storage), 아니면 이 PC 전용 로컬 앱(127.0.0.1, SQLite)이다. 서버 모드에 설정이 빠지면 로컬 자료로 몰래 돌아가지 않고 503으로 멈춘다.
 - API 경로 파일은 `@/lib/studio-route`에서 `studioRoute`를 가져온다. `@/lib/studio-http`는 화면 코드도 닿는 파일이라 오류·응답 도우미만 둔다. 서버 설정·DB·인증 파일을 여기서 불러오지 않는다.
 - OneDrive 폴더에서는 전체 시험이 10~20분 걸린다. 백그라운드로 돌리고, 도는 동안 파일을 고치지 않는다.
+- 전체 시험은 `--maxWorkers=4` 이하로 돌린다. 코어가 많은 PC에서 기본값으로 돌리면 부하로 시간 초과가 나서 매번 다른 통합 시험이 실패한다(2026-10-26, 12코어 PC). 따로 돌리면 통과하는 실패는 이 경우다.
+- Node는 `web/.node-version`(24.19.0)과 정확히 맞춘다. 24.15.0은 한국어 시각을 "오전" 대신 "AM"으로 써서 날짜 시험이 실패한다.
+- OneDrive로 다른 PC의 `web/node_modules`가 따라오면 그대로 쓸 수 없다. `pnpm install --frozen-lockfile --config.confirmModulesPurge=false`로 다시 설치한다.
 - Windows PowerShell 5.1에서 한글 경로가 든 임시 스크립트는 UTF-8 **BOM 포함**으로 저장해야 경로가 깨지지 않는다.
