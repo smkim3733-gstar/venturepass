@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { getStudioStore } from "@/lib/studio-storage";
+import { getPreparedPackageForRequest } from "@/lib/studio-prepared-package-service";
 import { jsonResponse, studioRoute, StudioError } from "@/lib/studio-route";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -13,6 +13,6 @@ export function GET(
     const { caseId, packageId } = z
       .object({ caseId: z.string().uuid(), packageId: z.string().uuid() })
       .parse(await context.params);
-    return jsonResponse({ package: getStudioStore().getPreparedPackage(caseId, packageId) });
+    return jsonResponse({ package: await getPreparedPackageForRequest(caseId, packageId) });
   });
 }

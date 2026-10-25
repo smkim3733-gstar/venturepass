@@ -1,5 +1,6 @@
 import type { SqlExecutor } from "./studio-postgres-repository";
 import { PostgresCaseRowRepository } from "./studio-postgres-repository";
+import { PostgresPreparedPackageRepository } from "./studio-prepared-package-repository";
 import type { StudioServerRuntime } from "./studio-request-scope";
 import { createPrincipalResolver, type AccessTokenVerifier } from "./studio-server-auth";
 import { MemberDirectory, type StaffAccounts } from "./studio-members";
@@ -68,6 +69,8 @@ export function createServerRuntime(
     members: new MemberDirectory(executor, accounts ?? null),
     authenticate: createPrincipalResolver(executor, verify),
     repositoryFor: (principal) => new PostgresCaseRowRepository(executor, principal.organizationId),
+    preparedPackagesFor: (principal) =>
+      new PostgresPreparedPackageRepository(executor, principal.organizationId),
   };
 }
 

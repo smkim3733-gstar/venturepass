@@ -36,12 +36,27 @@ const serverRoutes: { pattern: RegExp; methods: string[] }[] = [
   },
   { pattern: new RegExp(`^/api/studio/cases/${caseId}/export$`, "i"), methods: ["GET"] },
   {
+    pattern: new RegExp(`^/api/studio/cases/${caseId}/agency-records/evidence$`, "i"),
+    methods: ["GET"],
+  },
+  {
     pattern: new RegExp(`^/api/studio/cases/${caseId}/(package|visit-package)$`, "i"),
     methods: ["POST"],
   },
   {
     pattern: new RegExp(
       `^/api/studio/cases/${caseId}/(package|visit-package)/exports/${caseId}$`,
+      "i",
+    ),
+    methods: ["GET"],
+  },
+  {
+    pattern: new RegExp(`^/api/studio/cases/${caseId}/prepared-packages$`, "i"),
+    methods: ["GET", "POST"],
+  },
+  {
+    pattern: new RegExp(
+      `^/api/studio/cases/${caseId}/prepared-packages/${caseId}(/download)?$`,
       "i",
     ),
     methods: ["GET"],
@@ -100,7 +115,13 @@ async function serverRoute(
     throw new StudioError("조회 권한으로는 변경할 수 없습니다.", 403, "FORBIDDEN");
   const repository = server.repositoryFor(principal);
   return await runInRequestScope(
-    { principal, repository, originals: server.originals, members: server.members },
+    {
+      principal,
+      repository,
+      originals: server.originals,
+      members: server.members,
+      preparedPackages: server.preparedPackagesFor?.(principal),
+    },
     action,
   );
 }

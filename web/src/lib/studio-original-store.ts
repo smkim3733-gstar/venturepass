@@ -31,12 +31,23 @@ const uuidName = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
 const temporaryKinds = {
   exports: new RegExp(`^${uuidName}[.]zip$`, "i"),
   staging: new RegExp(`^${uuidName}[.]bin$`, "i"),
+  // Not temporary: preserved ZIPs are removed only with their company (maxAgeMs 0).
+  prepared: new RegExp(`^${uuidName}[.]zip$`, "i"),
 } as const;
+
+/** A preserved preparation ZIP (원고·첨부 보관본); kept until its company is deleted. */
+export function preparedPackageObjectKey(
+  organizationId: string,
+  caseId: string,
+  packageId: string,
+) {
+  return `${uuid.parse(organizationId)}/${uuid.parse(caseId)}/prepared/${uuid.parse(packageId)}.zip`;
+}
 
 /**
  * Best effort: removes a case's temporary objects (generated ZIPs or unfinished browser
  * uploads) older than `maxAgeMs`; 0 removes all of them. Never touches registered originals,
- * which live directly under the case prefix.
+ * which live directly under the case prefix. Company deletion also passes "prepared".
  */
 export async function removeOldTemporaryObjects(
   store: OriginalObjectStore,

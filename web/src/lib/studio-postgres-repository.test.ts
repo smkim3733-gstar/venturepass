@@ -53,7 +53,7 @@ describe("Supabase schema script", () => {
       "\n",
     );
     expect(script).toBe(venturePassSchemaScript());
-    expect(script.match(/ENABLE ROW LEVEL SECURITY/g)).toHaveLength(3);
+    expect(script.match(/ENABLE ROW LEVEL SECURITY/g)).toHaveLength(4);
   });
 });
 

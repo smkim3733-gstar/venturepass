@@ -43,11 +43,30 @@ export const venturePassSchemaSql = [
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now()
   )`,
+  // Preserved preparation records (원고·첨부 보관본), at most 20 per company like the PC app. The
+  // ZIP is in private storage; the row keeps the exact record JSON and hashes. Deleting a
+  // company deletes its records (the server also removes the stored ZIPs).
+  `CREATE TABLE IF NOT EXISTS venture_prepared_packages (
+    id uuid PRIMARY KEY,
+    organization_id uuid NOT NULL REFERENCES venture_organizations(id) ON DELETE RESTRICT,
+    case_id uuid NOT NULL REFERENCES venture_cases(id) ON DELETE CASCADE,
+    version integer NOT NULL CHECK (version BETWEEN 1 AND 20),
+    client_request_id uuid NOT NULL,
+    request_digest text NOT NULL CHECK (request_digest ~ '^[a-f0-9]{64}$'),
+    body text NOT NULL,
+    body_sha256 text NOT NULL CHECK (body_sha256 ~ '^[a-f0-9]{64}$'),
+    zip_sha256 text NOT NULL CHECK (zip_sha256 ~ '^[a-f0-9]{64}$'),
+    zip_size_bytes integer NOT NULL CHECK (zip_size_bytes > 0),
+    created_at timestamptz NOT NULL DEFAULT now(),
+    UNIQUE (case_id, version),
+    UNIQUE (case_id, client_request_id)
+  )`,
   // Supabase exposes the public schema over its REST API with the anon key. Row level security
   // with no policies denies that path entirely; the server connects as the database owner.
   `ALTER TABLE venture_organizations ENABLE ROW LEVEL SECURITY`,
   `ALTER TABLE venture_cases ENABLE ROW LEVEL SECURITY`,
   `ALTER TABLE venture_memberships ENABLE ROW LEVEL SECURITY`,
+  `ALTER TABLE venture_prepared_packages ENABLE ROW LEVEL SECURITY`,
 ];
 
 /** The same statements as one script for the Supabase SQL editor (web/supabase/schema.sql). */

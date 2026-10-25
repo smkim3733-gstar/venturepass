@@ -2,6 +2,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import type { CaseRowRepository } from "./studio-case-session";
 import type { MemberDirectory } from "./studio-members";
 import type { OriginalObjectStore } from "./studio-original-store";
+import type { PreparedPackageRepository } from "./studio-prepared-package-repository";
 
 /** Authenticated staff member of one organization (server mode only). */
 export type StudioPrincipal = {
@@ -24,6 +25,8 @@ export type StudioServerRuntime = {
   originals?: OriginalObjectStore;
   /** Staff memberships of the signed-in admin's organization. */
   members?: MemberDirectory;
+  /** Preserved preparation records (보관본) of the principal's organization. */
+  preparedPackagesFor?(principal: StudioPrincipal): PreparedPackageRepository;
 };
 
 type RequestScope = {
@@ -31,6 +34,7 @@ type RequestScope = {
   repository: CaseRowRepository;
   originals?: OriginalObjectStore;
   members?: MemberDirectory;
+  preparedPackages?: PreparedPackageRepository;
 };
 const scope = new AsyncLocalStorage<RequestScope>();
 let runtime: StudioServerRuntime | null = null;

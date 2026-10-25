@@ -26,7 +26,11 @@ export function POST(request: Request, context: Context) {
       ),
     );
     return jsonResponse(
-      await withCaseStore(caseId, ({ store }) => previewSourceSuggestions(store, caseId, input)),
+      await withCaseStore(caseId, async ({ store, stageReferencedOriginals }) => {
+        // Web service: the preview binds the selected source's original file.
+        await stageReferencedOriginals(input);
+        return previewSourceSuggestions(store, caseId, input);
+      }),
     );
   });
 }

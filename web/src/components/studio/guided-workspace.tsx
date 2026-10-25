@@ -1300,7 +1300,7 @@ export function GuidedWorkspace({
                     disabled={locked}
                     onClick={() => setPackagePlanId(latestPlan.id)}
                   >
-                    {serverMode ? "제출 준비 ZIP 내려받기" : "원고·첨부 보관 및 내려받기"}
+                    원고·첨부 보관 및 내려받기
                   </button>
                 </div>
               </details>

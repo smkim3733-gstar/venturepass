@@ -134,7 +134,12 @@ export function PATCH(request: Request, context: Context) {
       throw new StudioError("이 요청에는 URL 매개변수를 사용할 수 없습니다.", 400, "INVALID_QUERY");
     const { caseId } = await context.params;
     return jsonResponse(
-      await withCaseStore(caseId, ({ store }) => store.mutate(caseId, mutation, reviewPlan)),
+      await withCaseStore(caseId, async ({ store, stageReferencedOriginals }) => {
+        // Web service: changes that bind or compare original files (agency evidence, numeric
+        // checks, company-information adoption...) read them from storage first.
+        await stageReferencedOriginals(mutation);
+        return store.mutate(caseId, mutation, reviewPlan);
+      }),
     );
   });
 }

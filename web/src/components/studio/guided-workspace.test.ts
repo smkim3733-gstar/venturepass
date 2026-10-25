@@ -267,15 +267,15 @@ describe("일반 작업 화면의 실제 상태별 렌더링", () => {
     expect(html).not.toContain("검토 마치고 신청 준비");
   });
 
-  it("웹 서비스에서는 보관 없이 ZIP 내려받기만, 이 PC에서는 보관과 내려받기를 보여 준다", () => {
+  it("웹 서비스와 이 PC 모두 원고·첨부 보관과 내려받기를 보여 준다", () => {
     const value = company({ plans: [plan()] });
     const local = render(value);
     expect(local).toContain(oldPlanTitle);
     expect(buttonLabels(local)).toContain("원고·첨부 보관 및 내려받기");
     const server = render(value, { status: { ...configured, storage: "server" } });
     expect(server).toContain(oldPlanTitle);
-    expect(buttonLabels(server)).not.toContain("원고·첨부 보관 및 내려받기");
-    expect(buttonLabels(server)).toContain("제출 준비 ZIP 내려받기");
+    expect(buttonLabels(server)).toContain("원고·첨부 보관 및 내려받기");
+    expect(buttonLabels(server)).not.toContain("제출 준비 ZIP 내려받기");
   });
 
   it("자료 단계에서 업로드 자료 종류를 고를 수 있고 기본값은 기타 서류다", () => {

@@ -17,7 +17,7 @@ export const preparedPackageRequestDigest = (input: PreparedPackageRequest) =>
   preparedPackageSha(JSON.stringify(preparedPackageRequestSchema.parse(input)));
 export function preparedPackageError(code: string, status = 409): never {
   throw new StudioError(
-    "로컬 준비본을 보관하거나 읽지 못했습니다. 원고·자료와 저장 상태를 확인해 주세요. 기존 준비본은 보존됩니다.",
+    "준비본을 보관하거나 읽지 못했습니다. 원고·자료와 저장 상태를 확인해 주세요. 기존 준비본은 보존됩니다.",
     status,
     code,
   );
@@ -33,6 +33,19 @@ export async function preservePreparedPackage(
   const existing = store.findPreparedPackageRequest(caseId, input);
   if (existing) return { package: existing, replayed: true };
   assertVentureCompanyWritable(caseId);
+  const { snapshot, buffer } = await buildPreparedPackageSnapshot(store, caseId, input);
+  return store.commitPreparedPackage(caseId, input, snapshot, buffer);
+}
+
+/**
+ * The record and ZIP for one preservation request, built from the current company only.
+ * The caller stores them (PC database or web service) after its own final checks.
+ */
+export async function buildPreparedPackageSnapshot(
+  store: StudioStore,
+  caseId: string,
+  input: PreparedPackageRequest,
+) {
   const company = store.get(caseId);
   if (company.revision !== input.revision) preparedPackageError("STALE_REVISION");
   const matches = company.plans.filter((plan) => plan.id === input.planId);
@@ -93,5 +106,5 @@ export async function preservePreparedPackage(
       sizeBytes: artifact.buffer.length,
     },
   };
-  return store.commitPreparedPackage(caseId, input, record, artifact.buffer);
+  return { snapshot: record, buffer: artifact.buffer };
 }

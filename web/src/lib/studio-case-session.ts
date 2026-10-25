@@ -36,7 +36,28 @@ export type CaseSession = {
    * StudioStore code that reads originals (ZIP packages) works unchanged. Local: a no-op.
    */
   stageOriginals(sourceIds: string[]): Promise<void>;
+  /**
+   * Server mode: stages the originals of this case's sources whose ids appear anywhere in
+   * `value` (a request body), for changes that bind or compare original files. Local: a no-op.
+   */
+  stageReferencedOriginals(value: unknown): Promise<void>;
 };
+
+const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/** Every UUID-shaped string inside a parsed request body (bounded depth). */
+export function referencedIds(value: unknown) {
+  const ids = new Set<string>();
+  const visit = (item: unknown, depth: number) => {
+    if (depth > 12) return;
+    if (typeof item === "string") {
+      if (uuidPattern.test(item)) ids.add(item.toLowerCase());
+    } else if (Array.isArray(item)) for (const entry of item) visit(entry, depth + 1);
+    else if (item && typeof item === "object")
+      for (const entry of Object.values(item)) visit(entry, depth + 1);
+  };
+  visit(value, 0);
+  return [...ids];
+}
 
 const staleMessage = "다른 작업에서 기업정보가 변경되었습니다. 새로고침 후 다시 시도해 주세요.";
 
@@ -113,7 +134,8 @@ export async function runCaseSession<T>(
           throw new StudioError(staleMessage, 409, "STALE_REVISION");
         await removeOriginals(sourcesWithOriginals(persisted.body).map((source) => source.id));
         if (originals)
-          for (const kind of ["exports", "staging"] as const)
+          // Preserved ZIPs too: their database rows went with the company row (ON DELETE CASCADE).
+          for (const kind of ["exports", "staging", "prepared"] as const)
             await removeOldTemporaryObjects(
               originals.store,
               originals.organizationId,
@@ -156,7 +178,13 @@ export async function runCaseSession<T>(
         uploaded.add(sourceId);
       }
     };
-    const result = await run({ store: session.store, checkpoint, stageOriginals });
+    const result = await run({
+      store: session.store,
+      checkpoint,
+      stageOriginals,
+      // Only ids of this case's sources with originals are staged (stageOriginals filters).
+      stageReferencedOriginals: (value) => stageOriginals(referencedIds(value)),
+    });
     await checkpoint();
     return result;
   } finally {
@@ -236,6 +264,7 @@ export function withCaseStore<T>(
           store: getStudioStore(),
           checkpoint: async () => {},
           stageOriginals: async () => {},
+          stageReferencedOriginals: async () => {},
         });
   });
 }

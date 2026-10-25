@@ -10,7 +10,7 @@ import {
   type PreparedPackageRequest,
   type PreparedPackageSummary,
 } from "@/lib/studio-prepared-package-types";
-import { PackagePanel, readPackageDownload } from "./package-panel";
+import { PackagePanel, readPackageDownload, startSameOriginDownload } from "./package-panel";
 import {
   preparedPackageCurrent,
   preparedPackageList,
@@ -32,43 +32,8 @@ type Props = {
 };
 
 export function PreparedPackagesPanel(props: Props) {
-  if (useServerMode()) return <WebPackagePanel {...props} />;
   return <PreparedPackagesPanelInner {...props} />;
 }
-
-/** Web service: the ZIP download only. Preserved versions stay in the PC app's database. */
-function WebPackagePanel({ company, plan, dirty, blocked, onBusyChange, onClose }: Props) {
-  const [busy, setBusy] = useState(false);
-  return (
-    <div className="space-y-5">
-      <div className="flex flex-wrap justify-between gap-3">
-        <h2 className={styles.heading}>제출 준비 ZIP 내려받기</h2>
-        <button type="button" className={styles.link} disabled={busy} onClick={onClose}>
-          돌아가기
-        </button>
-      </div>
-      <div className={styles.notice}>
-        원고와 첨부를 버전으로 보관하는 기능은 이 PC 앱에서만 제공합니다. 웹 서비스에서는 ZIP을 바로
-        내려받습니다.
-      </div>
-      {plan ? (
-        <PackagePanel
-          key={`${company.id}:${plan.id}`}
-          company={company}
-          plan={plan}
-          dirty={dirty || blocked}
-          onBusyChange={(message) => {
-            setBusy(Boolean(message));
-            onBusyChange(message);
-          }}
-        />
-      ) : (
-        <p className={styles.helper}>내려받을 원고가 없습니다.</p>
-      )}
-    </div>
-  );
-}
-
 function PreparedPackagesPanelInner({
   company,
   plan,
@@ -86,6 +51,7 @@ function PreparedPackagesPanelInner({
   const [packageBusy, setPackageBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [statusVersion, setStatusVersion] = useState(0);
+  const serverMode = useServerMode();
   const mounted = useRef(true),
     inFlight = useRef(false);
   const pendingRef = useRef<Pending | null>(null);
@@ -258,6 +224,15 @@ function PreparedPackagesPanelInner({
     onBusyChange("보관한 준비본을 내려받고 있습니다");
     let url: string | null = null;
     try {
+      if (serverMode) {
+        // The server checks the stored ZIP's size and SHA-256 before redirecting to a
+        // short-lived link; the browser follows this site's own route only.
+        startSameOriginDownload(`${base}/${item.id}/download`);
+        setMessage(
+          `준비본 ${item.version}의 다운로드를 요청했습니다. 브라우저 다운로드 목록을 확인해 주세요.`,
+        );
+        return;
+      }
       const response = await fetch(`${base}/${item.id}/download`, { cache: "no-store" });
       const file = await readPackageDownload(response);
       const digest = Array.from(
@@ -312,7 +287,10 @@ function PreparedPackagesPanelInner({
         지금 선택한 내용을 한 버전으로 보관합니다. 자료를 고쳐도 이전 준비본은 유지됩니다.
       </p>
       <div className={styles.notice}>
-        이 PC의 준비본입니다. 기관 전송·접수·내부 검토 완료를 대신하지 않습니다.
+        {serverMode
+          ? "웹 서비스에 보관한 준비본입니다. 기업을 삭제하면 함께 삭제됩니다. "
+          : "이 PC의 준비본입니다. "}
+        기관 전송·접수·내부 검토 완료를 대신하지 않습니다.
       </div>
       {error && (
         <p className={styles.error} role="alert">

@@ -289,10 +289,22 @@ const preparedPackageRequestDigest = (input: PreparedPackageRequest) =>
   preparedPackageSha(JSON.stringify(preparedPackageRequestSchema.parse(input)));
 function preparedPackageError(code: string, status = 409): never {
   throw new StudioError(
-    "로컬 준비본을 보관하거나 읽지 못했습니다. 원고·자료와 저장 상태를 확인해 주세요. 기존 준비본은 보존됩니다.",
+    "준비본을 보관하거나 읽지 못했습니다. 원고·자료와 저장 상태를 확인해 주세요. 기존 준비본은 보존됩니다.",
     status,
     code,
   );
+}
+/** A stored preparation record whose body still matches its hash and belongs to this case. */
+export function parsePreparedPackageRow(
+  caseId: string,
+  row: { body: string; body_sha256: string },
+) {
+  if (preparedPackageSha(row.body) !== row.body_sha256)
+    preparedPackageError("PREPARED_PACKAGE_CHANGED");
+  const parsed = preparedPackageRecordSchema.safeParse(JSON.parse(row.body));
+  if (!parsed.success || parsed.data.caseId !== caseId)
+    preparedPackageError("PREPARED_PACKAGE_CHANGED");
+  return parsed.data;
 }
 /** Encrypted connector data is deliberately kept outside StudioCase and its AI/export payloads. */
 export type VentureAccountEnvelope = {
@@ -565,12 +577,7 @@ export class StudioStore {
     caseId: string,
     row: { body: string; body_sha256: string; archive?: Uint8Array },
   ) {
-    if (preparedPackageSha(row.body) !== row.body_sha256)
-      preparedPackageError("PREPARED_PACKAGE_CHANGED");
-    const parsed = preparedPackageRecordSchema.safeParse(JSON.parse(row.body));
-    if (!parsed.success || parsed.data.caseId !== caseId)
-      preparedPackageError("PREPARED_PACKAGE_CHANGED");
-    const record = parsed.data;
+    const record = parsePreparedPackageRow(caseId, row);
     if (
       row.archive &&
       (row.archive.length !== record.zip.sizeBytes ||
@@ -659,48 +666,13 @@ export class StudioStore {
         .prepare("SELECT COUNT(*) AS count FROM studio_prepared_packages WHERE case_id=?")
         .get(caseId) as { count: number };
       if (count.count >= MAX_PREPARED_PACKAGES) preparedPackageError("PREPARED_PACKAGE_LIMIT", 413);
-      const record = preparedPackageRecordSchema.parse({ ...snapshot, version: count.count + 1 });
-      const currentPlan = current.plans.find((plan) => plan.id === input.planId);
-      const { contentSha256, ...savedPlan } = record.plan;
-      if (
-        !currentPlan ||
-        record.caseId !== caseId ||
-        record.caseRevision !== input.revision ||
-        record.clientRequestId !== input.clientRequestId ||
-        record.requestDigest !== preparedPackageRequestDigest(input) ||
-        JSON.stringify(record.input) !== JSON.stringify(input) ||
-        JSON.stringify(record.sourceIds) !== JSON.stringify(input.sourceIds) ||
-        JSON.stringify(savedPlan) !== JSON.stringify(currentPlan) ||
-        contentSha256 !== preparedPackageSha(JSON.stringify(currentPlan.content)) ||
-        JSON.stringify(record.company.profile) !== JSON.stringify(current.profile) ||
-        JSON.stringify(record.review.storedFindings) !== JSON.stringify(currentPlan.review) ||
-        record.review.confirmedAt !== currentPlan.confirmedAt ||
-        buffer.length !== record.zip.sizeBytes ||
-        preparedPackageSha(buffer) !== record.zip.sha256
-      )
-        preparedPackageError("PREPARED_SNAPSHOT_CHANGED");
-      if (record.sources.length !== input.sourceIds.length)
-        preparedPackageError("PREPARED_SOURCE_CHANGED");
-      for (const [index, sourceId] of input.sourceIds.entries()) {
-        const saved = record.sources[index];
-        const original = this.originalForVentureInput(caseId, sourceId);
-        const { text, ...metadata } = original.source;
-        if (
-          saved.source.id !== sourceId ||
-          saved.sourceSha256 !== preparedPackageSha(JSON.stringify(original.source)) ||
-          JSON.stringify(saved.source) !== JSON.stringify(metadata) ||
-          saved.textSha256 !== preparedPackageSha(text) ||
-          saved.originalSha256 !== original.sha256 ||
-          saved.originalSha256 !== preparedPackageSha(original.buffer) ||
-          saved.originalSizeBytes !== original.buffer.length
-        )
-          preparedPackageError("PREPARED_ORIGINAL_CHANGED");
-      }
-      const body = JSON.stringify(record);
-      if (Buffer.byteLength(body, "utf8") > packageLimits.metadataBytes)
-        preparedPackageError("PREPARED_METADATA_LIMIT", 413);
-      if (preparedPackageSha(JSON.stringify(this.get(caseId))) !== record.company.snapshotSha256)
-        preparedPackageError("PREPARED_SNAPSHOT_CHANGED");
+      const { record, body } = this.verifyPreparedPackageSnapshot(
+        caseId,
+        input,
+        snapshot,
+        buffer,
+        count.count + 1,
+      );
       this.db
         .prepare(
           "INSERT INTO studio_prepared_packages(id,case_id,version,client_request_id,request_digest,body,body_sha256,archive) VALUES (?,?,?,?,?,?,?,?)",
@@ -721,6 +693,63 @@ export class StudioStore {
       this.db.exec("ROLLBACK");
       throw error;
     }
+  }
+  /**
+   * Checks a server-built snapshot against the current company, plan and originals and returns
+   * the exact record body to store. Shared by the PC database and the web service.
+   */
+  verifyPreparedPackageSnapshot(
+    caseId: string,
+    raw: PreparedPackageRequest,
+    snapshot: Omit<PreparedPackageRecord, "version">,
+    buffer: Buffer,
+    version: number,
+  ) {
+    const input = preparedPackageRequestSchema.parse(raw);
+    const current = this.get(caseId);
+    const record = preparedPackageRecordSchema.parse({ ...snapshot, version });
+    const currentPlan = current.plans.find((plan) => plan.id === input.planId);
+    const { contentSha256, ...savedPlan } = record.plan;
+    if (
+      !currentPlan ||
+      record.caseId !== caseId ||
+      record.caseRevision !== input.revision ||
+      record.clientRequestId !== input.clientRequestId ||
+      record.requestDigest !== preparedPackageRequestDigest(input) ||
+      JSON.stringify(record.input) !== JSON.stringify(input) ||
+      JSON.stringify(record.sourceIds) !== JSON.stringify(input.sourceIds) ||
+      JSON.stringify(savedPlan) !== JSON.stringify(currentPlan) ||
+      contentSha256 !== preparedPackageSha(JSON.stringify(currentPlan.content)) ||
+      JSON.stringify(record.company.profile) !== JSON.stringify(current.profile) ||
+      JSON.stringify(record.review.storedFindings) !== JSON.stringify(currentPlan.review) ||
+      record.review.confirmedAt !== currentPlan.confirmedAt ||
+      buffer.length !== record.zip.sizeBytes ||
+      preparedPackageSha(buffer) !== record.zip.sha256
+    )
+      preparedPackageError("PREPARED_SNAPSHOT_CHANGED");
+    if (record.sources.length !== input.sourceIds.length)
+      preparedPackageError("PREPARED_SOURCE_CHANGED");
+    for (const [index, sourceId] of input.sourceIds.entries()) {
+      const saved = record.sources[index];
+      const original = this.originalForVentureInput(caseId, sourceId);
+      const { text, ...metadata } = original.source;
+      if (
+        saved.source.id !== sourceId ||
+        saved.sourceSha256 !== preparedPackageSha(JSON.stringify(original.source)) ||
+        JSON.stringify(saved.source) !== JSON.stringify(metadata) ||
+        saved.textSha256 !== preparedPackageSha(text) ||
+        saved.originalSha256 !== original.sha256 ||
+        saved.originalSha256 !== preparedPackageSha(original.buffer) ||
+        saved.originalSizeBytes !== original.buffer.length
+      )
+        preparedPackageError("PREPARED_ORIGINAL_CHANGED");
+    }
+    const body = JSON.stringify(record);
+    if (Buffer.byteLength(body, "utf8") > packageLimits.metadataBytes)
+      preparedPackageError("PREPARED_METADATA_LIMIT", 413);
+    if (preparedPackageSha(JSON.stringify(this.get(caseId))) !== record.company.snapshotSha256)
+      preparedPackageError("PREPARED_SNAPSHOT_CHANGED");
+    return { record, body };
   }
   private filePath(caseId: string, sourceId: string) {
     uuid.parse(caseId);

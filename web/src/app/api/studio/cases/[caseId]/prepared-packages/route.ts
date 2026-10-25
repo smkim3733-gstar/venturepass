@@ -1,10 +1,14 @@
 import { z } from "zod";
-import { getStudioStore } from "@/lib/studio-storage";
-import { preservePreparedPackage } from "@/lib/studio-prepared-package";
+import {
+  listPreparedPackagesForRequest,
+  preservePreparedPackageForRequest,
+} from "@/lib/studio-prepared-package-service";
 import { preparedPackageRequestSchema } from "@/lib/studio-prepared-package-types";
 import { jsonResponse, readBoundedBody, studioRoute, StudioError } from "@/lib/studio-route";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+// Web service: up to 24MB of originals are read from storage and the ZIP is stored back.
+export const maxDuration = 60;
 type Context = { params: Promise<{ caseId: string }> };
 function noQuery(request: Request) {
   if (new URL(request.url).search)
@@ -17,7 +21,7 @@ export function GET(request: Request, context: Context) {
       .string()
       .uuid()
       .parse((await context.params).caseId);
-    return jsonResponse(getStudioStore().listPreparedPackages(caseId));
+    return jsonResponse(await listPreparedPackagesForRequest(caseId));
   });
 }
 export function POST(request: Request, context: Context) {
@@ -32,6 +36,6 @@ export function POST(request: Request, context: Context) {
     const input = preparedPackageRequestSchema.parse(
       JSON.parse(new TextDecoder().decode(await readBoundedBody(request, 4096))),
     );
-    return jsonResponse(await preservePreparedPackage(getStudioStore(), caseId, input));
+    return jsonResponse(await preservePreparedPackageForRequest(caseId, input));
   });
 }

@@ -1,8 +1,10 @@
 import { z } from "zod";
-import { getStudioStore } from "@/lib/studio-storage";
-import { attachmentHeaders, studioRoute, StudioError } from "@/lib/studio-route";
+import { downloadPreparedPackageForRequest } from "@/lib/studio-prepared-package-service";
+import { studioRoute, StudioError } from "@/lib/studio-route";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+// Web service: the stored ZIP (up to 28MB) is read once to check its SHA-256 before the link.
+export const maxDuration = 60;
 export function GET(
   request: Request,
   context: { params: Promise<{ caseId: string; packageId: string }> },
@@ -13,13 +15,6 @@ export function GET(
     const { caseId, packageId } = z
       .object({ caseId: z.string().uuid(), packageId: z.string().uuid() })
       .parse(await context.params);
-    const { record, buffer } = getStudioStore().downloadPreparedPackage(caseId, packageId);
-    return new Response(new Uint8Array(buffer), {
-      headers: {
-        ...attachmentHeaders(record.zip.fileName, "application/zip"),
-        "Content-Length": String(buffer.length),
-        "X-Archive-SHA256": record.zip.sha256,
-      },
-    });
+    return downloadPreparedPackageForRequest(caseId, packageId);
   });
 }

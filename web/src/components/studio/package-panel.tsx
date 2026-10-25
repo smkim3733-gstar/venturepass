@@ -158,13 +158,11 @@ export function PackagePanel({
   plan,
   dirty,
   onBusyChange,
-  onPreserve: preserveOnPc,
+  onPreserve,
   blockedReason,
   statusVersion = 0,
 }: Props) {
   const serverMode = useServerMode();
-  // Preserved packages live in this PC app's database only.
-  const onPreserve = serverMode ? undefined : preserveOnPc;
   const [selected, setSelected] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -243,7 +241,9 @@ export function PackagePanel({
     setMessage("");
     onBusyChange(
       mode === "preserve"
-        ? "원고와 선택 원본을 이 PC의 준비본으로 보관하고 있습니다"
+        ? serverMode
+          ? "원고와 선택 원본을 준비본으로 보관하고 있습니다"
+          : "원고와 선택 원본을 이 PC의 준비본으로 보관하고 있습니다"
         : serverMode
           ? "선택한 원고와 원본으로 ZIP을 만드는 중입니다"
           : "선택한 원고와 원본으로 이 PC에 보관할 ZIP을 만드는 중입니다",

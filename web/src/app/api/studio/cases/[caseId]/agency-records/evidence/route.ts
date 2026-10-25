@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { inspectAgencyEvidence } from "@/lib/studio-agency-evidence";
 import { jsonResponse, studioRoute, StudioError } from "@/lib/studio-route";
-import { getStudioStore } from "@/lib/studio-storage";
+import { withCaseStore } from "@/lib/studio-case-session";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -26,7 +26,12 @@ export function GET(request: Request, context: { params: Promise<{ caseId: strin
       .uuid()
       .parse((await context.params).caseId);
     return jsonResponse(
-      inspectAgencyEvidence(getStudioStore(), caseId, recordId, expectedRevision),
+      await withCaseStore(caseId, async ({ store, stageOriginals }) => {
+        // Web service: the recorded evidence originals come from storage (a no-op locally).
+        const record = store.get(caseId).agencyRecords.find((entry) => entry.id === recordId);
+        if (record) await stageOriginals(record.evidence.map((item) => item.sourceId));
+        return inspectAgencyEvidence(store, caseId, recordId, expectedRevision);
+      }),
     );
   });
 }

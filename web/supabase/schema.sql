@@ -27,8 +27,26 @@ CREATE TABLE IF NOT EXISTS venture_memberships (
     updated_at timestamptz NOT NULL DEFAULT now()
   );
 
+CREATE TABLE IF NOT EXISTS venture_prepared_packages (
+    id uuid PRIMARY KEY,
+    organization_id uuid NOT NULL REFERENCES venture_organizations(id) ON DELETE RESTRICT,
+    case_id uuid NOT NULL REFERENCES venture_cases(id) ON DELETE CASCADE,
+    version integer NOT NULL CHECK (version BETWEEN 1 AND 20),
+    client_request_id uuid NOT NULL,
+    request_digest text NOT NULL CHECK (request_digest ~ '^[a-f0-9]{64}$'),
+    body text NOT NULL,
+    body_sha256 text NOT NULL CHECK (body_sha256 ~ '^[a-f0-9]{64}$'),
+    zip_sha256 text NOT NULL CHECK (zip_sha256 ~ '^[a-f0-9]{64}$'),
+    zip_size_bytes integer NOT NULL CHECK (zip_size_bytes > 0),
+    created_at timestamptz NOT NULL DEFAULT now(),
+    UNIQUE (case_id, version),
+    UNIQUE (case_id, client_request_id)
+  );
+
 ALTER TABLE venture_organizations ENABLE ROW LEVEL SECURITY;
 
 ALTER TABLE venture_cases ENABLE ROW LEVEL SECURITY;
 
 ALTER TABLE venture_memberships ENABLE ROW LEVEL SECURITY;
+
+ALTER TABLE venture_prepared_packages ENABLE ROW LEVEL SECURITY;
