@@ -10,7 +10,7 @@ export function StudioModeProvider({
   children,
 }: {
   serverMode: boolean;
-  children: ReactNode;
+  children?: ReactNode;
 }) {
   return <ServerModeContext.Provider value={serverMode}>{children}</ServerModeContext.Provider>;
 }

@@ -10,7 +10,7 @@ vi.mock("server-only", () => ({}));
 
 const notice = "이 PC 앱에서만 제공합니다";
 function render(serverMode: boolean, element: ReturnType<typeof createElement>) {
-  return renderToStaticMarkup(createElement(StudioModeProvider, { serverMode, children: element }));
+  return renderToStaticMarkup(createElement(StudioModeProvider, { serverMode }, element));
 }
 
 describe("PC-only features on the web service", () => {
