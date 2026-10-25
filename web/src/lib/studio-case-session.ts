@@ -1,8 +1,9 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { StudioError } from "./studio-http";
 import { currentRequestScope, serverModeRequested } from "./studio-request-scope";
+import { originalObjectKey, type OriginalObjectStore } from "./studio-original-store";
 import type { CaseSummary, CompanyProfile } from "./studio-schema";
 import { getStudioStore, StudioStore, type CaseRowSnapshot } from "./studio-storage";
 
@@ -45,12 +46,48 @@ function dispose(session: { root: string; store: StudioStore }) {
  * result with a revision compare-and-swap. A concurrent writer yields 409 instead of a lost
  * update, exactly like the local store's CAS.
  */
+/** Original files of one organization's cases, keyed by the server (see originalObjectKey). */
+export type SessionOriginals = { store: OriginalObjectStore; organizationId: string };
+
+type StoredSource = { id: string; originalName: string | null; mimeType: string | null };
+function sourcesWithOriginals(body: string): StoredSource[] {
+  const parsed = JSON.parse(body) as { sources?: StoredSource[] };
+  return (parsed.sources ?? []).filter((source) => source.originalName);
+}
+
 export async function runCaseSession<T>(
   repository: CaseRowRepository,
   caseId: string,
   run: (session: CaseSession) => T | Promise<T>,
+  originals?: SessionOriginals,
 ): Promise<T> {
   const session = ephemeralStore();
+  const key = (sourceId: string) => originalObjectKey(originals!.organizationId, caseId, sourceId);
+  const uploaded = new Set<string>();
+  // Originals written during this session (addUpload) go to object storage before the row
+  // that references them; a lost CAS leaves at most an unreferenced object, never a dangling row.
+  const uploadNewOriginals = async (current: CaseRowSnapshot) => {
+    if (!originals) return [];
+    const added: string[] = [];
+    for (const source of sourcesWithOriginals(current.body)) {
+      if (uploaded.has(source.id)) continue;
+      const file = join(session.root, "originals", caseId, `${source.id}.bin`);
+      if (!existsSync(file)) continue;
+      await originals.store.put(
+        key(source.id),
+        readFileSync(file),
+        source.mimeType || "application/octet-stream",
+      );
+      uploaded.add(source.id);
+      added.push(source.id);
+    }
+    return added;
+  };
+  const removeOriginals = async (sourceIds: string[]) => {
+    if (!originals) return;
+    // Best effort after the row is saved: a failure leaves an unreferenced object only.
+    for (const sourceId of sourceIds) await originals.store.remove(key(sourceId)).catch(() => {});
+  };
   try {
     let persisted = await repository.load(caseId);
     session.store.importCaseRow(persisted);
@@ -65,11 +102,21 @@ export async function runCaseSession<T>(
       if (!current) {
         if (!(await repository.remove(caseId, persisted.revision)))
           throw new StudioError(staleMessage, 409, "STALE_REVISION");
+        await removeOriginals(sourcesWithOriginals(persisted.body).map((source) => source.id));
         return;
       }
       if (current.revision === persisted.revision && current.body === persisted.body) return;
-      if (!(await repository.compareAndSwap(persisted.revision, current)))
+      const added = await uploadNewOriginals(current);
+      if (!(await repository.compareAndSwap(persisted.revision, current))) {
+        await removeOriginals(added);
         throw new StudioError(staleMessage, 409, "STALE_REVISION");
+      }
+      const kept = new Set(sourcesWithOriginals(current.body).map((source) => source.id));
+      await removeOriginals(
+        sourcesWithOriginals(persisted.body)
+          .map((source) => source.id)
+          .filter((id) => !kept.has(id)),
+      );
       persisted = current;
     };
     const result = await run({ store: session.store, checkpoint });
@@ -133,6 +180,13 @@ export function createCase(profile: CompanyProfile) {
   });
 }
 
+function scopedOriginals(): SessionOriginals | undefined {
+  const scope = currentRequestScope();
+  return scope?.originals
+    ? { store: scope.originals, organizationId: scope.principal.organizationId }
+    : undefined;
+}
+
 export function withCaseStore<T>(
   caseId: string,
   run: (session: CaseSession) => T | Promise<T>,
@@ -140,9 +194,31 @@ export function withCaseStore<T>(
   return Promise.resolve().then(() => {
     const repository = scopedRepository();
     return repository
-      ? runCaseSession(repository, caseId, run)
+      ? runCaseSession(repository, caseId, run, scopedOriginals())
       : run({ store: getStudioStore(), checkpoint: async () => {} });
   });
+}
+
+/** True when this request can store uploaded originals (always true locally). */
+export function originalsAvailable() {
+  return !currentRequestScope() || Boolean(currentRequestScope()?.originals);
+}
+
+/** The stored original of a source, checked against the company record first. */
+export async function readOriginalFile(caseId: string, sourceId: string) {
+  const repository = scopedRepository();
+  if (!repository) return getStudioStore().originalForVentureInput(caseId, sourceId);
+  const originals = scopedOriginals();
+  const source = await runCaseSession(repository, caseId, ({ store }) =>
+    store.get(caseId).sources.find((item) => item.id === sourceId),
+  );
+  if (!source?.originalName || !originals)
+    throw new StudioError("원본 파일을 찾을 수 없습니다.", 404, "SOURCE_NOT_FOUND");
+  const bytes = await originals.store.get(
+    originalObjectKey(originals.organizationId, caseId, sourceId),
+  );
+  if (!bytes) throw new StudioError("원본 파일이 저장소에 없습니다.", 404, "SOURCE_NOT_FOUND");
+  return { source, buffer: Buffer.from(bytes) };
 }
 
 /** In-process repository with the same CAS contract; for tests and local experiments. */

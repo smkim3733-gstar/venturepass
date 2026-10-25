@@ -80,6 +80,11 @@ const serverRoutes: { pattern: RegExp; methods: string[] }[] = [
     methods: ["GET", "POST"],
   },
   { pattern: new RegExp(`^/api/studio/cases/${caseId}/export$`, "i"), methods: ["GET"] },
+  { pattern: new RegExp(`^/api/studio/cases/${caseId}/sources$`, "i"), methods: ["POST"] },
+  {
+    pattern: new RegExp(`^/api/studio/cases/${caseId}/sources/${caseId}$`, "i"),
+    methods: ["GET"],
+  },
   {
     pattern: new RegExp(`^/api/studio/cases/${caseId}/criteria-bindings/${caseId}/export$`, "i"),
     methods: ["GET"],
@@ -124,7 +129,7 @@ async function serverRoute(
   if (principal.role === "viewer" && request.method !== "GET" && request.method !== "HEAD")
     throw new StudioError("조회 권한으로는 변경할 수 없습니다.", 403, "FORBIDDEN");
   const repository = server.repositoryFor(principal);
-  return await runInRequestScope({ principal, repository }, action);
+  return await runInRequestScope({ principal, repository, originals: server.originals }, action);
 }
 
 export async function studioRoute(request: Request, action: () => Promise<Response> | Response) {

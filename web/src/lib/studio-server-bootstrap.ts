@@ -3,12 +3,19 @@ import { PostgresCaseRowRepository } from "./studio-postgres-repository";
 import type { StudioServerRuntime } from "./studio-request-scope";
 import { createPrincipalResolver, type AccessTokenVerifier } from "./studio-server-auth";
 import { supabaseVerifier, type SupabaseAuthConfig } from "./studio-supabase-auth";
+import {
+  SupabaseOriginalStore,
+  type OriginalObjectStore,
+  type SupabaseStorageConfig,
+} from "./studio-original-store";
 
 /** Settings for the shared web service. Secrets come from the hosting environment only. */
 export type ServerSettings = {
   origin: string;
   databaseUrl: string;
   supabase: SupabaseAuthConfig;
+  /** Optional: without it, uploads and original downloads answer 503 on the server. */
+  storage: SupabaseStorageConfig | null;
 };
 
 const requiredKeys = [
@@ -29,6 +36,13 @@ export function serverSettingsFromEnv(env: NodeJS.ProcessEnv = process.env): Ser
       origin,
       databaseUrl: env.DATABASE_URL!,
       supabase: { url: env.SUPABASE_URL!, anonKey: env.SUPABASE_ANON_KEY! },
+      storage: env.SUPABASE_SERVICE_ROLE_KEY?.trim()
+        ? {
+            url: env.SUPABASE_URL!,
+            serviceRoleKey: env.SUPABASE_SERVICE_ROLE_KEY,
+            bucket: env.SUPABASE_STORAGE_BUCKET?.trim() || "venturepass-originals",
+          }
+        : null,
     };
   } catch {
     return null;
@@ -40,9 +54,11 @@ export function createServerRuntime(
   origin: string,
   executor: SqlExecutor,
   verify: AccessTokenVerifier,
+  originals?: OriginalObjectStore,
 ): StudioServerRuntime {
   return {
     origin,
+    originals,
     authenticate: createPrincipalResolver(executor, verify),
     repositoryFor: (principal) => new PostgresCaseRowRepository(executor, principal.organizationId),
   };
@@ -82,6 +98,7 @@ export function loadServerRuntimeFromEnv(): Promise<StudioServerRuntime | null> 
       settings.origin,
       await postgresExecutor(settings.databaseUrl),
       supabaseVerifier(settings.supabase),
+      settings.storage ? new SupabaseOriginalStore(settings.storage) : undefined,
     );
   })().catch(() => {
     pending = null;

@@ -8,6 +8,9 @@ import {
 } from "@/app/api/studio/cases/[caseId]/route";
 import { GET as ventureInRoute } from "@/app/api/studio/cases/[caseId]/venturein/route";
 import { GET as statusRoute } from "@/app/api/studio/status/route";
+import { POST as uploadRoute } from "@/app/api/studio/cases/[caseId]/sources/route";
+import { GET as downloadRoute } from "@/app/api/studio/cases/[caseId]/sources/[sourceId]/route";
+import { MemoryOriginalStore } from "./studio-original-store";
 import { MemoryCaseRowRepository } from "./studio-case-session";
 import { configureServerRuntime, type StudioPrincipal } from "./studio-request-scope";
 import { emptyProfile } from "./studio-schema";
@@ -39,6 +42,7 @@ const principals: Record<string, StudioPrincipal> = {
   },
 };
 let repositories: Map<string, MemoryCaseRowRepository>;
+let originalStore: MemoryOriginalStore;
 
 function request(path: string, user: string | null, init: RequestInit = {}) {
   const headers = new Headers(init.headers);
@@ -67,15 +71,73 @@ beforeEach(() => {
     [orgA, new MemoryCaseRowRepository()],
     [orgB, new MemoryCaseRowRepository()],
   ]);
+  originalStore = new MemoryOriginalStore();
   configureServerRuntime({
     origin,
     authenticate: async (value) => principals[value.headers.get("x-test-user") ?? ""] ?? null,
     repositoryFor: (principal) => repositories.get(principal.organizationId)!,
+    originals: originalStore,
   });
 });
 afterEach(() => {
   configureServerRuntime(null);
   delete process.env.VENTUREPASS_MODE;
+});
+
+describe("server mode originals", () => {
+  async function uploadText(
+    user: string,
+    caseId: string,
+    bytes: Uint8Array<ArrayBuffer>,
+    revision = 0,
+  ) {
+    const form = new FormData();
+    form.append("file", new File([bytes], "가상_자료.txt", { type: "text/plain" }));
+    form.append("kind", "technology");
+    form.append("revision", String(revision));
+    return uploadRoute(
+      request(`/api/studio/cases/${caseId}/sources`, user, { method: "POST", body: form }),
+      params(caseId),
+    );
+  }
+
+  it("uploads to the organization's object storage and downloads it back", async () => {
+    const created = await createCase("a-editor", "가상 업로드 회사");
+    const response = await uploadText(
+      "a-editor",
+      created.id,
+      new TextEncoder().encode("가상 기술 설명 본문입니다."),
+    );
+    expect(response.status).toBe(201);
+    const company = await response.json();
+    const sourceId = company.sources[0].id as string;
+    expect(originalStore.objects.size).toBe(1);
+    const download = await downloadRoute(
+      request(`/api/studio/cases/${created.id}/sources/${sourceId}`, "a-editor"),
+      { params: Promise.resolve({ caseId: created.id, sourceId }) },
+    );
+    expect(download.status).toBe(200);
+    expect(await download.text()).toBe("가상 기술 설명 본문입니다.");
+    const crossOrg = await downloadRoute(
+      request(`/api/studio/cases/${created.id}/sources/${sourceId}`, "b-editor"),
+      { params: Promise.resolve({ caseId: created.id, sourceId }) },
+    );
+    expect(crossOrg.status).toBe(404);
+  });
+
+  it("limits web uploads to 4MB and needs configured original storage", async () => {
+    const created = await createCase("a-editor", "가상 한도 회사");
+    const large = await uploadText("a-editor", created.id, new Uint8Array(4 * 1024 * 1024 + 1));
+    expect(large.status).toBe(413);
+    configureServerRuntime({
+      origin,
+      authenticate: async (value) => principals[value.headers.get("x-test-user") ?? ""] ?? null,
+      repositoryFor: (principal) => repositories.get(principal.organizationId)!,
+    });
+    const unconfigured = await uploadText("a-editor", created.id, new TextEncoder().encode("본문"));
+    expect(unconfigured.status).toBe(503);
+    expect((await unconfigured.json()).code).toBe("ORIGINALS_NOT_CONFIGURED");
+  });
 });
 
 describe("server mode organization boundaries", () => {

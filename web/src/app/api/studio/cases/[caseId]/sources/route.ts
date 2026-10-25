@@ -2,12 +2,15 @@ import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { extractSource, SourceExtractionError, MAX_UPLOAD_BYTES } from "@/lib/studio-extract";
 import { originalOnlyWarnings, sourceKinds, sourceSchema } from "@/lib/studio-schema";
-import { getStudioStore } from "@/lib/studio-storage";
+import { originalsAvailable, withCaseStore } from "@/lib/studio-case-session";
+import { currentRequestScope } from "@/lib/studio-request-scope";
 import { jsonResponse, readBoundedBody, studioRoute, StudioError } from "@/lib/studio-http";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 180;
 const MAX_FILE = MAX_UPLOAD_BYTES;
+/** Vercel functions accept about 4.5MB per request body; larger files need direct upload. */
+const MAX_SERVER_FILE = 4 * 1024 * 1024;
 
 /** Recognize the allowed original formats without parsing, OCR, or external requests. */
 function originalMime(name: string, bytes: Uint8Array) {
@@ -58,6 +61,16 @@ export function POST(request: Request, context: { params: Promise<{ caseId: stri
       throw new StudioError("내용이 있는 파일을 선택해 주세요.", 400, "FILE_REQUIRED");
     if (file.size > MAX_FILE)
       throw new StudioError("파일은 12MB까지 업로드할 수 있습니다.", 413, "TOO_LARGE");
+    if (currentRequestScope()) {
+      if (!originalsAvailable())
+        throw new StudioError(
+          "웹 서비스의 원본 저장소가 설정되지 않았습니다.",
+          503,
+          "ORIGINALS_NOT_CONFIGURED",
+        );
+      if (file.size > MAX_SERVER_FILE)
+        throw new StudioError("웹 서비스에서는 파일당 4MB까지 올릴 수 있습니다.", 413, "TOO_LARGE");
+    }
     const metadata = z
       .object({
         kind: z.enum(sourceKinds),
@@ -78,49 +91,50 @@ export function POST(request: Request, context: { params: Promise<{ caseId: stri
         "ORIGINAL_ONLY_AI",
       );
     const { caseId } = await context.params;
-    const store = getStudioStore();
-    const record = store.get(caseId);
-    if (record.revision !== metadata.revision)
-      throw new StudioError(
-        "기업정보가 변경되었습니다. 다시 불러와 주세요.",
-        409,
-        "STALE_REVISION",
-      );
-    if (record.sources.length >= 40)
-      throw new StudioError("기업별 자료는 40개까지 등록할 수 있습니다.", 413, "SOURCE_LIMIT");
-    const bytes = new Uint8Array(await file.arrayBuffer());
-    const pending = metadata.extractionMode === "original-only";
-    const mimeType = pending
-      ? originalMime(file.name, bytes)
-      : file.type || "application/octet-stream";
-    const extracted = pending
-      ? { text: "", extraction: "pending" as const, warnings: [...originalOnlyWarnings] }
-      : await extractSource(file, { allowAi: metadata.allowAi === "true" }).catch(
-          (error: unknown) => {
-            if (error instanceof SourceExtractionError)
-              throw new StudioError(error.message, error.status, error.code);
-            throw error;
-          },
+    return withCaseStore(caseId, async ({ store }) => {
+      const record = store.get(caseId);
+      if (record.revision !== metadata.revision)
+        throw new StudioError(
+          "기업정보가 변경되었습니다. 다시 불러와 주세요.",
+          409,
+          "STALE_REVISION",
         );
-    if (!pending && !extracted.text.trim())
-      throw new StudioError(
-        "파일에서 본문을 추출하지 못했습니다. 내용을 직접 입력하거나 다른 파일을 등록해 주세요.",
-        422,
-        "NO_TEXT",
-      );
-    const now = new Date().toISOString();
-    const source = sourceSchema.parse({
-      id: randomUUID(),
-      name: file.name,
-      originalName: file.name,
-      mimeType,
-      kind: metadata.kind,
-      text: extracted.text,
-      extraction: extracted.extraction,
-      warnings: extracted.warnings,
-      createdAt: now,
-      updatedAt: now,
+      if (record.sources.length >= 40)
+        throw new StudioError("기업별 자료는 40개까지 등록할 수 있습니다.", 413, "SOURCE_LIMIT");
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      const pending = metadata.extractionMode === "original-only";
+      const mimeType = pending
+        ? originalMime(file.name, bytes)
+        : file.type || "application/octet-stream";
+      const extracted = pending
+        ? { text: "", extraction: "pending" as const, warnings: [...originalOnlyWarnings] }
+        : await extractSource(file, { allowAi: metadata.allowAi === "true" }).catch(
+            (error: unknown) => {
+              if (error instanceof SourceExtractionError)
+                throw new StudioError(error.message, error.status, error.code);
+              throw error;
+            },
+          );
+      if (!pending && !extracted.text.trim())
+        throw new StudioError(
+          "파일에서 본문을 추출하지 못했습니다. 내용을 직접 입력하거나 다른 파일을 등록해 주세요.",
+          422,
+          "NO_TEXT",
+        );
+      const now = new Date().toISOString();
+      const source = sourceSchema.parse({
+        id: randomUUID(),
+        name: file.name,
+        originalName: file.name,
+        mimeType,
+        kind: metadata.kind,
+        text: extracted.text,
+        extraction: extracted.extraction,
+        warnings: extracted.warnings,
+        createdAt: now,
+        updatedAt: now,
+      });
+      return jsonResponse(store.addUpload(caseId, metadata.revision, source, bytes), 201);
     });
-    return jsonResponse(store.addUpload(caseId, metadata.revision, source, bytes), 201);
   });
 }
