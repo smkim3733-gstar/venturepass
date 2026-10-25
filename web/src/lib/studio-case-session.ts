@@ -2,6 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { StudioError } from "./studio-http";
+import { currentRequestScope, serverModeRequested } from "./studio-request-scope";
 import type { CaseSummary, CompanyProfile } from "./studio-schema";
 import { getStudioStore, StudioStore, type CaseRowSnapshot } from "./studio-storage";
 
@@ -105,28 +106,43 @@ export async function listCasesInRepository(repository: CaseRowRepository): Prom
   }
 }
 
-let serverRepository: CaseRowRepository | null = null;
-/** Server mode wiring point; null keeps the local single-user store. */
-export function configureCaseRepository(repository: CaseRowRepository | null) {
-  serverRepository = repository;
+/**
+ * The organization's repository for this request (server mode), or null for the local
+ * single-user store. Server mode without a request scope fails closed.
+ */
+function scopedRepository(): CaseRowRepository | null {
+  const scope = currentRequestScope();
+  if (scope) return scope.repository;
+  if (serverModeRequested()) throw new StudioError("로그인이 필요합니다.", 401, "UNAUTHENTICATED");
+  return null;
 }
 
 export function listCases(): Promise<CaseSummary[]> {
-  if (serverRepository) return listCasesInRepository(serverRepository);
-  return Promise.resolve().then(() => getStudioStore().list());
+  return Promise.resolve().then(() => {
+    const repository = scopedRepository();
+    return repository ? listCasesInRepository(repository) : getStudioStore().list();
+  });
 }
 
 export function createCase(profile: CompanyProfile) {
-  if (serverRepository) return createCaseInRepository(serverRepository, profile);
-  return Promise.resolve().then(() => getStudioStore().create(profile));
+  return Promise.resolve().then(() => {
+    const repository = scopedRepository();
+    return repository
+      ? createCaseInRepository(repository, profile)
+      : getStudioStore().create(profile);
+  });
 }
 
 export function withCaseStore<T>(
   caseId: string,
   run: (session: CaseSession) => T | Promise<T>,
 ): Promise<T> {
-  if (serverRepository) return runCaseSession(serverRepository, caseId, run);
-  return Promise.resolve().then(() => run({ store: getStudioStore(), checkpoint: async () => {} }));
+  return Promise.resolve().then(() => {
+    const repository = scopedRepository();
+    return repository
+      ? runCaseSession(repository, caseId, run)
+      : run({ store: getStudioStore(), checkpoint: async () => {} });
+  });
 }
 
 /** In-process repository with the same CAS contract; for tests and local experiments. */

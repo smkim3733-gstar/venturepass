@@ -31,6 +31,18 @@ export const venturePassSchemaSql = [
   )`,
   `CREATE INDEX IF NOT EXISTS venture_cases_org_updated
     ON venture_cases (organization_id, updated_at DESC)`,
+  // One organization per staff account. user_id is the identity provider's user id; passwords
+  // are never stored here. Only an admin-approved "active" member can use the service.
+  `CREATE TABLE IF NOT EXISTS venture_memberships (
+    user_id uuid PRIMARY KEY,
+    organization_id uuid NOT NULL REFERENCES venture_organizations(id) ON DELETE RESTRICT,
+    email text NOT NULL CHECK (length(email) BETWEEN 3 AND 320),
+    display_name text NOT NULL CHECK (length(display_name) BETWEEN 1 AND 100),
+    role text NOT NULL CHECK (role IN ('admin', 'editor', 'viewer')),
+    status text NOT NULL CHECK (status IN ('pending', 'active', 'disabled')),
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now()
+  )`,
 ];
 
 export async function ensureVenturePassSchema(executor: SqlExecutor) {

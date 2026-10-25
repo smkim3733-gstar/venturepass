@@ -221,6 +221,7 @@ import {
   type StudioCase,
 } from "./studio-schema";
 import { StudioError } from "./studio-http";
+import { serverModeRequested } from "./studio-request-scope";
 import {
   MAX_PREPARATION_REQUESTS,
   MAX_PREPARATION_RUNS,
@@ -3533,5 +3534,12 @@ export class StudioStore {
 
 let defaultStore: StudioStore | undefined;
 export function getStudioStore() {
+  // Defense in depth: a server deployment must never open or create a local data file.
+  if (serverModeRequested())
+    throw new StudioError(
+      "웹 서비스에서는 로컬 저장소를 사용할 수 없습니다.",
+      503,
+      "LOCAL_STORE_DISABLED",
+    );
   return (defaultStore ??= new StudioStore());
 }

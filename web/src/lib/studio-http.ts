@@ -1,4 +1,10 @@
 import { ZodError } from "zod";
+import {
+  getServerRuntime,
+  runInRequestScope,
+  serverModeRequested,
+  type StudioServerRuntime,
+} from "./studio-request-scope";
 
 export class StudioError extends Error {
   constructor(
@@ -56,8 +62,74 @@ export function jsonResponse(value: unknown, status = 200) {
   return Response.json(value, { status, headers: privateHeaders });
 }
 
+const caseId = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
+/**
+ * Routes that run on the shared server. Everything else (벤처인, Windows OCR, quality tools,
+ * original files until they move to object storage) is local-only and answers 404 there.
+ */
+const serverRoutes: { pattern: RegExp; methods: string[] }[] = [
+  { pattern: /^\/api\/studio\/status$/, methods: ["GET"] },
+  { pattern: /^\/api\/studio\/cases$/, methods: ["GET", "POST"] },
+  { pattern: new RegExp(`^/api/studio/cases/${caseId}$`, "i"), methods: ["GET", "PATCH"] },
+  {
+    pattern: new RegExp(
+      `^/api/studio/cases/${caseId}/(generate|guided-preparation|preparation|answer-suggestions|source-suggestions/preview)$`,
+      "i",
+    ),
+    methods: ["GET", "POST"],
+  },
+  { pattern: new RegExp(`^/api/studio/cases/${caseId}/export$`, "i"), methods: ["GET"] },
+  {
+    pattern: new RegExp(`^/api/studio/cases/${caseId}/criteria-bindings/${caseId}/export$`, "i"),
+    methods: ["GET"],
+  },
+];
+
+/** Same-origin checks against the deployed public origin; authentication comes after. */
+function assertServerRequest(request: Request, server: StudioServerRuntime) {
+  const expected = new URL(server.origin).origin;
+  const origin = request.headers.get("origin");
+  if (origin && origin !== expected)
+    throw new StudioError("다른 사이트에서 보낸 요청은 허용하지 않습니다.", 403, "CROSS_ORIGIN");
+  const site = request.headers.get("sec-fetch-site");
+  if (site && site !== "same-origin" && site !== "none")
+    throw new StudioError("다른 사이트에서 보낸 요청은 허용하지 않습니다.", 403, "CROSS_ORIGIN");
+  if (request.method !== "GET" && request.method !== "HEAD" && !origin && !site)
+    throw new StudioError("요청 출처를 확인할 수 없습니다.", 403, "CROSS_ORIGIN");
+  const path = new URL(request.url).pathname;
+  const route = serverRoutes.find((item) => item.pattern.test(path));
+  if (!route)
+    throw new StudioError("이 기능은 웹 서비스에서 제공하지 않습니다.", 404, "LOCAL_ONLY");
+  if (!route.methods.includes(request.method))
+    throw new StudioError("이 기능은 웹 서비스에서 제공하지 않습니다.", 405, "METHOD_NOT_ALLOWED");
+}
+
+async function serverRoute(
+  request: Request,
+  server: StudioServerRuntime,
+  action: () => Promise<Response> | Response,
+) {
+  assertServerRequest(request, server);
+  const principal = await server.authenticate(request);
+  if (!principal) throw new StudioError("로그인이 필요합니다.", 401, "UNAUTHENTICATED");
+  if (principal.role === "viewer" && request.method !== "GET" && request.method !== "HEAD")
+    throw new StudioError("조회 권한으로는 변경할 수 없습니다.", 403, "FORBIDDEN");
+  const repository = server.repositoryFor(principal);
+  return await runInRequestScope({ principal, repository }, action);
+}
+
 export async function studioRoute(request: Request, action: () => Promise<Response> | Response) {
   try {
+    if (serverModeRequested()) {
+      const server = getServerRuntime();
+      if (!server)
+        throw new StudioError(
+          "웹 서비스 설정(인증·저장소)이 완료되지 않았습니다.",
+          503,
+          "SERVER_NOT_CONFIGURED",
+        );
+      return await serverRoute(request, server, action);
+    }
     assertLocalRequest(request);
     return await action();
   } catch (error) {

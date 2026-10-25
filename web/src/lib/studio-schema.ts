@@ -438,7 +438,8 @@ export type CaseSummary = Pick<
 export type StudioStatus = {
   aiConfigured: boolean;
   model: string;
-  storage: "local";
+  /** "server" means the shared web service; local-only features are unavailable there. */
+  storage: "local" | "server";
   supportedFiles: string[];
 };
 export const mutationSchema = z.discriminatedUnion("action", [
