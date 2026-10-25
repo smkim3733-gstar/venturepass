@@ -4,17 +4,25 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { PGlite } from "@electric-sql/pglite";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { listCasesInRepository, runCaseSession } from "./studio-case-session";
-import { MemoryOriginalStore, originalObjectKey } from "./studio-original-store";
+import {
+  MemoryOriginalStore,
+  originalObjectKey,
+  preparedPackageObjectKey,
+} from "./studio-original-store";
+import { preservePreparedPackage } from "./studio-prepared-package";
+import { PostgresPreparedPackageRepository } from "./studio-prepared-package-repository";
 import {
   ensureVenturePassSchema,
   PostgresCaseRowRepository,
   type SqlExecutor,
 } from "./studio-postgres-repository";
-import { emptyProfile, type SourceDocument } from "./studio-schema";
-import { StudioStore } from "./studio-storage";
+import { emptyProfile, type Candidate, type SourceDocument } from "./studio-schema";
+import { parsePreparedPackageRow, StudioStore } from "./studio-storage";
 import { formatMigrationReport, migrateLocalDataToWeb } from "./studio-web-migration";
+
+vi.mock("server-only", () => ({}));
 
 const orgA = randomUUID();
 const orgB = randomUUID();
@@ -63,6 +71,91 @@ function seedLocal(companies: { name: string; businessNumber?: string; files?: n
     store.close();
   }
 }
+const candidate: Candidate = {
+  id: "synthetic-candidate",
+  title: "시험 아이템",
+  problem: "시험 문제",
+  solution: "시험 해결",
+  targetCustomer: "시험 고객",
+  differentiation: "확인 필요",
+  stage: "구상",
+  businessModel: "확인 필요",
+  recommendation: "확인 필요",
+  evidence: [],
+  gaps: [],
+};
+/** Adds a plan to a local company and preserves `count` packages with its first original. */
+async function preserveLocal(caseId: string, sourceId: string, count: number) {
+  const store = new StudioStore(dataDirectory);
+  try {
+    let company = store.saveAnalysis(
+      caseId,
+      store.get(caseId).revision,
+      { summary: "분석", facts: [], candidates: [candidate], questions: [], warnings: [] },
+      "assisted",
+    );
+    company = store.mutate(
+      caseId,
+      {
+        action: "select-candidate",
+        revision: company.revision,
+        clientRequestId: randomUUID(),
+        candidateId: candidate.id,
+        analysisGeneratedAt: company.analysis!.generatedAt,
+        analysisSourceRevision: company.analysis!.sourceRevision,
+        expectedSelectedCandidateId: company.selectedCandidateId,
+        reason: "합성 후보 선택 근거",
+      },
+      () => [],
+    );
+    company = store.saveGeneratedPlan(
+      caseId,
+      company.revision,
+      candidate.id,
+      {
+        title: "합성 계획",
+        summary: "합성 원고 본문",
+        sections: [
+          {
+            key: "solution",
+            title: "기술 구상",
+            content: "합성 구상",
+            evidence: [],
+            needsConfirmation: true,
+          },
+        ],
+        actionItems: [],
+        interviewQuestions: [],
+      },
+      [],
+      "assisted",
+    );
+    const ids: string[] = [];
+    for (let index = 0; index < count; index += 1) {
+      const result = await preservePreparedPackage(store, caseId, {
+        revision: company.revision,
+        planId: company.plans[0].id,
+        sourceIds: [sourceId],
+        clientRequestId: randomUUID(),
+      });
+      ids.push(result.package.id);
+    }
+    return ids;
+  } finally {
+    store.close();
+  }
+}
+const localArchive = (packageId: string) => {
+  const local = new DatabaseSync(join(dataDirectory, "studio.sqlite"), { readOnly: true });
+  try {
+    const row = local
+      .prepare("SELECT archive FROM studio_prepared_packages WHERE id = ?")
+      .get(packageId) as { archive: Uint8Array };
+    return new Uint8Array(row.archive);
+  } finally {
+    local.close();
+  }
+};
 const localRow = (id: string) => {
   const store = new StudioStore(dataDirectory);
   try {
@@ -246,6 +339,70 @@ describe("moving PC app companies to the web service", () => {
       intakeOnlyOriginals: 0,
     });
     expect(formatMigrationReport(report)).toContain("벤처인 진행 기록 1개");
+  });
+
+  it("copies preserved packages with their company, checked and in version order", async () => {
+    const [company] = seedLocal([{ name: "가상 보관본 회사", files: 1 }]);
+    const ids = await preserveLocal(company.id, company.files[0].sourceId, 2);
+    const preview = await run();
+    expect(preview.cases[0]).toMatchObject({ outcome: "ready", originals: 1, preparedPackages: 2 });
+    expect(originals.objects.size).toBe(0);
+
+    const report = await run({ apply: true });
+    expect(report.cases[0]).toMatchObject({
+      outcome: "migrated",
+      originals: 1,
+      preparedPackages: 2,
+    });
+    expect(report.notMigrated.preparedPackages).toBe(0);
+    expect(formatMigrationReport(report)).toContain("보관본 2개");
+    const repository = new PostgresPreparedPackageRepository(executor, orgA);
+    const records = (await repository.list(company.id)).map((row) =>
+      parsePreparedPackageRow(company.id, row),
+    );
+    expect(records.map((record) => [record.id, record.version])).toEqual([
+      [ids[1], 2],
+      [ids[0], 1],
+    ]);
+    for (const id of ids)
+      expect(await originals.get(preparedPackageObjectKey(orgA, company.id, id))).toEqual(
+        localArchive(id),
+      );
+    expect(originals.objects.size).toBe(3);
+
+    const again = await run({ apply: true });
+    expect(again.cases[0].outcome).toBe("already-migrated");
+    expect(again.notMigrated.preparedPackages).toBe(0);
+    expect(await repository.count(company.id)).toBe(2);
+  });
+
+  it("does not move a company whose preserved ZIP changed, or half of one that failed", async () => {
+    const [changed, failing] = seedLocal([
+      { name: "가상 변조 보관본 회사", files: 1 },
+      { name: "가상 실패 보관본 회사", files: 1 },
+    ]);
+    const [changedId] = await preserveLocal(changed.id, changed.files[0].sourceId, 1);
+    await preserveLocal(failing.id, failing.files[0].sourceId, 1);
+    const local = new DatabaseSync(join(dataDirectory, "studio.sqlite"));
+    local
+      .prepare("UPDATE studio_prepared_packages SET archive = ? WHERE id = ?")
+      .run(Buffer.from("PK changed"), changedId);
+    local.close();
+
+    const brokenInsert: SqlExecutor = {
+      query: async (text, params) => {
+        if (text.includes("INSERT INTO venture_prepared_packages"))
+          throw new Error("synthetic failure");
+        return executor.query(text, params);
+      },
+    };
+    const report = await run({ apply: true, executor: brokenInsert });
+    const outcome = (id: string) => report.cases.find((item) => item.caseId === id)?.outcome;
+    expect(outcome(changed.id)).toBe("prepared-invalid");
+    expect(outcome(failing.id)).toBe("failed");
+    expect(report.notMigrated.preparedPackages).toBe(2);
+    expect(await webRows()).toEqual([]);
+    expect(originals.objects.size).toBe(0);
   });
 
   it("explains a missing PC data folder", async () => {

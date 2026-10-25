@@ -4,13 +4,22 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { z } from "zod";
-import { originalObjectKey, type OriginalObjectStore } from "./studio-original-store";
+import {
+  originalObjectKey,
+  preparedPackageObjectKey,
+  type OriginalObjectStore,
+} from "./studio-original-store";
 import { PostgresCaseRowRepository, type SqlExecutor } from "./studio-postgres-repository";
-import { StudioStore, type CaseRowSnapshot } from "./studio-storage";
+import {
+  PostgresPreparedPackageRepository,
+  type NewPreparedPackageRow,
+} from "./studio-prepared-package-repository";
+import { MAX_PREPARED_PACKAGES } from "./studio-prepared-package-types";
+import { parsePreparedPackageRow, StudioStore, type CaseRowSnapshot } from "./studio-storage";
 
 /**
- * One-way copy of this PC app's companies to one organization of the web service.
- * The local data is only read. The web copy is never overwritten: a company that already
+ * One-way copy of this PC app's companies (with their originals and preserved packages) to
+ * one organization of the web service. The local data is only read. The web copy is never overwritten: a company that already
  * exists there is skipped, and a probable duplicate (same business number or name) is
  * skipped unless explicitly allowed.
  */
@@ -37,6 +46,7 @@ export type CaseOutcome =
   | "duplicate-company"
   | "invalid-record"
   | "original-missing"
+  | "prepared-invalid"
   | "failed";
 
 export type CaseMigrationReport = {
@@ -44,6 +54,8 @@ export type CaseMigrationReport = {
   companyName: string;
   outcome: CaseOutcome;
   originals: number;
+  /** Preserved packages (원고·첨부 보관본) copied, or to be copied in preview. */
+  preparedPackages: number;
   message: string;
   duplicateOf?: string;
 };
@@ -56,6 +68,7 @@ export type WebMigrationReport = {
   notMigrated: {
     ventureAccounts: number;
     ventureWorkflows: number;
+    /** Preserved packages of companies that were not copied in this run. */
     preparedPackages: number;
     intakeOnlyOriginals: number;
   };
@@ -76,12 +89,86 @@ const messages: Record<CaseOutcome, string> = {
   "duplicate-company": "웹에 같은 회사로 보이는 기업이 있습니다. 중복을 막으려고 건너뛰었습니다.",
   "invalid-record": "기업 기록을 확인할 수 없어 옮기지 않았습니다.",
   "original-missing": "원본 파일이 이 PC에 없거나 읽을 수 없어 옮기지 않았습니다.",
+  "prepared-invalid": "원고·첨부 보관본의 기록이나 ZIP이 보관 당시와 달라 옮기지 않았습니다.",
   failed: "옮기는 중 문제가 생겨 이 기업은 옮기지 않았습니다. 올린 원본은 되돌렸습니다.",
 };
 
 type LocalRow = { id: string; revision: number; evidence_revision: number; body: string };
 type Identity = { caseId: string; companyName: string; businessNumber: string };
 type OriginalCopy = { key: string; bytes: Uint8Array; mimeType: string };
+type LocalPreparedRow = {
+  id: string;
+  version: number;
+  client_request_id: string;
+  request_digest: string;
+  body: string;
+  body_sha256: string;
+  archive: Uint8Array;
+};
+type PreparedCopy = { row: NewPreparedPackageRow; copy: OriginalCopy };
+
+/**
+ * A company's preserved packages, checked like the PC app checks them before a download:
+ * the record body matches its hash and belongs to the company, the ZIP matches the record,
+ * and versions run 1..n. Null when anything does not match.
+ */
+function preparedCopies(
+  local: DatabaseSync,
+  organizationId: string,
+  caseId: string,
+): PreparedCopy[] | null {
+  let rows: LocalPreparedRow[];
+  try {
+    rows = local
+      .prepare(
+        "SELECT id, version, client_request_id, request_digest, body, body_sha256, archive FROM studio_prepared_packages WHERE case_id = ? ORDER BY version",
+      )
+      .all(caseId) as LocalPreparedRow[];
+  } catch {
+    // Older data folders may not have the table yet.
+    return [];
+  }
+  if (rows.length > MAX_PREPARED_PACKAGES) return null;
+  const copies: PreparedCopy[] = [];
+  for (const [index, row] of rows.entries()) {
+    let record;
+    try {
+      record = parsePreparedPackageRow(caseId, row);
+    } catch {
+      return null;
+    }
+    const archive = new Uint8Array(row.archive);
+    if (
+      Number(row.version) !== index + 1 ||
+      record.version !== index + 1 ||
+      record.id !== row.id ||
+      record.clientRequestId !== row.client_request_id ||
+      record.requestDigest !== row.request_digest ||
+      archive.length !== record.zip.sizeBytes ||
+      sha(archive) !== record.zip.sha256
+    )
+      return null;
+    copies.push({
+      row: {
+        id: record.id,
+        caseId,
+        version: record.version,
+        clientRequestId: record.clientRequestId,
+        requestDigest: record.requestDigest,
+        body: row.body,
+        bodySha256: row.body_sha256,
+        zipSha256: record.zip.sha256,
+        zipSizeBytes: record.zip.sizeBytes,
+      },
+      copy: {
+        key: preparedPackageObjectKey(organizationId, caseId, record.id),
+        bytes: archive,
+        mimeType: "application/zip",
+      },
+    });
+  }
+  return copies;
+}
 
 const sha = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 const sameBytes = (left: Uint8Array, right: Uint8Array) =>
@@ -199,23 +286,44 @@ export async function migrateLocalDataToWeb(
   const only = options.caseIds?.map(caseId);
   const allowDuplicate = new Set(options.allowDuplicateCaseIds?.map(caseId));
 
+  // Read-only for the whole run: preserved package ZIPs are read one company at a time.
   const local = new DatabaseSync(databaseFile, { readOnly: true });
-  let rows: LocalRow[];
-  let notMigrated: WebMigrationReport["notMigrated"];
   try {
-    rows = local
-      .prepare("SELECT id, revision, evidence_revision, body FROM studio_cases ORDER BY id")
-      .all() as LocalRow[];
-    if (only) rows = rows.filter((row) => only.includes(row.id));
-    notMigrated = {
-      ventureAccounts: count(local, "venture_accounts", "WHERE encrypted_payload IS NOT NULL"),
-      ventureWorkflows: count(local, "venture_workflows"),
-      preparedPackages: count(local, "studio_prepared_packages"),
-      intakeOnlyOriginals: 0,
-    };
+    return await migrateRows(options, {
+      apply,
+      root,
+      local,
+      organization,
+      only,
+      allowDuplicate,
+    });
   } finally {
     local.close();
   }
+}
+
+async function migrateRows(
+  options: WebMigrationOptions,
+  context: {
+    apply: boolean;
+    root: string;
+    local: DatabaseSync;
+    organization: { id: string; name: string };
+    only: string[] | undefined;
+    allowDuplicate: Set<string>;
+  },
+): Promise<WebMigrationReport> {
+  const { apply, root, local, organization, only, allowDuplicate } = context;
+  let rows = local
+    .prepare("SELECT id, revision, evidence_revision, body FROM studio_cases ORDER BY id")
+    .all() as LocalRow[];
+  if (only) rows = rows.filter((row) => only.includes(row.id));
+  const notMigrated: WebMigrationReport["notMigrated"] = {
+    ventureAccounts: count(local, "venture_accounts", "WHERE encrypted_payload IS NOT NULL"),
+    ventureWorkflows: count(local, "venture_workflows"),
+    preparedPackages: 0,
+    intakeOnlyOriginals: 0,
+  };
   if (only?.some((id) => !rows.some((row) => row.id === id)))
     throw new WebMigrationError("지정한 기업 중 이 PC에 없는 기업이 있습니다.");
 
@@ -226,6 +334,10 @@ export async function migrateLocalDataToWeb(
     )
   ).rows.map((row) => identityOf(row.id, row.body));
   const repository = new PostgresCaseRowRepository(options.executor, organization.id);
+  const preparedRepository = new PostgresPreparedPackageRepository(
+    options.executor,
+    organization.id,
+  );
   const cases: CaseMigrationReport[] = [];
 
   // The same validation as a server session: the row must load into a StudioStore.
@@ -234,15 +346,29 @@ export async function migrateLocalDataToWeb(
   try {
     for (const row of rows) {
       const identity = identityOf(row.id, row.body);
-      const report = (outcome: CaseOutcome, originals = 0, duplicateOf?: string) =>
+      const localPrepared = count(
+        local,
+        "studio_prepared_packages",
+        `WHERE case_id = '${uuid.parse(row.id)}'`,
+      );
+      const report = (
+        outcome: CaseOutcome,
+        originals = 0,
+        duplicateOf?: string,
+        preparedPackages = 0,
+      ) => {
+        if (!["ready", "migrated", "already-migrated"].includes(outcome))
+          notMigrated.preparedPackages += localPrepared;
         cases.push({
           caseId: row.id,
           companyName: identity.companyName || "(이름 없음)",
           outcome,
           originals,
+          preparedPackages,
           message: messages[outcome],
           ...(duplicateOf ? { duplicateOf } : {}),
         });
+      };
       const snapshot: CaseRowSnapshot = {
         id: row.id,
         revision: Number(row.revision),
@@ -302,21 +428,37 @@ export async function migrateLocalDataToWeb(
         report("original-missing");
         continue;
       }
+      const prepared = preparedCopies(local, organization.id, row.id);
+      if (!prepared) {
+        report("prepared-invalid");
+        continue;
+      }
       if (!apply) {
-        report("ready", copies.length);
+        report("ready", copies.length, undefined, prepared.length);
         webIdentities.push(identity);
         continue;
       }
       let created: string[] = [];
+      let inserted = false;
       try {
-        created = await copyOriginals(options.originals, copies);
+        created = await copyOriginals(options.originals, [
+          ...copies,
+          ...prepared.map((item) => item.copy),
+        ]);
         await repository.insert(snapshot);
+        inserted = true;
+        // Versions in order against the row just inserted, the same rule as the web service.
+        for (const item of prepared)
+          if (!(await preparedRepository.insert(item.row, snapshot.revision)))
+            throw new WebMigrationError("보관본 기록을 저장하지 못했습니다.");
       } catch {
+        // Removing the company row also removes any preserved records saved for it.
+        if (inserted) await repository.remove(row.id, snapshot.revision).catch(() => false);
         await removeQuietly(options.originals, created);
         report("failed");
         continue;
       }
-      report("migrated", copies.length);
+      report("migrated", copies.length, undefined, prepared.length);
       webIdentities.push(identity);
     }
   } finally {
@@ -333,7 +475,9 @@ export function formatMigrationReport(report: WebMigrationReport) {
     "",
   ];
   for (const item of report.cases) {
-    const originals = item.originals ? ` · 원본 ${item.originals}개` : "";
+    const originals =
+      (item.originals ? ` · 원본 ${item.originals}개` : "") +
+      (item.preparedPackages ? ` · 보관본 ${item.preparedPackages}개` : "");
     const duplicate = item.duplicateOf ? ` · 웹의 기업 ID ${item.duplicateOf}` : "";
     lines.push(`- ${item.companyName} (${item.caseId}): ${item.message}${originals}${duplicate}`);
   }
@@ -348,7 +492,7 @@ export function formatMigrationReport(report: WebMigrationReport) {
   lines.push(
     "이 PC에만 남는 자료: " +
       `벤처인 계정 ${kept.ventureAccounts}개, 벤처인 진행 기록 ${kept.ventureWorkflows}개, ` +
-      `제출 준비 ZIP ${kept.preparedPackages}개, 접수 단계 원본 ${kept.intakeOnlyOriginals}개`,
+      `옮기지 않은 기업의 원고 보관본 ${kept.preparedPackages}개, 접수 단계 원본 ${kept.intakeOnlyOriginals}개`,
   );
   if (!report.apply && report.cases.some((item) => item.outcome === "ready"))
     lines.push("", "실제로 옮기려면 같은 명령에 --apply를 붙여 다시 실행합니다.");
