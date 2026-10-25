@@ -110,7 +110,11 @@ const exportIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-
  * Web service: the server stores the ZIP and answers with its id only. The download goes
  * through this site's own export route, so no URL from a JSON body is ever followed.
  */
-export async function readPackageExport(response: Response, caseId: string): Promise<string> {
+export async function readPackageExport(
+  response: Response,
+  caseId: string,
+  route: "package" | "visit-package" = "package",
+): Promise<string> {
   const raw: unknown = await response.json().catch(() => null);
   const body = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
   if (!response.ok)
@@ -123,7 +127,19 @@ export async function readPackageExport(response: Response, caseId: string): Pro
     !exportIdPattern.test(caseId)
   )
     throw new Error("만든 ZIP의 내려받기 정보를 확인하지 못했습니다.");
-  return `/api/studio/cases/${caseId}/package/exports/${body.exportId}`;
+  return `/api/studio/cases/${caseId}/${route}/exports/${body.exportId}`;
+}
+
+/** Starts a download from this site's own export route (it redirects to a short-lived link). */
+export function startSameOriginDownload(path: string) {
+  const anchor = document.createElement("a");
+  anchor.href = new URL(path, window.location.origin).toString();
+  document.body.append(anchor);
+  try {
+    anchor.click();
+  } finally {
+    anchor.remove();
+  }
 }
 
 type Props = {
@@ -247,14 +263,7 @@ export function PackagePanel({
       if (serverMode) {
         const path = await readPackageExport(response, company.id);
         if (!mounted.current || context.current !== startedBinding) return;
-        const anchor = document.createElement("a");
-        anchor.href = new URL(path, window.location.origin).toString();
-        document.body.append(anchor);
-        try {
-          anchor.click();
-        } finally {
-          anchor.remove();
-        }
+        startSameOriginDownload(path);
         setMessage(
           `원고 v${plan.version}과 선택 원본 ${sourceIds.length}개의 ZIP을 만들고 다운로드를 요청했습니다. 브라우저 다운로드 목록을 확인해 주세요. 다운로드 링크는 1시간 동안만 쓸 수 있습니다.`,
         );

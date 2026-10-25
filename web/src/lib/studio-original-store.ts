@@ -25,27 +25,46 @@ export function exportPrefix(organizationId: string, caseId: string) {
   return `${uuid.parse(organizationId)}/${uuid.parse(caseId)}/exports`;
 }
 export const exportMaxAgeMs = 60 * 60 * 1000;
-const exportName = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.zip$/i;
+/** A browser upload not completed within this time is abandoned. */
+export const stagingMaxAgeMs = 60 * 60 * 1000;
+const uuidName = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
+const temporaryKinds = {
+  exports: new RegExp(`^${uuidName}[.]zip$`, "i"),
+  staging: new RegExp(`^${uuidName}[.]bin$`, "i"),
+} as const;
 
 /**
- * Best effort: removes a case's generated ZIPs older than `maxAgeMs` (0 removes all of them).
- * Never touches originals, which live outside the exports prefix.
+ * Best effort: removes a case's temporary objects (generated ZIPs or unfinished browser
+ * uploads) older than `maxAgeMs`; 0 removes all of them. Never touches registered originals,
+ * which live directly under the case prefix.
  */
-export async function removeOldExports(
+export async function removeOldTemporaryObjects(
+  store: OriginalObjectStore,
+  organizationId: string,
+  caseId: string,
+  kind: keyof typeof temporaryKinds,
+  maxAgeMs: number,
+  now = Date.now(),
+) {
+  if (!store.list) return;
+  const prefix = `${uuid.parse(organizationId)}/${uuid.parse(caseId)}/${kind}`;
+  const items = await store.list(prefix).catch(() => []);
+  for (const item of items) {
+    const name = item.key.slice(prefix.length + 1);
+    if (!item.key.startsWith(`${prefix}/`) || !temporaryKinds[kind].test(name)) continue;
+    if (now - item.createdAt.getTime() >= maxAgeMs) await store.remove(item.key).catch(() => {});
+  }
+}
+
+/** Generated ZIPs older than `maxAgeMs` (0 removes all of them). */
+export function removeOldExports(
   store: OriginalObjectStore,
   organizationId: string,
   caseId: string,
   maxAgeMs = exportMaxAgeMs,
   now = Date.now(),
 ) {
-  if (!store.list) return;
-  const prefix = exportPrefix(organizationId, caseId);
-  const items = await store.list(prefix).catch(() => []);
-  for (const item of items) {
-    const name = item.key.slice(prefix.length + 1);
-    if (!item.key.startsWith(`${prefix}/`) || !exportName.test(name)) continue;
-    if (now - item.createdAt.getTime() >= maxAgeMs) await store.remove(item.key).catch(() => {});
-  }
+  return removeOldTemporaryObjects(store, organizationId, caseId, "exports", maxAgeMs, now);
 }
 
 /** Where a browser upload waits until the server has checked and registered it. */

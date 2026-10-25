@@ -1,10 +1,13 @@
 import { z } from "zod";
 import { buildVisitPackage } from "@/lib/studio-visit-package";
 import { visitPackageLimits, visitPackageRequestSchema } from "@/lib/studio-visit-package-types";
-import { getStudioStore } from "@/lib/studio-storage";
-import { attachmentHeaders, readBoundedBody, studioRoute, StudioError } from "@/lib/studio-route";
+import { withCaseStore } from "@/lib/studio-case-session";
+import { assertZipDeliveryAvailable, deliverZip } from "@/lib/studio-package-delivery";
+import { readBoundedBody, studioRoute, StudioError } from "@/lib/studio-route";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+// Web service: selected originals are read from storage and a ZIP is stored back.
+export const maxDuration = 60;
 export function POST(request: Request, context: { params: Promise<{ caseId: string }> }) {
   return studioRoute(request, async () => {
     if (new URL(request.url).search)
@@ -20,12 +23,11 @@ export function POST(request: Request, context: { params: Promise<{ caseId: stri
         new TextDecoder().decode(await readBoundedBody(request, visitPackageLimits.requestBytes)),
       ),
     );
-    const result = await buildVisitPackage(getStudioStore(), caseId, input);
-    return new Response(new Uint8Array(result.buffer), {
-      headers: {
-        ...attachmentHeaders(result.fileName, "application/zip"),
-        "Content-Length": String(result.buffer.length),
-      },
+    assertZipDeliveryAvailable();
+    const result = await withCaseStore(caseId, async ({ store, stageOriginals }) => {
+      await stageOriginals(input.sourceIds);
+      return buildVisitPackage(store, caseId, input);
     });
+    return deliverZip(caseId, result);
   });
 }

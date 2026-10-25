@@ -5,7 +5,7 @@ import { StudioError } from "./studio-http";
 import { currentRequestScope, serverModeRequested } from "./studio-request-scope";
 import {
   originalObjectKey,
-  removeOldExports,
+  removeOldTemporaryObjects,
   type OriginalObjectStore,
 } from "./studio-original-store";
 import type { CaseSummary, CompanyProfile } from "./studio-schema";
@@ -113,9 +113,14 @@ export async function runCaseSession<T>(
           throw new StudioError(staleMessage, 409, "STALE_REVISION");
         await removeOriginals(sourcesWithOriginals(persisted.body).map((source) => source.id));
         if (originals)
-          await removeOldExports(originals.store, originals.organizationId, caseId, 0).catch(
-            () => {},
-          );
+          for (const kind of ["exports", "staging"] as const)
+            await removeOldTemporaryObjects(
+              originals.store,
+              originals.organizationId,
+              caseId,
+              kind,
+              0,
+            ).catch(() => {});
         return;
       }
       if (current.revision === persisted.revision && current.body === persisted.body) return;

@@ -1,8 +1,7 @@
-import { createElement, type ComponentProps } from "react";
+import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import { PreparedPackagesPanel } from "./prepared-packages-panel";
-import { VisitPackagePanel } from "./visit-package-panel";
 import { StudioModeProvider } from "./studio-mode";
 
 vi.mock("server-only", () => ({}));
@@ -12,19 +11,7 @@ function render(serverMode: boolean, element: ReturnType<typeof createElement>) 
   return renderToStaticMarkup(createElement(StudioModeProvider, { serverMode }, element));
 }
 
-describe("PC-only features on the web service", () => {
-  it.each([["실사 준비 ZIP", VisitPackagePanel]] as const)(
-    "replaces %s with a PC-only notice in server mode",
-    (feature, Panel) => {
-      const html = render(
-        true,
-        createElement(Panel as never, {} as ComponentProps<typeof VisitPackagePanel>),
-      );
-      expect(html).toContain(feature);
-      expect(html).toContain(notice);
-    },
-  );
-
+describe("package features on the web service", () => {
   it("offers the package ZIP without the PC-only preserved versions on the web service", () => {
     const html = render(
       true,
@@ -39,7 +26,7 @@ describe("PC-only features on the web service", () => {
       }),
     );
     expect(html).toContain("제출 준비 ZIP 내려받기");
-    expect(html).toContain("이 PC 앱에서만 제공합니다");
+    expect(html).toContain(notice);
     expect(html).not.toContain("이 PC의 준비본입니다");
   });
 });

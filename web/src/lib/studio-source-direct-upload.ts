@@ -3,7 +3,11 @@ import { z } from "zod";
 import { withCaseStore } from "./studio-case-session";
 import { MAX_UPLOAD_BYTES } from "./studio-extract";
 import { jsonResponse, StudioError } from "./studio-http";
-import { stagingObjectKey } from "./studio-original-store";
+import {
+  removeOldTemporaryObjects,
+  stagingMaxAgeMs,
+  stagingObjectKey,
+} from "./studio-original-store";
 import { currentRequestScope } from "./studio-request-scope";
 import { sourceKinds } from "./studio-schema";
 import { registerSourceUpload } from "./studio-source-upload";
@@ -49,6 +53,14 @@ export async function startDirectUpload(caseId: string, raw: unknown) {
     if (store.get(caseId).sources.length >= 40)
       throw new StudioError("기업별 자료는 40개까지 등록할 수 있습니다.", 413, "SOURCE_LIMIT");
   });
+  // Uploads a browser never completed would otherwise stay in storage indefinitely.
+  await removeOldTemporaryObjects(
+    originals.store,
+    originals.organizationId,
+    caseId,
+    "staging",
+    stagingMaxAgeMs,
+  );
   const uploadId = randomUUID();
   const uploadUrl = await originals.store.createSignedUpload!(
     stagingObjectKey(originals.organizationId, caseId, uploadId),

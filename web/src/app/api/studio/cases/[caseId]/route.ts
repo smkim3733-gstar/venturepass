@@ -13,6 +13,7 @@ import { candidateSelectionLimits } from "@/lib/studio-candidate-selection-types
 import { reviewPlan } from "@/lib/studio-engine";
 import { getStudioStore } from "@/lib/studio-storage";
 import { withCaseStore } from "@/lib/studio-case-session";
+import { currentRequestScope } from "@/lib/studio-request-scope";
 import { jsonResponse, readBoundedBody, readJson, studioRoute } from "@/lib/studio-route";
 import { StudioError } from "@/lib/studio-route";
 import { withVentureLock } from "@/lib/venturein-service";
@@ -143,6 +144,15 @@ export function DELETE(request: Request, context: Context) {
       .object({ revision: z.number().int().nonnegative() })
       .parse(await readJson(request));
     const { caseId } = await context.params;
+    const scope = currentRequestScope();
+    if (scope) {
+      // Web service: admins only. The session deletes the row with a revision check and then
+      // the company's originals and generated ZIPs in object storage. No 벤처인 run exists here.
+      if (scope.principal.role !== "admin")
+        throw new StudioError("기업 삭제는 관리자만 할 수 있습니다.", 403, "ADMIN_REQUIRED");
+      await withCaseStore(caseId, ({ store }) => store.delete(caseId, revision));
+      return jsonResponse({ ok: true });
+    }
     return withVentureLock(caseId, async () => {
       const store = getStudioStore();
       if (store.get(caseId).revision !== revision)

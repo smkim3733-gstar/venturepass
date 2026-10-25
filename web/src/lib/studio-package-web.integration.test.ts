@@ -6,6 +6,8 @@ import JSZip from "jszip";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { POST as packageRoute } from "@/app/api/studio/cases/[caseId]/package/route";
 import { GET as exportRoute } from "@/app/api/studio/cases/[caseId]/package/exports/[exportId]/route";
+import { POST as visitRoute } from "@/app/api/studio/cases/[caseId]/visit-package/route";
+import { GET as visitExportRoute } from "@/app/api/studio/cases/[caseId]/visit-package/exports/[exportId]/route";
 import { MemoryCaseRowRepository, runCaseSession } from "./studio-case-session";
 import {
   exportObjectKey,
@@ -14,6 +16,7 @@ import {
   originalObjectKey,
 } from "./studio-original-store";
 import { PACKAGE_DOWNLOAD_NAME } from "./studio-package-types";
+import { VISIT_PACKAGE_DOWNLOAD_NAME } from "./studio-visit-package-types";
 import { configureServerRuntime, type StudioPrincipal } from "./studio-request-scope";
 import { emptyProfile, type Candidate, type SourceDocument } from "./studio-schema";
 import { StudioStore } from "./studio-storage";
@@ -247,5 +250,43 @@ describe("submission package ZIP on the web service", { timeout: 30_000 }, () =>
     expect(exportKeys()).toEqual([]);
     expect(objects.objects.size).toBe(0);
     expect(exportPrefix(orgA, caseId)).toContain(caseId);
+  });
+
+  it("builds the visit preparation ZIP the same way with its own download name", async () => {
+    const response = await visitRoute(
+      request(`/api/studio/cases/${caseId}/visit-package`, "a-editor", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          revision,
+          mode: "draft",
+          planId,
+          submissionRecordId: null,
+          answerVersionIds: [],
+          sourceIds: [sourceId],
+        }),
+      }),
+      { params: Promise.resolve({ caseId }) },
+    );
+    expect(response.status).toBe(201);
+    const { exportId, fileName } = await response.json();
+    expect(fileName).toBe(VISIT_PACKAGE_DOWNLOAD_NAME);
+    const zip = await JSZip.loadAsync(
+      (await objects.get(exportObjectKey(orgA, caseId, exportId)))!,
+    );
+    const files = await Promise.all(
+      Object.values(zip.files)
+        .filter((file) => !file.dir)
+        .map((file) => file.async("uint8array")),
+    );
+    expect(files.some((file) => Buffer.from(file).equals(Buffer.from(originalBytes)))).toBe(true);
+    const redirect = await visitExportRoute(
+      request(`/api/studio/cases/${caseId}/visit-package/exports/${exportId}`, "a-editor"),
+      { params: Promise.resolve({ caseId, exportId }) },
+    );
+    expect(redirect.status).toBe(302);
+    expect(new URL(redirect.headers.get("location")!).searchParams.get("download")).toBe(
+      VISIT_PACKAGE_DOWNLOAD_NAME,
+    );
   });
 });

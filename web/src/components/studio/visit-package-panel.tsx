@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useId, useRef, useState } from "react";
-import { PcOnlyNotice, useServerMode } from "./studio-mode";
+import { useServerMode } from "./studio-mode";
 import { Download } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
@@ -21,7 +21,7 @@ import {
   visitPackageLimits,
   visitPackageRequestSchema,
 } from "@/lib/studio-visit-package-types";
-import { readPackageDownload } from "./package-panel";
+import { readPackageDownload, readPackageExport, startSameOriginDownload } from "./package-panel";
 import { Notice, formatDate, jsonBody, selectClass } from "./shared";
 
 type Mode = "draft" | "recorded-submission";
@@ -485,12 +485,12 @@ type Props = {
   onBusyChange: (message: string) => void;
 };
 export function VisitPackagePanel(props: Props) {
-  if (useServerMode()) return <PcOnlyNotice feature="실사 준비 ZIP" />;
   return (
     <VisitPackagePanelInner key={`${props.company.id}:${props.company.revision}`} {...props} />
   );
 }
 function VisitPackagePanelInner({ company, blockedReason = "", onBusyChange }: Props) {
+  const serverMode = useServerMode();
   const [selection, setSelection] = useState<VisitPackageSelection>(emptyVisitPackageSelection);
   const [busy, setBusy] = useState(false),
     [error, setError] = useState(""),
@@ -517,7 +517,11 @@ function VisitPackagePanelInner({ company, blockedReason = "", onBusyChange }: P
     setBusy(true);
     setError("");
     setMessage("");
-    onBusyChange("선택한 실사 질문·답변·원본의 로컬 ZIP을 만드는 중입니다");
+    onBusyChange(
+      serverMode
+        ? "선택한 실사 질문·답변·원본의 ZIP을 만드는 중입니다"
+        : "선택한 실사 질문·답변·원본의 로컬 ZIP을 만드는 중입니다",
+    );
     let objectUrl: string | null = null;
     try {
       const response = await fetch(`/api/studio/cases/${company.id}/visit-package`, {
@@ -525,6 +529,15 @@ function VisitPackagePanelInner({ company, blockedReason = "", onBusyChange }: P
         cache: "no-store",
         ...jsonBody(request),
       });
+      if (serverMode) {
+        const path = await readPackageExport(response, company.id, "visit-package");
+        if (!mounted.current || context.current !== started) return;
+        startSameOriginDownload(path);
+        setMessage(
+          `선택 답변 ${request.answerVersionIds.length}개·원본 ${request.sourceIds.length}개의 ZIP을 만들고 다운로드를 요청했습니다. 브라우저 다운로드 목록을 확인해 주세요. 다운로드 링크는 1시간 동안만 쓸 수 있습니다.`,
+        );
+        return;
+      }
       const file = await readPackageDownload(response, VISIT_PACKAGE_DOWNLOAD_NAME);
       if (!mounted.current || context.current !== started) return;
       objectUrl = URL.createObjectURL(file.blob);

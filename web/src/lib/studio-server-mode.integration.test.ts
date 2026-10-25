@@ -10,7 +10,7 @@ import { GET as ventureInRoute } from "@/app/api/studio/cases/[caseId]/venturein
 import { GET as statusRoute } from "@/app/api/studio/status/route";
 import { POST as uploadRoute } from "@/app/api/studio/cases/[caseId]/sources/route";
 import { GET as downloadRoute } from "@/app/api/studio/cases/[caseId]/sources/[sourceId]/route";
-import { MemoryOriginalStore } from "./studio-original-store";
+import { MemoryOriginalStore, stagingObjectKey } from "./studio-original-store";
 import { POST as startUploadRoute } from "@/app/api/studio/cases/[caseId]/sources/direct-upload/route";
 import { POST as completeUploadRoute } from "@/app/api/studio/cases/[caseId]/sources/direct-upload/complete/route";
 import { MemoryCaseRowRepository } from "./studio-case-session";
@@ -29,6 +29,18 @@ const principals: Record<string, StudioPrincipal> = {
     organizationId: orgA,
     role: "editor",
     displayName: "가상 A 담당",
+  },
+  "a-admin": {
+    userId: randomUUID(),
+    organizationId: orgA,
+    role: "admin",
+    displayName: "가상 A 관리자",
+  },
+  "b-admin": {
+    userId: randomUUID(),
+    organizationId: orgB,
+    role: "admin",
+    displayName: "가상 B 관리자",
   },
   "a-viewer": {
     userId: randomUUID(),
@@ -193,6 +205,24 @@ describe("server mode direct uploads for large files", () => {
     expect((await complete.json()).code).toBe("UPLOAD_NOT_FOUND");
   });
 
+  it("removes abandoned browser uploads older than an hour when a new upload starts", async () => {
+    const created = await createCase("a-editor", "가상 정리 회사");
+    const abandoned = stagingObjectKey(orgA, created.id, randomUUID());
+    const recent = stagingObjectKey(orgA, created.id, randomUUID());
+    for (const key of [abandoned, recent]) await originalStore.put(key, new Uint8Array([1]));
+    originalStore.createdAt.set(abandoned, new Date(Date.now() - 2 * 3600_000));
+    const start = await startUploadRoute(
+      post(`/api/studio/cases/${created.id}/sources/direct-upload`, {
+        fileName: "가상.txt",
+        size: 5 * 1024 * 1024,
+      }),
+      params(created.id),
+    );
+    expect(start.status).toBe(200);
+    expect(originalStore.objects.has(abandoned)).toBe(false);
+    expect(originalStore.objects.has(recent)).toBe(true);
+  });
+
   it("rejects an announced size over 12MB before issuing an upload URL", async () => {
     const created = await createCase("a-editor", "가상 초과 회사");
     const start = await startUploadRoute(
@@ -311,8 +341,44 @@ describe("server mode organization boundaries", () => {
       }),
       params(created.id),
     );
-    expect(remove.status).toBe(405);
+    expect(remove.status).toBe(403);
+    expect((await remove.json()).code).toBe("ADMIN_REQUIRED");
     expect((await repositories.get(orgA)!.load(created.id)).revision).toBe(0);
+  });
+
+  it("lets an admin delete a company with its originals, only in their organization", async () => {
+    const created = await createCase("a-editor", "가상 삭제 회사");
+    const form = new FormData();
+    form.append(
+      "file",
+      new File([new TextEncoder().encode("본문")], "가상.txt", { type: "text/plain" }),
+    );
+    form.append("kind", "technology");
+    form.append("revision", "0");
+    const uploaded = await uploadRoute(
+      request(`/api/studio/cases/${created.id}/sources`, "a-editor", {
+        method: "POST",
+        body: form,
+      }),
+      params(created.id),
+    );
+    const { revision } = await uploaded.json();
+    expect(originalStore.objects.size).toBe(1);
+    const remove = (user: string, value: number) =>
+      deleteCaseRoute(
+        request(`/api/studio/cases/${created.id}`, user, {
+          method: "DELETE",
+          ...json({ revision: value }),
+        }),
+        params(created.id),
+      );
+    expect((await remove("b-admin", revision)).status).toBe(404);
+    expect((await remove("a-admin", revision - 1)).status).toBe(409);
+    expect(originalStore.objects.size).toBe(1);
+    const deleted = await remove("a-admin", revision);
+    expect(deleted.status).toBe(200);
+    await expect(repositories.get(orgA)!.load(created.id)).rejects.toMatchObject({ status: 404 });
+    expect(originalStore.objects.size).toBe(0);
   });
 
   it("reports the server storage in status", async () => {

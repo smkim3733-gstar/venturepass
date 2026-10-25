@@ -23,7 +23,10 @@ const serverRoutes: { pattern: RegExp; methods: string[] }[] = [
   { pattern: /^\/api\/studio\/members$/, methods: ["GET", "POST"] },
   { pattern: new RegExp(`^/api/studio/members/${caseId}$`, "i"), methods: ["PATCH"] },
   { pattern: new RegExp(`^/api/studio/members/${caseId}/password$`, "i"), methods: ["POST"] },
-  { pattern: new RegExp(`^/api/studio/cases/${caseId}$`, "i"), methods: ["GET", "PATCH"] },
+  {
+    pattern: new RegExp(`^/api/studio/cases/${caseId}$`, "i"),
+    methods: ["GET", "PATCH", "DELETE"],
+  },
   {
     pattern: new RegExp(
       `^/api/studio/cases/${caseId}/(generate|guided-preparation|preparation|answer-suggestions|source-suggestions/preview)$`,
@@ -32,9 +35,15 @@ const serverRoutes: { pattern: RegExp; methods: string[] }[] = [
     methods: ["GET", "POST"],
   },
   { pattern: new RegExp(`^/api/studio/cases/${caseId}/export$`, "i"), methods: ["GET"] },
-  { pattern: new RegExp(`^/api/studio/cases/${caseId}/package$`, "i"), methods: ["POST"] },
   {
-    pattern: new RegExp(`^/api/studio/cases/${caseId}/package/exports/${caseId}$`, "i"),
+    pattern: new RegExp(`^/api/studio/cases/${caseId}/(package|visit-package)$`, "i"),
+    methods: ["POST"],
+  },
+  {
+    pattern: new RegExp(
+      `^/api/studio/cases/${caseId}/(package|visit-package)/exports/${caseId}$`,
+      "i",
+    ),
     methods: ["GET"],
   },
   { pattern: new RegExp(`^/api/studio/cases/${caseId}/sources$`, "i"), methods: ["POST"] },

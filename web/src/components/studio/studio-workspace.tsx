@@ -856,7 +856,7 @@ export function StudioWorkspace() {
                     <ArrowLeft />
                     전체 기업
                   </Button>
-                  {!serverMode && (
+                  {(!serverMode || status?.user?.role === "admin") && (
                     <Button
                       variant="ghost"
                       className="text-muted-foreground hover:text-destructive"

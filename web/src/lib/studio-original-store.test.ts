@@ -12,6 +12,8 @@ import {
   exportObjectKey,
   exportPrefix,
   removeOldExports,
+  removeOldTemporaryObjects,
+  stagingObjectKey,
 } from "./studio-original-store";
 import { emptyProfile, type SourceDocument } from "./studio-schema";
 
@@ -210,5 +212,16 @@ describe("generated ZIP objects", () => {
     expect(store.objects.has(fresh)).toBe(false);
     expect(store.objects.has(original)).toBe(true);
     expect(exportPrefix(organizationId, caseId)).toBe(`${organizationId}/${caseId}/exports`);
+  });
+
+  it("clears unfinished uploads by name pattern only", async () => {
+    const store = new MemoryOriginalStore();
+    const caseId = randomUUID();
+    const staged = stagingObjectKey(organizationId, caseId, randomUUID());
+    const lookalike = `${organizationId}/${caseId}/staging/${randomUUID()}xbin`;
+    const notes = `${organizationId}/${caseId}/staging/notes.txt`;
+    for (const key of [staged, lookalike, notes]) await store.put(key, new Uint8Array([1]));
+    await removeOldTemporaryObjects(store, organizationId, caseId, "staging", 0);
+    expect([...store.objects.keys()].sort()).toEqual([lookalike, notes].sort());
   });
 });
