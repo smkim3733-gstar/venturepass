@@ -1,5 +1,6 @@
 import { ZodError } from "zod";
 import {
+  configureServerRuntime,
   getServerRuntime,
   runInRequestScope,
   serverModeRequested,
@@ -104,6 +105,14 @@ function assertServerRequest(request: Request, server: StudioServerRuntime) {
     throw new StudioError("이 기능은 웹 서비스에서 제공하지 않습니다.", 405, "METHOD_NOT_ALLOWED");
 }
 
+/** Loaded on demand so the local app never imports the Postgres client. */
+async function loadConfiguredRuntime() {
+  const { loadServerRuntimeFromEnv } = await import("./studio-server-bootstrap");
+  const runtime = await loadServerRuntimeFromEnv();
+  if (runtime) configureServerRuntime(runtime);
+  return runtime;
+}
+
 async function serverRoute(
   request: Request,
   server: StudioServerRuntime,
@@ -121,7 +130,7 @@ async function serverRoute(
 export async function studioRoute(request: Request, action: () => Promise<Response> | Response) {
   try {
     if (serverModeRequested()) {
-      const server = getServerRuntime();
+      const server = getServerRuntime() ?? (await loadConfiguredRuntime());
       if (!server)
         throw new StudioError(
           "웹 서비스 설정(인증·저장소)이 완료되지 않았습니다.",

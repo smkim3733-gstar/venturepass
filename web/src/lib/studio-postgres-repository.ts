@@ -43,7 +43,17 @@ export const venturePassSchemaSql = [
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now()
   )`,
+  // Supabase exposes the public schema over its REST API with the anon key. Row level security
+  // with no policies denies that path entirely; the server connects as the database owner.
+  `ALTER TABLE venture_organizations ENABLE ROW LEVEL SECURITY`,
+  `ALTER TABLE venture_cases ENABLE ROW LEVEL SECURITY`,
+  `ALTER TABLE venture_memberships ENABLE ROW LEVEL SECURITY`,
 ];
+
+/** The same statements as one script for the Supabase SQL editor (web/supabase/schema.sql). */
+export function venturePassSchemaScript() {
+  return `${venturePassSchemaSql.map((statement) => `${statement};`).join("\n\n")}\n`;
+}
 
 export async function ensureVenturePassSchema(executor: SqlExecutor) {
   for (const statement of venturePassSchemaSql) await executor.query(statement);

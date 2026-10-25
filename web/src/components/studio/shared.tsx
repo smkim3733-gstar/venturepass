@@ -107,8 +107,22 @@ export function formatDate(value: string) {
     minute: "2-digit",
   });
 }
-export async function studioFetch<T>(url: string, init?: RequestInit): Promise<T> {
+/** Server mode: a 401 is rejected before any work, so one refresh-and-retry is safe. */
+async function fetchWithSession(url: string, init?: RequestInit) {
   const response = await fetch(url, { ...init, cache: "no-store" });
+  if (response.status !== 401 || typeof window === "undefined" || url.startsWith("/api/auth/"))
+    return response;
+  const refreshed = await fetch("/api/auth/refresh", { method: "POST", cache: "no-store" });
+  if (refreshed.ok) return fetch(url, { ...init, cache: "no-store" });
+  // A full navigation on purpose: drop all client state of the expired session.
+  const login = new URL("/login", window.location.origin);
+  login.searchParams.set("next", window.location.pathname);
+  window.location.assign(login.toString());
+  return response;
+}
+
+export async function studioFetch<T>(url: string, init?: RequestInit): Promise<T> {
+  const response = await fetchWithSession(url, init);
   const body = await response
     .json()
     .catch(() => ({ error: "서버 응답을 확인하지 못했습니다. 잠시 후 다시 시도해 주세요." }));

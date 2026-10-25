@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { PGlite } from "@electric-sql/pglite";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
@@ -9,6 +11,7 @@ import {
 import {
   ensureVenturePassSchema,
   PostgresCaseRowRepository,
+  venturePassSchemaScript,
   type SqlExecutor,
 } from "./studio-postgres-repository";
 import { emptyProfile } from "./studio-schema";
@@ -41,6 +44,17 @@ beforeEach(async () => {
 });
 afterEach(async () => {
   await database.close();
+});
+
+describe("Supabase schema script", () => {
+  it("matches the statements the code applies, including row level security", () => {
+    const script = readFileSync(join(process.cwd(), "supabase", "schema.sql"), "utf8").replace(
+      /\r\n/g,
+      "\n",
+    );
+    expect(script).toBe(venturePassSchemaScript());
+    expect(script.match(/ENABLE ROW LEVEL SECURITY/g)).toHaveLength(3);
+  });
 });
 
 describe("Postgres company rows", () => {
