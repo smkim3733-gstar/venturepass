@@ -11,6 +11,8 @@ import { GET as statusRoute } from "@/app/api/studio/status/route";
 import { POST as uploadRoute } from "@/app/api/studio/cases/[caseId]/sources/route";
 import { GET as downloadRoute } from "@/app/api/studio/cases/[caseId]/sources/[sourceId]/route";
 import { MemoryOriginalStore } from "./studio-original-store";
+import { POST as startUploadRoute } from "@/app/api/studio/cases/[caseId]/sources/direct-upload/route";
+import { POST as completeUploadRoute } from "@/app/api/studio/cases/[caseId]/sources/direct-upload/complete/route";
 import { MemoryCaseRowRepository } from "./studio-case-session";
 import { configureServerRuntime, type StudioPrincipal } from "./studio-request-scope";
 import { emptyProfile } from "./studio-schema";
@@ -137,6 +139,70 @@ describe("server mode originals", () => {
     const unconfigured = await uploadText("a-editor", created.id, new TextEncoder().encode("본문"));
     expect(unconfigured.status).toBe(503);
     expect((await unconfigured.json()).code).toBe("ORIGINALS_NOT_CONFIGURED");
+  });
+});
+
+describe("server mode direct uploads for large files", () => {
+  const post = (path: string, body: unknown) =>
+    request(path, "a-editor", { method: "POST", ...json(body) });
+
+  it("registers a file the browser put into storage and drops the staging copy", async () => {
+    const created = await createCase("a-editor", "가상 큰 파일 회사");
+    const start = await startUploadRoute(
+      post(`/api/studio/cases/${created.id}/sources/direct-upload`, {
+        fileName: "가상_대용량.txt",
+        size: 5 * 1024 * 1024,
+        contentType: "text/plain",
+      }),
+      params(created.id),
+    );
+    expect(start.status).toBe(200);
+    const { uploadId, uploadUrl } = await start.json();
+    const stagingKey = String(uploadUrl).replace("memory://", "");
+    expect(stagingKey).toContain("/staging/");
+    await originalStore.put(stagingKey, new TextEncoder().encode("가상 대용량 기술 본문"));
+    const complete = await completeUploadRoute(
+      post(`/api/studio/cases/${created.id}/sources/direct-upload/complete`, {
+        uploadId,
+        fileName: "가상_대용량.txt",
+        contentType: "text/plain",
+        kind: "technology",
+        revision: 0,
+      }),
+      params(created.id),
+    );
+    expect(complete.status).toBe(201);
+    const company = await complete.json();
+    expect(company.sources[0].text).toContain("가상 대용량 기술 본문");
+    expect(await originalStore.get(stagingKey)).toBeNull();
+    expect(originalStore.objects.size).toBe(1);
+  });
+
+  it("refuses to complete an upload that never reached storage", async () => {
+    const created = await createCase("a-editor", "가상 미도착 회사");
+    const complete = await completeUploadRoute(
+      post(`/api/studio/cases/${created.id}/sources/direct-upload/complete`, {
+        uploadId: randomUUID(),
+        fileName: "없음.txt",
+        kind: "other",
+        revision: 0,
+      }),
+      params(created.id),
+    );
+    expect(complete.status).toBe(409);
+    expect((await complete.json()).code).toBe("UPLOAD_NOT_FOUND");
+  });
+
+  it("rejects an announced size over 12MB before issuing an upload URL", async () => {
+    const created = await createCase("a-editor", "가상 초과 회사");
+    const start = await startUploadRoute(
+      post(`/api/studio/cases/${created.id}/sources/direct-upload`, {
+        fileName: "큰.pdf",
+        size: 13 * 1024 * 1024,
+      }),
+      params(created.id),
+    );
+    expect(start.status).toBe(400);
   });
 });
 

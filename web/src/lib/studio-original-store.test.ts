@@ -133,6 +133,19 @@ describe("Supabase Storage adapter", () => {
     expect(await storage.get("a/b.bin")).toEqual(new Uint8Array([7, 8]));
     expect(calls[1][0]).toContain("/storage/v1/object/authenticated/venturepass-originals/");
     expect(await storage.get("a/missing.bin")).toBeNull();
+    const signer = new SupabaseOriginalStore(
+      {
+        url: "https://project.supabase.test",
+        serviceRoleKey: "service",
+        bucket: "venturepass-originals",
+      },
+      vi.fn(async () =>
+        Response.json({ url: "/object/upload/sign/venturepass-originals/a/b.bin?token=t" }),
+      ) as unknown as typeof fetch,
+    );
+    expect(await signer.createSignedUpload("a/b.bin")).toBe(
+      "https://project.supabase.test/storage/v1/object/upload/sign/venturepass-originals/a/b.bin?token=t",
+    );
     expect(
       () =>
         new SupabaseOriginalStore({ url: "http://x.test", serviceRoleKey: "s", bucket: "bucket" }),

@@ -6,6 +6,13 @@ export interface OriginalObjectStore {
   put(key: string, bytes: Uint8Array, contentType: string): Promise<void>;
   get(key: string): Promise<Uint8Array | null>;
   remove(key: string): Promise<void>;
+  /** A short-lived URL the browser can PUT one object to, bypassing the function body limit. */
+  createSignedUpload?(key: string): Promise<string>;
+}
+
+/** Where a browser upload waits until the server has checked and registered it. */
+export function stagingObjectKey(organizationId: string, caseId: string, uploadId: string) {
+  return `${uuid.parse(organizationId)}/${uuid.parse(caseId)}/staging/${uuid.parse(uploadId)}.bin`;
 }
 
 const uuid = z.string().uuid();
@@ -26,6 +33,9 @@ export class MemoryOriginalStore implements OriginalObjectStore {
   }
   async remove(key: string) {
     this.objects.delete(key);
+  }
+  async createSignedUpload(key: string) {
+    return `memory://${key}`;
   }
 }
 
@@ -68,6 +78,20 @@ export class SupabaseOriginalStore implements OriginalObjectStore {
     if (response.status === 404 || response.status === 400) return null;
     if (!response.ok) throw new Error(`Original download failed (${response.status})`);
     return new Uint8Array(await response.arrayBuffer());
+  }
+  async createSignedUpload(key: string) {
+    const response = await this.fetchImpl(
+      new URL(
+        `/storage/v1/object/upload/sign/${this.config.bucket}/${key}`,
+        this.config.url,
+      ).toString(),
+      { method: "POST", headers: this.headers(), cache: "no-store" },
+    );
+    if (!response.ok) throw new Error(`Signed upload failed (${response.status})`);
+    const body = z
+      .object({ url: z.string().startsWith("/object/upload/sign/") })
+      .parse(await response.json());
+    return new URL(`/storage/v1${body.url}`, this.config.url).toString();
   }
   async remove(key: string) {
     const response = await this.fetchImpl(

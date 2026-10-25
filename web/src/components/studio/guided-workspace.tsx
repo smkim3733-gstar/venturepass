@@ -45,6 +45,7 @@ import { GuidedPlanEvidence } from "./guided-plan-evidence";
 import { GuidedFollowupStatus } from "./guided-followup-status";
 import { useLocalDay } from "./case-attention";
 import { useLocalPreparation } from "./use-local-preparation";
+import { uploadSourceFile, type SourceUploadFields } from "./source-upload-client";
 import type { GuidedWorkflowTarget } from "@/lib/studio-guided-followup";
 import { jsonBody, studioFetch, useDirty, type StudioMutation } from "./shared";
 import styles from "./guided-workspace.module.css";
@@ -420,17 +421,14 @@ export function GuidedWorkspace({
       for (const file of files) {
         onBusyChange(`자료를 읽고 보관하는 중입니다 · ${uploaded + 1}/${files.length}`);
         const originalOnly = /\.(png|jpe?g|webp)$/i.test(file.name);
-        const form = new FormData();
-        form.append("file", file);
-        form.append("kind", uploadKind);
-        form.append("revision", String(current.revision));
-        form.append("allowAi", "false");
-        form.append("extractionMode", originalOnly ? "original-only" : "extract");
+        const fields: SourceUploadFields = {
+          kind: uploadKind,
+          revision: current.revision,
+          allowAi: false,
+          extractionMode: originalOnly ? "original-only" : "extract",
+        };
         uploadUncertain = true;
-        let response = await fetch(`/api/studio/cases/${current.id}/sources`, {
-          method: "POST",
-          body: form,
-        });
+        let response = await uploadSourceFile(current.id, file, fields, serverMode);
         let raw: unknown = await response.json();
         // NO_TEXT is rejected before storage. A scanned PDF can safely be kept as an
         // unverified original; uncertain network failures must never trigger a retry.
@@ -442,11 +440,12 @@ export function GuidedWorkspace({
           raw.code === "NO_TEXT" &&
           /\.pdf$/i.test(file.name)
         ) {
-          form.set("extractionMode", "original-only");
-          response = await fetch(`/api/studio/cases/${current.id}/sources`, {
-            method: "POST",
-            body: form,
-          });
+          response = await uploadSourceFile(
+            current.id,
+            file,
+            { ...fields, extractionMode: "original-only" },
+            serverMode,
+          );
           raw = await response.json();
         }
         if (!mounted.current) return;

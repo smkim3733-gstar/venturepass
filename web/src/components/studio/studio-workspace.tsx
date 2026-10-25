@@ -56,6 +56,7 @@ import {
 import { DiagnosisPanel } from "./diagnosis-panel";
 import { PreparationPanel } from "./preparation-panel";
 import { StudioModeProvider } from "./studio-mode";
+import { directUploadThreshold, uploadSourceFile } from "./source-upload-client";
 import { PreparationAutomationPanel } from "./preparation-automation-panel";
 import { AnalysisPanel } from "./analysis-panel";
 import { PlanEditor } from "./plan-editor";
@@ -344,10 +345,37 @@ export function StudioWorkspace() {
     body.append("allowAi", String(extractionMode === "original-only" ? false : allowAi));
     body.append("extractionMode", extractionMode);
     try {
-      const next = await studioFetch<StudioCase>(`/api/studio/cases/${company.id}/sources`, {
-        method: "POST",
-        body,
-      });
+      let next: StudioCase;
+      if (status?.storage === "server" && file.size > directUploadThreshold) {
+        // Large files go straight to object storage on the web service (function body limit).
+        const response = await uploadSourceFile(
+          company.id,
+          file,
+          {
+            kind,
+            revision: company.revision,
+            allowAi: extractionMode === "original-only" ? false : allowAi,
+            extractionMode,
+          },
+          true,
+        );
+        const value = (await response.json().catch(() => ({}))) as {
+          error?: string;
+          code?: string;
+        };
+        if (!response.ok)
+          throw new StudioApiError(
+            value.error || "자료를 올리지 못했습니다.",
+            response.status,
+            value.code,
+          );
+        next = value as unknown as StudioCase;
+      } else {
+        next = await studioFetch<StudioCase>(`/api/studio/cases/${company.id}/sources`, {
+          method: "POST",
+          body,
+        });
+      }
       accept(next);
       toast.success(
         extractionMode === "original-only"
