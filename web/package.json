@@ -16,6 +16,7 @@
     "format:check": "prettier --check .",
     "data:import": "node scripts/import-venture-data.mjs",
     "data:local": "node scripts/local-data.mjs",
+    "data:to-web": "node --experimental-transform-types --no-warnings --env-file-if-exists=.env.local scripts/migrate-to-web.mjs",
     "test:local-data": "node --test scripts/local-data.test.mjs scripts/local-data-cold.test.mjs scripts/local-data.integration.test.mjs"
   },
   "engines": {
