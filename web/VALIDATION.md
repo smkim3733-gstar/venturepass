@@ -1,5 +1,12 @@
 # 구현 검증 기록
 
+## 2026-10-26 — 웹 원고·첨부 보관본·웹 원본 읽기 보완·보관본 이전
+
+- 웹 원고·첨부 보관본(준비본): Postgres 표 `venture_prepared_packages`(기록 JSON 원문·SHA, 버전 1~20 CHECK, `UNIQUE(case_id, version)`·`UNIQUE(case_id, client_request_id)`, `venture_cases` 삭제 시 CASCADE, 행 단위 보안)와 비공개 Storage `조직/회사/prepared/ID.zip`. `studio-prepared-package-service.ts`가 PC(SQLite 그대로)와 웹을 나눈다. 웹은 세션에서 선택 원본만 Storage에서 가져와 PC와 같은 코드로 기록·ZIP을 만들고(`buildPreparedPackageSnapshot`), PC 저장소의 최종 대조를 공용 메서드(`verifyPreparedPackageSnapshot`)로 다시 쓴다. ZIP을 먼저 올리고, 회사 revision이 같고 기존 개수가 `버전-1`일 때만 행을 넣는 한 문장 INSERT로 동시 요청에도 20개 한도·버전 순서를 지킨다. 행을 못 넣으면 올린 ZIP을 지우고 같은 요청이면 재확인(replayed), 아니면 409/413. 내려받기는 서버가 Storage ZIP의 크기·SHA-256을 기록과 대조한 뒤 5분 서명 링크로 302(변조·누락은 409 `PREPARED_ARCHIVE_CHANGED`). 회사 삭제 시 행은 CASCADE, ZIP은 세션 삭제 단계에서 함께 지운다. 표·저장소 미설정은 503 `PREPARED_NOT_CONFIGURED`, 조회 담당은 목록·내려받기만, 다른 조직 404. 화면: 간단 화면의 "원고·첨부 보관 및 내려받기"가 웹에서도 보관 목록·보관 버튼을 보여 주고 웹 안내 문구("기업을 삭제하면 함께 삭제")를 쓴다. PC 동작·문구는 그대로(오류 문구에서 "로컬"만 뺌). `schema.sql` 갱신(행 단위 보안 4개). 시험: PGlite+가상 Storage 통합 6개(보관·재확인·충돌, 내려받기·변조, 20개 한도, 오래된 revision·경쟁 INSERT·INSERT 실패 시 ZIP 삭제, 조직·역할·미설정, 회사 삭제 연계), 화면 2개, 기존 PC 보관본 시험 14개 통과.
+- 웹 원본 읽기 보완: 웹에서 원본 파일을 묶어 기록하는 변경(기업정보 제안 미리보기·채택, 기관 기록 증빙, 수치 대조·주장 검토·실사 답변·답변 준비·신청 절차·이의 준비·신청회차 원본)이 세션에 원본이 없어 409로 막혔다(수정 전 시험으로 재현). 세션에 `stageReferencedOriginals`를 추가해 요청 본문에 나온 이 회사 원본 ID만 Storage에서 가져온다(PC에서는 아무것도 안 함). 기관 기록 증빙 대조 API(`agency-records/evidence`)를 웹 허용 목록에 넣고 기록된 증빙 원본만 가져와 대조한다. 시험 2개(제안 미리보기→채택, 기관 기록 증빙 저장→일치·변조·누락 판정, 다른 조직 404).
+- 보관본 이전: `pnpm data:to-web`이 회사와 함께 보관본도 옮긴다. PC 기록의 SHA·회사 일치·버전 1..n·ZIP SHA/크기를 확인하고(다르면 `prepared-invalid`로 회사를 옮기지 않음), ZIP을 원본과 같이 올려 다시 읽어 대조한 뒤 회사 행 → 보관본 행 순서로 넣는다. 보관본 행 실패 시 회사 행(CASCADE)과 올린 파일을 모두 되돌린다. 보고서에 회사별 보관본 수, "옮기지 않은 기업의 원고 보관본" 수. 시험 2개 추가(미리 보기·이전·재실행, ZIP 변조·중간 실패).
+- 최종 확인: lint·tsc 통과, 전체 시험 **202파일 중 201통과·1건너뜀, 5,564개 중 5,560통과·4건너뜀·실패0**(415초, `--maxWorkers=4`), 격리 빌드 통과. 중간 전체 실행에서 "웹에서는 보관 버튼을 숨긴다"던 예전 화면 시험 1개가 의도대로 실패해 새 동작으로 고쳤다. 실제 Supabase·Vercel 연결, 외부 AI, 실제 회사 자료는 쓰지 않았다(가상 자료·PGlite·메모리 Storage만).
+
 ## 2026-10-26 — 웹 회사 삭제·웹 실사 준비 ZIP·임시 파일 정리
 
 - 웹 회사 삭제: `DELETE /api/studio/cases/{id}`를 서버 허용으로 열고 관리자만 허용(작성 담당 403 `ADMIN_REQUIRED`). 세션 안에서 revision 확인 삭제 후 Storage의 원본·생성 ZIP·직접 올리기 임시 파일을 모두 지운다. 다른 조직 404, 버전 불일치 409. 상세 화면의 "기업 삭제" 버튼은 웹에서 관리자에게만 보인다.
