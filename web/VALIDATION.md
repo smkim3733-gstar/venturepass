@@ -1,5 +1,12 @@
 # 구현 검증 기록
 
+## 2026-10-26 — 웹 회사 삭제·웹 실사 준비 ZIP·임시 파일 정리
+
+- 웹 회사 삭제: `DELETE /api/studio/cases/{id}`를 서버 허용으로 열고 관리자만 허용(작성 담당 403 `ADMIN_REQUIRED`). 세션 안에서 revision 확인 삭제 후 Storage의 원본·생성 ZIP·직접 올리기 임시 파일을 모두 지운다. 다른 조직 404, 버전 불일치 409. 상세 화면의 "기업 삭제" 버튼은 웹에서 관리자에게만 보인다.
+- 웹 실사 준비 ZIP: 제출 준비 ZIP과 같은 방식(선택 원본 임시 가져오기 → `exports` 보관 → `visit-package/exports/ID` 같은 사이트 경로 → 5분 서명 링크, 파일 이름 `venturepass-visit-package.zip`).
+- 임시 파일 정리: 정리 기능을 `removeOldTemporaryObjects`(exports `ID.zip`·staging `ID.bin` 이름 규칙만)로 일반화. 직접 올리기 시작 때 1시간 지난 staging을 지운다. 정규식의 점은 `[.]`로 고정해 비슷한 이름은 지우지 않음을 시험했다.
+- 최종 확인: lint·tsc 통과, 전체 시험 **200파일 중 199통과·1건너뜀, 5,553개 중 5,549통과·4건너뜀·실패0**(472초, `--maxWorkers=4`), 격리 빌드 통과.
+
 ## 2026-10-26 — 본인 비밀번호 변경·PC 자료 웹 이전 도구·웹 제출 준비 ZIP
 
 - 본인 비밀번호 변경: `POST /api/auth/password`(`passwordChangeRoute`)와 `/studio/account` 화면, 상단 "내 계정" 버튼(웹 로그인 시만). 같은 출처·로그인 확인 → 토큰 주인과 담당자 일치 확인 → 지금 비밀번호로 Supabase 새 로그인(같은 사용자인지 재확인) → 그 세션으로 `PUT /auth/v1/user`(service role 키 미사용) → `logout?scope=others`로 다른 기기 로그아웃 → 새 세션 쿠키. 조회 전용도 사용 가능. 규칙은 관리자 재설정과 같은 10~72자(`staffPassword`). 가상 Supabase 시험 4개(성공·틀린 비밀번호·같은 비밀번호·짧은 비밀번호·미로그인·다른 사이트·다른 사용자 세션·약한 비밀번호/재인증/기타 거절), 화면 판정 시험 2개. 브라우저에서 이 PC 앱 모드 `/studio/account` 안내 문구와 `/studio` 버튼 숨김·콘솔 오류 0 확인. 웹 모드 화면은 Supabase 미연결로 직접 확인하지 못했다.
