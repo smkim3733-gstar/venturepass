@@ -1,4 +1,6 @@
 import { z } from "zod";
+import { StudioError } from "./studio-http";
+import type { StaffAccounts } from "./studio-members";
 import type { AccessTokenVerifier } from "./studio-server-auth";
 
 /** Public project URL and anon key. The service-role key is never used for staff login. */
@@ -84,4 +86,76 @@ export function supabaseRefresh(
   fetchImpl: Fetch = fetch,
 ) {
   return tokenRequest(config, "refresh_token", { refresh_token: refreshToken }, fetchImpl);
+}
+
+/** Server-only admin access. The service role key bypasses all checks and never reaches a browser. */
+export type SupabaseAdminConfig = { url: string; serviceRoleKey: string };
+
+/** Staff login accounts through the Supabase Auth admin API (confirmed, no invitation e-mail). */
+export function supabaseStaffAccounts(
+  config: SupabaseAdminConfig,
+  fetchImpl: Fetch = fetch,
+): StaffAccounts {
+  const call = (path: string, method: string, body?: unknown) =>
+    fetchImpl(endpoint({ url: config.url, anonKey: config.serviceRoleKey }, path), {
+      method,
+      headers: {
+        apikey: config.serviceRoleKey,
+        authorization: `Bearer ${config.serviceRoleKey}`,
+        ...(body === undefined ? {} : { "content-type": "application/json" }),
+      },
+      body: body === undefined ? undefined : JSON.stringify(body),
+      cache: "no-store",
+    });
+  const failed = () =>
+    new StudioError(
+      "로그인 계정 처리에 실패했습니다. 잠시 후 다시 시도해 주세요.",
+      502,
+      "AUTH_ADMIN_FAILED",
+    );
+  const userPath = (userId: string) => `/auth/v1/admin/users/${z.string().uuid().parse(userId)}`;
+  return {
+    async create(email, password) {
+      const response = await call("/auth/v1/admin/users", "POST", {
+        email,
+        password,
+        email_confirm: true,
+      });
+      if (response.status === 422 || response.status === 409) {
+        const body = (await response.json().catch(() => ({}))) as { error_code?: string };
+        if (body.error_code === "email_exists" || response.status === 409)
+          throw new StudioError(
+            "이미 로그인 계정이 있는 이메일입니다. Supabase 사용자 목록을 확인해 주세요.",
+            409,
+            "ACCOUNT_EXISTS",
+          );
+        if (body.error_code === "weak_password")
+          throw new StudioError(
+            "비밀번호가 너무 단순합니다. 더 길게 정해 주세요.",
+            400,
+            "WEAK_PASSWORD",
+          );
+      }
+      if (!response.ok) throw failed();
+      const user = userSchema.safeParse(await response.json().catch(() => null));
+      if (!user.success) throw failed();
+      return user.data.id;
+    },
+    async setPassword(userId, password) {
+      const response = await call(userPath(userId), "PUT", { password });
+      if (response.status === 422) {
+        const body = (await response.json().catch(() => ({}))) as { error_code?: string };
+        if (body.error_code === "weak_password")
+          throw new StudioError(
+            "비밀번호가 너무 단순합니다. 더 길게 정해 주세요.",
+            400,
+            "WEAK_PASSWORD",
+          );
+      }
+      if (!response.ok) throw failed();
+    },
+    async remove(userId) {
+      await call(userPath(userId), "DELETE");
+    },
+  };
 }

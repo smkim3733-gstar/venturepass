@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { jsonResponse, readBoundedBody, StudioError, studioRoute } from "./studio-http";
+import { jsonResponse, readBoundedBody, StudioError, studioRoute } from "./studio-route";
 import { preparationAutomationRequestSchema } from "./studio-preparation-automation-types";
 import {
   getPreparationAutomationStatus,

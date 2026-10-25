@@ -2,7 +2,7 @@ import { analyzeCompany, generatePlan, reviewPlan, StudioEngineError } from "@/l
 import { generationSchema } from "@/lib/studio-schema";
 import { currentVerifiedCandidateSelection } from "@/lib/studio-candidate-selection";
 import { withCaseStore } from "@/lib/studio-case-session";
-import { jsonResponse, readJson, studioRoute, StudioError } from "@/lib/studio-http";
+import { jsonResponse, readJson, studioRoute, StudioError } from "@/lib/studio-route";
 import { studioGenerationJobs as running } from "@/lib/studio-generation-lock";
 import { unresolvedGuidedPreparationRuns } from "@/lib/studio-guided-preparation-types";
 export const runtime = "nodejs";

@@ -2,7 +2,12 @@ import type { SqlExecutor } from "./studio-postgres-repository";
 import { PostgresCaseRowRepository } from "./studio-postgres-repository";
 import type { StudioServerRuntime } from "./studio-request-scope";
 import { createPrincipalResolver, type AccessTokenVerifier } from "./studio-server-auth";
-import { supabaseVerifier, type SupabaseAuthConfig } from "./studio-supabase-auth";
+import { MemberDirectory, type StaffAccounts } from "./studio-members";
+import {
+  supabaseStaffAccounts,
+  supabaseVerifier,
+  type SupabaseAuthConfig,
+} from "./studio-supabase-auth";
 import {
   SupabaseOriginalStore,
   type OriginalObjectStore,
@@ -14,7 +19,7 @@ export type ServerSettings = {
   origin: string;
   databaseUrl: string;
   supabase: SupabaseAuthConfig;
-  /** Optional: without it, uploads and original downloads answer 503 on the server. */
+  /** Optional: without it, uploads, original downloads and adding staff answer 503 on the server. */
   storage: SupabaseStorageConfig | null;
 };
 
@@ -55,10 +60,12 @@ export function createServerRuntime(
   executor: SqlExecutor,
   verify: AccessTokenVerifier,
   originals?: OriginalObjectStore,
+  accounts?: StaffAccounts,
 ): StudioServerRuntime {
   return {
     origin,
     originals,
+    members: new MemberDirectory(executor, accounts ?? null),
     authenticate: createPrincipalResolver(executor, verify),
     repositoryFor: (principal) => new PostgresCaseRowRepository(executor, principal.organizationId),
   };
@@ -99,6 +106,8 @@ export function loadServerRuntimeFromEnv(): Promise<StudioServerRuntime | null> 
       await postgresExecutor(settings.databaseUrl),
       supabaseVerifier(settings.supabase),
       settings.storage ? new SupabaseOriginalStore(settings.storage) : undefined,
+      // The same server-only service role key manages staff login accounts.
+      settings.storage ? supabaseStaffAccounts(settings.storage) : undefined,
     );
   })().catch(() => {
     pending = null;

@@ -2,7 +2,7 @@ import { MAX_UPLOAD_BYTES } from "@/lib/studio-extract";
 import { originalsAvailable } from "@/lib/studio-case-session";
 import { currentRequestScope } from "@/lib/studio-request-scope";
 import { registerSourceUpload } from "@/lib/studio-source-upload";
-import { readBoundedBody, studioRoute, StudioError } from "@/lib/studio-http";
+import { readBoundedBody, studioRoute, StudioError } from "@/lib/studio-route";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 180;

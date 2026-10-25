@@ -13,8 +13,8 @@ import { candidateSelectionLimits } from "@/lib/studio-candidate-selection-types
 import { reviewPlan } from "@/lib/studio-engine";
 import { getStudioStore } from "@/lib/studio-storage";
 import { withCaseStore } from "@/lib/studio-case-session";
-import { jsonResponse, readBoundedBody, readJson, studioRoute } from "@/lib/studio-http";
-import { StudioError } from "@/lib/studio-http";
+import { jsonResponse, readBoundedBody, readJson, studioRoute } from "@/lib/studio-route";
+import { StudioError } from "@/lib/studio-route";
 import { withVentureLock } from "@/lib/venturein-service";
 import { stopVentureSession } from "@/lib/venturein-runner";
 export const runtime = "nodejs";

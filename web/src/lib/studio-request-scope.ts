@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { CaseRowRepository } from "./studio-case-session";
+import type { MemberDirectory } from "./studio-members";
 import type { OriginalObjectStore } from "./studio-original-store";
 
 /** Authenticated staff member of one organization (server mode only). */
@@ -21,12 +22,15 @@ export type StudioServerRuntime = {
   repositoryFor(principal: StudioPrincipal): CaseRowRepository;
   /** Private original-file storage; absent means uploads and downloads stay unavailable. */
   originals?: OriginalObjectStore;
+  /** Staff memberships of the signed-in admin's organization. */
+  members?: MemberDirectory;
 };
 
 type RequestScope = {
   principal: StudioPrincipal;
   repository: CaseRowRepository;
   originals?: OriginalObjectStore;
+  members?: MemberDirectory;
 };
 const scope = new AsyncLocalStorage<RequestScope>();
 let runtime: StudioServerRuntime | null = null;

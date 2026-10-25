@@ -4,7 +4,7 @@ import {
   studioRoute,
   StudioError,
   attachmentHeaders,
-} from "@/lib/studio-http";
+} from "@/lib/studio-route";
 import { withVentureLock } from "@/lib/venturein-service";
 import {
   getVentureWorkflow,

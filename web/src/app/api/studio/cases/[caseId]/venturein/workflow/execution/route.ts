@@ -1,4 +1,4 @@
-import { jsonResponse, readBoundedBody, studioRoute, StudioError } from "@/lib/studio-http";
+import { jsonResponse, readBoundedBody, studioRoute, StudioError } from "@/lib/studio-route";
 import { withVentureLock } from "@/lib/venturein-service";
 import { ventureExecutionRequestSchema } from "@/lib/venturein-execution-schema";
 import {

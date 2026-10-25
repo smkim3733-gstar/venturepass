@@ -2,7 +2,7 @@ import { z } from "zod";
 import { buildVisitPackage } from "@/lib/studio-visit-package";
 import { visitPackageLimits, visitPackageRequestSchema } from "@/lib/studio-visit-package-types";
 import { getStudioStore } from "@/lib/studio-storage";
-import { attachmentHeaders, readBoundedBody, studioRoute, StudioError } from "@/lib/studio-http";
+import { attachmentHeaders, readBoundedBody, studioRoute, StudioError } from "@/lib/studio-route";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export function POST(request: Request, context: { params: Promise<{ caseId: string }> }) {

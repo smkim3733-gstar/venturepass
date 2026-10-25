@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { companyProfileSchema } from "@/lib/studio-schema";
 import { createCase, listCases } from "@/lib/studio-case-session";
-import { jsonResponse, readJson, studioRoute } from "@/lib/studio-http";
+import { jsonResponse, readJson, studioRoute } from "@/lib/studio-route";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export function GET(request: Request) {

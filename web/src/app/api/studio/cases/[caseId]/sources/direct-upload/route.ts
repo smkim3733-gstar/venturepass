@@ -1,4 +1,4 @@
-import { readJson, studioRoute } from "@/lib/studio-http";
+import { readJson, studioRoute } from "@/lib/studio-route";
 import { startDirectUpload } from "@/lib/studio-source-direct-upload";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";

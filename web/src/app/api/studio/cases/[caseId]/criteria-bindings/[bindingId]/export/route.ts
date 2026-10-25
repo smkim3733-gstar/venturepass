@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { buildCriteriaReference } from "@/lib/studio-criteria-version";
 import { criteriaReferenceDownloadName } from "@/lib/studio-criteria-version-types";
-import { attachmentHeaders, StudioError, studioRoute } from "@/lib/studio-http";
+import { attachmentHeaders, StudioError, studioRoute } from "@/lib/studio-route";
 import { withCaseStore } from "@/lib/studio-case-session";
 
 export const runtime = "nodejs";

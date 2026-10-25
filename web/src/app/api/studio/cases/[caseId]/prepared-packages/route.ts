@@ -2,7 +2,7 @@ import { z } from "zod";
 import { getStudioStore } from "@/lib/studio-storage";
 import { preservePreparedPackage } from "@/lib/studio-prepared-package";
 import { preparedPackageRequestSchema } from "@/lib/studio-prepared-package-types";
-import { jsonResponse, readBoundedBody, studioRoute, StudioError } from "@/lib/studio-http";
+import { jsonResponse, readBoundedBody, studioRoute, StudioError } from "@/lib/studio-route";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 type Context = { params: Promise<{ caseId: string }> };

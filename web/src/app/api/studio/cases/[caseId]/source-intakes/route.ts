@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { getStudioStore } from "@/lib/studio-storage";
-import { StudioError, jsonResponse, readBoundedBody, studioRoute } from "@/lib/studio-http";
+import { StudioError, jsonResponse, readBoundedBody, studioRoute } from "@/lib/studio-route";
 import { sourceIntakeCommandSchema } from "@/lib/studio-source-intake-types";
 import { sourceIntakeExternalLimits } from "@/lib/studio-source-intake-external-types";
 import {

@@ -1,5 +1,5 @@
 import { refreshRoute } from "@/lib/studio-auth-routes";
-import { jsonResponse } from "@/lib/studio-http";
+import { jsonResponse } from "@/lib/studio-route";
 import { loadAuthRouteContextFromEnv } from "@/lib/studio-server-bootstrap";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";

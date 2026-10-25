@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { studioRoute, StudioError, privateHeaders } from "@/lib/studio-http";
+import { studioRoute, StudioError, privateHeaders } from "@/lib/studio-route";
 import { withVentureLock } from "@/lib/venturein-service";
 import { getVentureWorkflow } from "@/lib/venturein-workflow";
 import { previewVentureApplication } from "@/lib/venturein-runner";

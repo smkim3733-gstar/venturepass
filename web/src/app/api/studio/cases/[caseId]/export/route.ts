@@ -1,6 +1,6 @@
 import { exportPlanMarkdown } from "@/lib/studio-export";
 import { withCaseStore } from "@/lib/studio-case-session";
-import { attachmentHeaders, studioRoute, StudioError } from "@/lib/studio-http";
+import { attachmentHeaders, studioRoute, StudioError } from "@/lib/studio-route";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export function GET(request: Request, context: { params: Promise<{ caseId: string }> }) {

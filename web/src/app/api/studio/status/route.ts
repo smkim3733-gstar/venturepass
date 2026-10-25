@@ -1,6 +1,6 @@
 import { getAiStatus } from "@/lib/studio-engine";
 import { supportedFiles } from "@/lib/studio-extract";
-import { jsonResponse, studioRoute } from "@/lib/studio-http";
+import { jsonResponse, studioRoute } from "@/lib/studio-route";
 import { currentRequestScope } from "@/lib/studio-request-scope";
 import type { StudioStatus } from "@/lib/studio-schema";
 export const runtime = "nodejs";

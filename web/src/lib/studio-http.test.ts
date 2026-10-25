@@ -7,7 +7,7 @@ import {
   readJson,
   StudioError,
   studioRoute,
-} from "./studio-http";
+} from "./studio-route";
 
 describe("로컬 API 경계", () => {
   it("Next 내부 localhost URL은 검증된 실제 Host와 Origin으로 판별한다", () => {

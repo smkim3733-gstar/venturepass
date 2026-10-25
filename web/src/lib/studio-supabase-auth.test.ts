@@ -1,6 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import { supabasePasswordLogin, supabaseRefresh, supabaseVerifier } from "./studio-supabase-auth";
+import {
+  supabasePasswordLogin,
+  supabaseRefresh,
+  supabaseStaffAccounts,
+  supabaseVerifier,
+} from "./studio-supabase-auth";
 
 const config = { url: "https://example-project.supabase.test", anonKey: "anon-test-key" };
 const fakeFetch = (status: number, body: unknown) =>
@@ -62,5 +67,50 @@ describe("Supabase Auth over HTTP", () => {
       fakeFetch(200, { id: randomUUID(), email: "a@b.c" }),
     );
     expect(await verifier("token-value-xxxxxxxxxxxxxxxx")).toBeNull();
+  });
+});
+
+describe("Supabase Auth admin API for staff accounts", () => {
+  const admin = { url: config.url, serviceRoleKey: "service-test-key" };
+
+  it("creates a confirmed account with the service role key and returns its id", async () => {
+    const id = randomUUID();
+    const fetchImpl = fakeFetch(200, { id, email: "new@example.test" });
+    expect(
+      await supabaseStaffAccounts(admin, fetchImpl).create("new@example.test", "pw-123456789"),
+    ).toBe(id);
+    const [url, init] = (fetchImpl as unknown as ReturnType<typeof vi.fn>).mock.calls[0] as [
+      string,
+      RequestInit,
+    ];
+    expect(url).toBe(`${config.url}/auth/v1/admin/users`);
+    expect(init.headers).toMatchObject({ authorization: "Bearer service-test-key" });
+    expect(JSON.parse(String(init.body))).toMatchObject({ email_confirm: true });
+  });
+
+  it("explains an existing e-mail and hides other provider failures", async () => {
+    await expect(
+      supabaseStaffAccounts(admin, fakeFetch(422, { error_code: "email_exists" })).create(
+        "dup@example.test",
+        "pw-123456789",
+      ),
+    ).rejects.toMatchObject({ status: 409, code: "ACCOUNT_EXISTS" });
+    await expect(
+      supabaseStaffAccounts(admin, fakeFetch(500, { msg: "internal detail" })).create(
+        "x@example.test",
+        "pw-123456789",
+      ),
+    ).rejects.toMatchObject({ status: 502, code: "AUTH_ADMIN_FAILED" });
+  });
+
+  it("updates a password only for a UUID user path", async () => {
+    const fetchImpl = fakeFetch(200, {});
+    const accounts = supabaseStaffAccounts(admin, fetchImpl);
+    const id = randomUUID();
+    await accounts.setPassword(id, "pw-123456789");
+    expect((fetchImpl as unknown as ReturnType<typeof vi.fn>).mock.calls[0][0]).toBe(
+      `${config.url}/auth/v1/admin/users/${id}`,
+    );
+    await expect(accounts.setPassword("../other", "pw-123456789")).rejects.toThrow();
   });
 });

@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { withCaseStore } from "@/lib/studio-case-session";
-import { jsonResponse, readBoundedBody, studioRoute, StudioError } from "@/lib/studio-http";
+import { jsonResponse, readBoundedBody, studioRoute, StudioError } from "@/lib/studio-route";
 import { guidedPreparationRequestSchema } from "@/lib/studio-guided-preparation-types";
 import {
   guidedPreparationStatus,

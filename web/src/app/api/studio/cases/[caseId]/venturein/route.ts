@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { getStudioStore } from "@/lib/studio-storage";
-import { jsonResponse, readBoundedBody, studioRoute, StudioError } from "@/lib/studio-http";
+import { jsonResponse, readBoundedBody, studioRoute, StudioError } from "@/lib/studio-route";
 import { ventureAccountInputSchema } from "@/lib/venturein-schema";
 import { getVentureConnection, withVentureLock } from "@/lib/venturein-service";
 import {

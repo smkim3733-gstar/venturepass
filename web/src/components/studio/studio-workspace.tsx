@@ -19,7 +19,9 @@ import {
   LogOut,
   Sparkles,
   Trash2,
+  Users,
 } from "lucide-react";
+import Link from "next/link";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -552,6 +554,14 @@ export function StudioWorkspace() {
               <Settings2 />
               설정
             </Button>
+            {serverMode && status?.user?.role === "admin" && (
+              <Button asChild variant="ghost" className="h-11">
+                <Link href="/studio/members">
+                  <Users />
+                  담당자 관리
+                </Link>
+              </Button>
+            )}
             {serverMode && status?.user && (
               <Button
                 variant="ghost"

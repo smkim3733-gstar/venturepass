@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { getStudioStore } from "@/lib/studio-storage";
-import { jsonResponse, studioRoute, StudioError } from "@/lib/studio-http";
+import { jsonResponse, studioRoute, StudioError } from "@/lib/studio-route";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export function GET(

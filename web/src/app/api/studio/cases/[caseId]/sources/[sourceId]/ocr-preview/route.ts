@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { jsonResponse, readBoundedBody, StudioError, studioRoute } from "@/lib/studio-http";
+import { jsonResponse, readBoundedBody, StudioError, studioRoute } from "@/lib/studio-route";
 import { getStudioStore } from "@/lib/studio-storage";
 import { previewSourceOcr } from "@/lib/studio-local-ocr";
 

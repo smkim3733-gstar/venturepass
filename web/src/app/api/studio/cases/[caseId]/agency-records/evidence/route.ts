@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { inspectAgencyEvidence } from "@/lib/studio-agency-evidence";
-import { jsonResponse, studioRoute, StudioError } from "@/lib/studio-http";
+import { jsonResponse, studioRoute, StudioError } from "@/lib/studio-route";
 import { getStudioStore } from "@/lib/studio-storage";
 
 export const runtime = "nodejs";

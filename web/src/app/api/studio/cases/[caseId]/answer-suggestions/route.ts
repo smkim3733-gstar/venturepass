@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { withCaseStore } from "@/lib/studio-case-session";
-import { StudioError, jsonResponse, readBoundedBody, studioRoute } from "@/lib/studio-http";
+import { StudioError, jsonResponse, readBoundedBody, studioRoute } from "@/lib/studio-route";
 import {
   answerSuggestionCommandSchema,
   answerSuggestionLimits,
