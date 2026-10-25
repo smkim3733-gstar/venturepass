@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   loginRoute,
   logoutRoute,
+  passwordChangeRoute,
   refreshCookieName,
   refreshRoute,
   type AuthRouteContext,
@@ -107,5 +108,140 @@ describe("staff login routes", () => {
     const logout = await logoutRoute(post("/api/auth/logout", {}), { origin });
     expect(logout.status).toBe(200);
     expect(cookies(logout).every((item) => item.includes("Max-Age=0"))).toBe(true);
+  });
+});
+
+describe("own password change", () => {
+  const userId = randomUUID();
+  const email = "staff@example.test";
+  const cookieToken = "cookie-access-token-xxxxxxxxxx";
+  const freshToken = "fresh-access-token-xxxxxxxxxxx";
+
+  function setup(options: { changeError?: string; otherUser?: boolean } = {}) {
+    let password = "current-password";
+    const calls: string[] = [];
+    const fetchImpl = vi.fn(async (url: string, init: RequestInit = {}) => {
+      const { pathname, search } = new URL(url);
+      const method = init.method ?? "GET";
+      const bearer = String((init.headers as Record<string, string>).authorization ?? "");
+      calls.push(`${method} ${pathname}${search} ${bearer.replace("Bearer ", "")}`);
+      if (pathname === "/auth/v1/user" && method === "GET") {
+        if (bearer !== `Bearer ${cookieToken}` && bearer !== `Bearer ${freshToken}`)
+          return new Response("{}", { status: 401 });
+        const id = options.otherUser && bearer.includes(freshToken) ? randomUUID() : userId;
+        return Response.json({ id, email });
+      }
+      if (pathname === "/auth/v1/token") {
+        const body = JSON.parse(String(init.body));
+        return body.email === email && body.password === password
+          ? Response.json(sessionFor(freshToken))
+          : new Response("{}", { status: 400 });
+      }
+      if (pathname === "/auth/v1/user" && method === "PUT") {
+        if (bearer !== `Bearer ${freshToken}`) return new Response("{}", { status: 401 });
+        if (options.changeError)
+          return Response.json({ error_code: options.changeError }, { status: 422 });
+        password = JSON.parse(String(init.body)).password;
+        return Response.json({ id: userId, email });
+      }
+      if (pathname === "/auth/v1/logout") return new Response(null, { status: 204 });
+      return new Response("{}", { status: 404 });
+    }) as unknown as typeof fetch;
+    const context: AuthRouteContext = {
+      origin,
+      supabase: { url: "https://project.supabase.test", anonKey: "anon" },
+      fetchImpl,
+      authenticate: async (request) =>
+        [cookieToken, freshToken].includes(accessTokenFrom(request) ?? "")
+          ? { userId, organizationId: randomUUID(), role: "viewer", displayName: "가상 담당자" }
+          : null,
+    };
+    return { context, calls, password: () => password };
+  }
+  const change = (body: unknown, cookie = `${sessionCookieName}=${cookieToken}`) =>
+    post("/api/auth/password", body, { origin, cookie });
+
+  it("checks the current password, changes it with the member's own session and renews cookies", async () => {
+    const { context, calls, password } = setup();
+    const response = await passwordChangeRoute(
+      change({ currentPassword: "current-password", newPassword: "new-password-123" }),
+      context,
+    );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      displayName: "가상 담당자",
+      role: "viewer",
+      otherSessionsSignedOut: true,
+    });
+    expect(password()).toBe("new-password-123");
+    expect(calls).toContain(`PUT /auth/v1/user ${freshToken}`);
+    expect(calls).toContain(`POST /auth/v1/logout?scope=others ${freshToken}`);
+    expect(calls.some((call) => call.includes("/admin/"))).toBe(false);
+    expect(cookies(response).find((item) => item.startsWith(`${sessionCookieName}=`))).toContain(
+      freshToken,
+    );
+  });
+
+  it("refuses a wrong current password, a reused or short password and a missing session", async () => {
+    const { context, password } = setup();
+    const wrong = await passwordChangeRoute(
+      change({ currentPassword: "wrong", newPassword: "new-password-123" }),
+      context,
+    );
+    expect(wrong.status).toBe(400);
+    expect((await wrong.json()).code).toBe("CURRENT_PASSWORD_WRONG");
+    expect(cookies(wrong)).toEqual([]);
+    const same = await passwordChangeRoute(
+      change({ currentPassword: "current-password", newPassword: "current-password" }),
+      context,
+    );
+    expect((await same.json()).code).toBe("SAME_PASSWORD");
+    const short = await passwordChangeRoute(
+      change({ currentPassword: "current-password", newPassword: "short" }),
+      context,
+    );
+    expect(short.status).toBe(400);
+    expect((await short.json()).error).toContain("10자 이상");
+    const anonymous = await passwordChangeRoute(
+      change({ currentPassword: "current-password", newPassword: "new-password-123" }, ""),
+      context,
+    );
+    expect(anonymous.status).toBe(401);
+    const crossSite = await passwordChangeRoute(
+      post(
+        "/api/auth/password",
+        { currentPassword: "current-password", newPassword: "new-password-123" },
+        { origin: "https://evil.example", cookie: `${sessionCookieName}=${cookieToken}` },
+      ),
+      context,
+    );
+    expect(crossSite.status).toBe(403);
+    expect(password()).toBe("current-password");
+  });
+
+  it("does not change anything when the fresh login belongs to someone else", async () => {
+    const { context, calls } = setup({ otherUser: true });
+    const response = await passwordChangeRoute(
+      change({ currentPassword: "current-password", newPassword: "new-password-123" }),
+      context,
+    );
+    expect(response.status).toBe(401);
+    expect(calls.some((call) => call.startsWith("PUT"))).toBe(false);
+  });
+
+  it("explains provider refusals without setting cookies", async () => {
+    for (const [errorCode, code] of [
+      ["weak_password", "WEAK_PASSWORD"],
+      ["reauthentication_needed", "REAUTH_REQUIRED"],
+      ["unexpected", "AUTH_FAILED"],
+    ]) {
+      const { context } = setup({ changeError: errorCode });
+      const response = await passwordChangeRoute(
+        change({ currentPassword: "current-password", newPassword: "new-password-123" }),
+        context,
+      );
+      expect((await response.json()).code).toBe(code);
+      expect(cookies(response)).toEqual([]);
+    }
   });
 });

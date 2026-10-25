@@ -88,6 +88,56 @@ export function supabaseRefresh(
   return tokenRequest(config, "refresh_token", { refresh_token: refreshToken }, fetchImpl);
 }
 
+/** Outcome of a staff member changing their own password with their own session. */
+export type OwnPasswordChange = "changed" | "weak" | "same" | "reauthentication" | "failed";
+
+/** Uses the member's own access token (no service role key); Supabase checks the token. */
+export async function supabaseChangeOwnPassword(
+  config: SupabaseAuthConfig,
+  accessToken: string,
+  password: string,
+  fetchImpl: Fetch = fetch,
+): Promise<OwnPasswordChange> {
+  try {
+    const response = await fetchImpl(endpoint(config, "/auth/v1/user"), {
+      method: "PUT",
+      headers: {
+        apikey: config.anonKey,
+        authorization: `Bearer ${accessToken}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ password }),
+      cache: "no-store",
+    });
+    if (response.ok) return "changed";
+    const body = (await response.json().catch(() => ({}))) as { error_code?: string };
+    if (body.error_code === "weak_password") return "weak";
+    if (body.error_code === "same_password") return "same";
+    if (body.error_code === "reauthentication_needed") return "reauthentication";
+    return "failed";
+  } catch {
+    return "failed";
+  }
+}
+
+/** Ends every other session of the token's user; the session that sent it stays valid. */
+export async function supabaseSignOutOthers(
+  config: SupabaseAuthConfig,
+  accessToken: string,
+  fetchImpl: Fetch = fetch,
+) {
+  try {
+    const response = await fetchImpl(endpoint(config, "/auth/v1/logout?scope=others"), {
+      method: "POST",
+      headers: { apikey: config.anonKey, authorization: `Bearer ${accessToken}` },
+      cache: "no-store",
+    });
+    return response.ok;
+  } catch {
+    return false;
+  }
+}
+
 /** Server-only admin access. The service role key bypasses all checks and never reaches a browser. */
 export type SupabaseAdminConfig = { url: string; serviceRoleKey: string };
 

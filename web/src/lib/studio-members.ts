@@ -27,7 +27,8 @@ export interface StaffAccounts {
 const role = z.enum(["admin", "editor", "viewer"]);
 const status = z.enum(["pending", "active", "disabled"]);
 const displayName = z.string().trim().min(1, "이름을 입력해 주세요.").max(100);
-const password = z
+/** Same rule for a first password, an admin reset and a member's own change. */
+export const staffPassword = z
   .string()
   .min(10, "비밀번호는 10자 이상으로 정해 주세요.")
   .max(72, "비밀번호는 72자 이하로 정해 주세요.");
@@ -36,14 +37,14 @@ const addSchema = z
     email: z.string().trim().toLowerCase().email("이메일 형식을 확인해 주세요.").max(320),
     displayName,
     role,
-    password,
+    password: staffPassword,
   })
   .strict();
 const updateSchema = z
   .object({ displayName: displayName.optional(), role: role.optional(), status: status.optional() })
   .strict()
   .refine((value) => Object.keys(value).length > 0, "바꿀 내용을 골라 주세요.");
-const passwordSchema = z.object({ password }).strict();
+const passwordSchema = z.object({ password: staffPassword }).strict();
 
 type Row = {
   user_id: string;

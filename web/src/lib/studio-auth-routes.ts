@@ -1,10 +1,14 @@
 import { z } from "zod";
 import { jsonResponse, readBoundedBody, StudioError } from "./studio-http";
 import type { StudioPrincipal } from "./studio-request-scope";
-import { sessionCookieName } from "./studio-server-auth";
+import { staffPassword } from "./studio-members";
+import { accessTokenFrom, sessionCookieName } from "./studio-server-auth";
 import {
+  supabaseChangeOwnPassword,
   supabasePasswordLogin,
   supabaseRefresh,
+  supabaseSignOutOthers,
+  supabaseVerifier,
   type SupabaseAuthConfig,
   type SupabaseSession,
 } from "./studio-supabase-auth";
@@ -36,8 +40,16 @@ function cookie(name: string, value: string, maxAge: number, path: string, sameS
   return `${name}=${encodeURIComponent(value)}; Max-Age=${maxAge}; Path=${path}; HttpOnly; Secure; SameSite=${sameSite}`;
 }
 
-function sessionResponse(session: SupabaseSession, principal: StudioPrincipal) {
-  const response = jsonResponse({ displayName: principal.displayName, role: principal.role });
+function sessionResponse(
+  session: SupabaseSession,
+  principal: StudioPrincipal,
+  extra: Record<string, unknown> = {},
+) {
+  const response = jsonResponse({
+    displayName: principal.displayName,
+    role: principal.role,
+    ...extra,
+  });
   response.headers.append(
     "set-cookie",
     cookie(sessionCookieName, session.accessToken, session.expiresIn, "/", "Lax"),
@@ -122,6 +134,80 @@ export async function logoutRoute(request: Request, context: Pick<AuthRouteConte
     response.headers.append("set-cookie", cookie(sessionCookieName, "", 0, "/", "Lax"));
     response.headers.append("set-cookie", cookie(refreshCookieName, "", 0, "/api/auth", "Strict"));
     return response;
+  } catch (error) {
+    return failure(error);
+  }
+}
+
+const passwordChangeSchema = z
+  .object({ currentPassword: z.string().min(1).max(200), newPassword: staffPassword })
+  .strict();
+const changeFailures = {
+  weak: ["비밀번호가 너무 단순합니다. 더 길게 정해 주세요.", 400, "WEAK_PASSWORD"],
+  same: ["지금과 다른 비밀번호로 정해 주세요.", 400, "SAME_PASSWORD"],
+  reauthentication: [
+    "보안 확인이 필요합니다. 로그아웃 후 다시 로그인해 주세요.",
+    401,
+    "REAUTH_REQUIRED",
+  ],
+  failed: ["비밀번호를 바꾸지 못했습니다. 잠시 후 다시 시도해 주세요.", 502, "AUTH_FAILED"],
+} as const;
+
+/**
+ * A signed-in member changes their own password. The current password is checked by a fresh
+ * provider login for the same user, that fresh session makes the change (no service role key),
+ * every other session is signed out, and the browser receives the fresh session cookies.
+ */
+export async function passwordChangeRoute(request: Request, context: AuthRouteContext) {
+  try {
+    assertSameOrigin(request, context.origin);
+    const relogin = () => new StudioError("다시 로그인해 주세요.", 401, "UNAUTHENTICATED");
+    const principal = await context.authenticate(request);
+    const token = accessTokenFrom(request);
+    if (!principal || !token) throw relogin();
+    const verify = supabaseVerifier(context.supabase, context.fetchImpl);
+    const identity = await verify(token);
+    if (!identity || identity.userId !== principal.userId) throw relogin();
+    const parsed = passwordChangeSchema.safeParse(
+      JSON.parse(new TextDecoder().decode(await readBoundedBody(request, 4096))),
+    );
+    if (!parsed.success)
+      throw new StudioError(
+        parsed.error.issues[0]?.message ?? "입력값을 확인해 주세요.",
+        400,
+        "INVALID_INPUT",
+      );
+    const input = parsed.data;
+    if (input.newPassword === input.currentPassword) {
+      const [message, status, code] = changeFailures.same;
+      throw new StudioError(message, status, code);
+    }
+    const session = await supabasePasswordLogin(
+      context.supabase,
+      identity.email,
+      input.currentPassword,
+      context.fetchImpl,
+    );
+    if (!session)
+      throw new StudioError("지금 비밀번호가 맞지 않습니다.", 400, "CURRENT_PASSWORD_WRONG");
+    const fresh = await verify(session.accessToken);
+    if (!fresh || fresh.userId !== principal.userId) throw relogin();
+    const result = await supabaseChangeOwnPassword(
+      context.supabase,
+      session.accessToken,
+      input.newPassword,
+      context.fetchImpl,
+    );
+    if (result !== "changed") {
+      const [message, status, code] = changeFailures[result];
+      throw new StudioError(message, status, code);
+    }
+    const otherSessionsSignedOut = await supabaseSignOutOthers(
+      context.supabase,
+      session.accessToken,
+      context.fetchImpl,
+    );
+    return sessionResponse(session, principal, { otherSessionsSignedOut });
   } catch (error) {
     return failure(error);
   }

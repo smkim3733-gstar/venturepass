@@ -563,6 +563,13 @@ export function StudioWorkspace() {
               </Button>
             )}
             {serverMode && status?.user && (
+              <Button asChild variant="ghost" className="h-11">
+                <Link href="/studio/account">
+                  <KeyRound />내 계정
+                </Link>
+              </Button>
+            )}
+            {serverMode && status?.user && (
               <Button
                 variant="ghost"
                 className="h-11"
