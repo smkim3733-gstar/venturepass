@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { useServerMode } from "./studio-mode";
 import {
   Download,
   FileText,
@@ -112,6 +113,8 @@ export function SourcesPanel({
   aiConfigured: boolean;
   blockedReason?: string;
 }) {
+  // Windows OCR runs only in the PC app.
+  const serverMode = useServerMode();
   const protectedSources = new Set(
     (company.agencyRecords ?? []).flatMap((record) => record.evidence.map((item) => item.sourceId)),
   );
@@ -623,7 +626,7 @@ export function SourcesPanel({
                     </p>
                   </div>
                   <div className="flex flex-wrap items-center gap-1">
-                    {supportsLocalOcr(source) && (
+                    {!serverMode && supportsLocalOcr(source) && (
                       <Button
                         type="button"
                         variant="outline"

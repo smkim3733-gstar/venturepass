@@ -441,6 +441,8 @@ export type StudioStatus = {
   /** "server" means the shared web service; local-only features are unavailable there. */
   storage: "local" | "server";
   supportedFiles: string[];
+  /** Logged-in staff member (server mode only). */
+  user?: { displayName: string; role: "admin" | "editor" | "viewer" };
 };
 export const mutationSchema = z.discriminatedUnion("action", [
   preparationAutomationSettingInputSchema,

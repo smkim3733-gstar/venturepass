@@ -267,6 +267,16 @@ describe("일반 작업 화면의 실제 상태별 렌더링", () => {
     expect(html).not.toContain("검토 마치고 신청 준비");
   });
 
+  it("웹 서비스에서는 원고 보관·내려받기 버튼을 숨기고 이 PC에서는 보여 준다", () => {
+    const value = company({ plans: [plan()] });
+    const local = render(value);
+    expect(local).toContain(oldPlanTitle);
+    expect(buttonLabels(local)).toContain("원고·첨부 보관 및 내려받기");
+    const server = render(value, { status: { ...configured, storage: "server" } });
+    expect(server).toContain(oldPlanTitle);
+    expect(buttonLabels(server)).not.toContain("원고·첨부 보관 및 내려받기");
+  });
+
   it("자료 단계에서 업로드 자료 종류를 고를 수 있고 기본값은 기타 서류다", () => {
     const html = render(company());
     expect(html).toContain('id="guided-upload-kind"');

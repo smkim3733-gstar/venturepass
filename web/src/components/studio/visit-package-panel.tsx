@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useId, useRef, useState } from "react";
+import { PcOnlyNotice, useServerMode } from "./studio-mode";
 import { Download } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
@@ -484,6 +485,7 @@ type Props = {
   onBusyChange: (message: string) => void;
 };
 export function VisitPackagePanel(props: Props) {
+  if (useServerMode()) return <PcOnlyNotice feature="실사 준비 ZIP" />;
   return (
     <VisitPackagePanelInner key={`${props.company.id}:${props.company.revision}`} {...props} />
   );

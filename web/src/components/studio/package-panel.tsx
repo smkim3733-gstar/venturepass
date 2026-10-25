@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { PcOnlyNotice, useServerMode } from "./studio-mode";
 import { Download } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -114,7 +115,12 @@ type Props = {
   statusVersion?: number;
 };
 
-export function PackagePanel({
+export function PackagePanel(props: Props) {
+  if (useServerMode()) return <PcOnlyNotice feature="제출 준비 묶음 ZIP" />;
+  return <PackagePanelInner {...props} />;
+}
+
+function PackagePanelInner({
   company,
   plan,
   dirty,

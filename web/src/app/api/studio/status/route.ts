@@ -6,11 +6,13 @@ import type { StudioStatus } from "@/lib/studio-schema";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export function GET(request: Request) {
-  return studioRoute(request, () =>
-    jsonResponse({
+  return studioRoute(request, () => {
+    const principal = currentRequestScope()?.principal;
+    return jsonResponse({
       ...getAiStatus(),
-      storage: currentRequestScope() ? "server" : "local",
+      storage: principal ? "server" : "local",
       supportedFiles,
-    } satisfies StudioStatus),
-  );
+      ...(principal ? { user: { displayName: principal.displayName, role: principal.role } } : {}),
+    } satisfies StudioStatus);
+  });
 }

@@ -144,6 +144,7 @@ export function GuidedWorkspace({
     onUnsettledChange: setLocalUnsettled,
   });
   const localDraft = status !== null && !status.aiConfigured;
+  const serverMode = status?.storage === "server";
   // A saved source/profile change marks the local run stale and clears the analysis.
   const localDraftOutdated =
     localDraft && company.plans.length > 0 && (!company.analysis || !!local.run?.stale);
@@ -1294,14 +1295,16 @@ export function GuidedWorkspace({
                       현재 자료로 AI 다시 작성
                     </button>
                   )}
-                  <button
-                    type="button"
-                    className={styles.link}
-                    disabled={locked}
-                    onClick={() => setPackagePlanId(latestPlan.id)}
-                  >
-                    원고·첨부 보관 및 내려받기
-                  </button>
+                  {!serverMode && (
+                    <button
+                      type="button"
+                      className={styles.link}
+                      disabled={locked}
+                      onClick={() => setPackagePlanId(latestPlan.id)}
+                    >
+                      원고·첨부 보관 및 내려받기
+                    </button>
+                  )}
                 </div>
               </details>
             </>

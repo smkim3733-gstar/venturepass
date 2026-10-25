@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { PcOnlyNotice, useServerMode } from "./studio-mode";
 import type { BusinessPlan, StudioCase } from "@/lib/studio-schema";
 import type { PackageRequest } from "@/lib/studio-package-types";
 import {
@@ -30,7 +31,12 @@ type Props = {
   onClose: () => void;
 };
 
-export function PreparedPackagesPanel({
+export function PreparedPackagesPanel(props: Props) {
+  if (useServerMode()) return <PcOnlyNotice feature="원고·첨부 보관과 내려받기" />;
+  return <PreparedPackagesPanelInner {...props} />;
+}
+
+function PreparedPackagesPanelInner({
   company,
   plan,
   dirty,
