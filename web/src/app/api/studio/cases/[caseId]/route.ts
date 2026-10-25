@@ -12,6 +12,7 @@ import { planReviewLimits } from "@/lib/studio-plan-review-types";
 import { candidateSelectionLimits } from "@/lib/studio-candidate-selection-types";
 import { reviewPlan } from "@/lib/studio-engine";
 import { getStudioStore } from "@/lib/studio-storage";
+import { withCaseStore } from "@/lib/studio-case-session";
 import { jsonResponse, readBoundedBody, readJson, studioRoute } from "@/lib/studio-http";
 import { StudioError } from "@/lib/studio-http";
 import { withVentureLock } from "@/lib/venturein-service";
@@ -20,9 +21,10 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 type Context = { params: Promise<{ caseId: string }> };
 export function GET(request: Request, context: Context) {
-  return studioRoute(request, async () =>
-    jsonResponse(getStudioStore().get((await context.params).caseId)),
-  );
+  return studioRoute(request, async () => {
+    const { caseId } = await context.params;
+    return jsonResponse(await withCaseStore(caseId, ({ store }) => store.get(caseId)));
+  });
 }
 export function PATCH(request: Request, context: Context) {
   return studioRoute(request, async () => {
@@ -129,8 +131,9 @@ export function PATCH(request: Request, context: Context) {
       new URL(request.url).search
     )
       throw new StudioError("이 요청에는 URL 매개변수를 사용할 수 없습니다.", 400, "INVALID_QUERY");
+    const { caseId } = await context.params;
     return jsonResponse(
-      getStudioStore().mutate((await context.params).caseId, mutation, reviewPlan),
+      await withCaseStore(caseId, ({ store }) => store.mutate(caseId, mutation, reviewPlan)),
     );
   });
 }

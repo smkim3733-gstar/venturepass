@@ -2,7 +2,7 @@ import { z } from "zod";
 import { buildCriteriaReference } from "@/lib/studio-criteria-version";
 import { criteriaReferenceDownloadName } from "@/lib/studio-criteria-version-types";
 import { attachmentHeaders, StudioError, studioRoute } from "@/lib/studio-http";
-import { getStudioStore } from "@/lib/studio-storage";
+import { withCaseStore } from "@/lib/studio-case-session";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -19,7 +19,9 @@ export function GET(request: Request, context: Context) {
       .object({ caseId: z.string().uuid(), bindingId: z.string().uuid() })
       .strict()
       .parse(await context.params);
-    const markdown = buildCriteriaReference(getStudioStore(), caseId, bindingId);
+    const markdown = await withCaseStore(caseId, ({ store }) =>
+      buildCriteriaReference(store, caseId, bindingId),
+    );
     return new Response(markdown, {
       headers: {
         ...attachmentHeaders(criteriaReferenceDownloadName, "text/markdown; charset=utf-8"),

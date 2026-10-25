@@ -50,6 +50,8 @@ export async function runGuidedPreparation(
   store: StudioStore,
   caseId: string,
   raw: GuidedPreparationRequest,
+  /** Server sessions make the "running" record durable before any AI request. */
+  checkpoint: () => Promise<void> = async () => {},
 ) {
   const input = guidedPreparationRequestSchema.parse(raw);
   let accepted = false;
@@ -80,6 +82,7 @@ export async function runGuidedPreparation(
     run = started.run;
     revision = started.company.revision;
     if (started.replayed) return { company: started.company, run };
+    await checkpoint();
     const assertCurrent = () => {
       assertVentureCompanyWritable(caseId);
       const current = store.get(caseId),

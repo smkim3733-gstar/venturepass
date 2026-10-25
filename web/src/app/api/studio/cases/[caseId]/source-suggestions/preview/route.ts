@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { getStudioStore } from "@/lib/studio-storage";
+import { withCaseStore } from "@/lib/studio-case-session";
 import { StudioError, jsonResponse, readBoundedBody, studioRoute } from "@/lib/studio-http";
 import { previewSourceSuggestions } from "@/lib/studio-source-suggestion";
 import {
@@ -25,6 +25,8 @@ export function POST(request: Request, context: Context) {
         ),
       ),
     );
-    return jsonResponse(previewSourceSuggestions(getStudioStore(), caseId, input));
+    return jsonResponse(
+      await withCaseStore(caseId, ({ store }) => previewSourceSuggestions(store, caseId, input)),
+    );
   });
 }

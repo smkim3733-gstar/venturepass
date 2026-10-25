@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { getStudioStore } from "@/lib/studio-storage";
+import { withCaseStore } from "@/lib/studio-case-session";
 import { jsonResponse, readBoundedBody, studioRoute, StudioError } from "@/lib/studio-http";
 import { guidedPreparationRequestSchema } from "@/lib/studio-guided-preparation-types";
 import {
@@ -23,7 +23,9 @@ export function GET(request: Request, context: Context) {
       .string()
       .uuid()
       .parse((await context.params).caseId);
-    return jsonResponse(guidedPreparationStatus(getStudioStore(), caseId));
+    return jsonResponse(
+      await withCaseStore(caseId, ({ store }) => guidedPreparationStatus(store, caseId)),
+    );
   });
 }
 export function POST(request: Request, context: Context) {
@@ -39,7 +41,11 @@ export function POST(request: Request, context: Context) {
       JSON.parse(new TextDecoder().decode(await readBoundedBody(request, 32768))),
     );
     try {
-      return jsonResponse(await runGuidedPreparation(getStudioStore(), caseId, input));
+      return jsonResponse(
+        await withCaseStore(caseId, ({ store, checkpoint }) =>
+          runGuidedPreparation(store, caseId, input, checkpoint),
+        ),
+      );
     } catch (error) {
       if (error instanceof GuidedPreparationRequestError)
         return jsonResponse(

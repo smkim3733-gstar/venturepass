@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { getStudioStore } from "@/lib/studio-storage";
+import { withCaseStore } from "@/lib/studio-case-session";
 import { jsonResponse, readBoundedBody, studioRoute, StudioError } from "@/lib/studio-http";
 import { preparationRequestSchema } from "@/lib/studio-preparation-types";
 import {
@@ -19,7 +19,7 @@ export function GET(request: Request, context: Context) {
     noQuery(request);
     const { caseId } = await context.params;
     z.string().uuid().parse(caseId);
-    const company = getStudioStore().get(caseId);
+    const company = await withCaseStore(caseId, ({ store }) => store.get(caseId));
     return jsonResponse({
       companyRevision: company.revision,
       runs: company.preparationRuns,
@@ -38,7 +38,9 @@ export function POST(request: Request, context: Context) {
       JSON.parse(new TextDecoder().decode(await readBoundedBody(request, 4096))),
     );
     try {
-      return jsonResponse(await runLocalPreparation(getStudioStore(), caseId, input));
+      return jsonResponse(
+        await withCaseStore(caseId, ({ store }) => runLocalPreparation(store, caseId, input)),
+      );
     } catch (error) {
       if (error instanceof PreparationRequestError)
         return jsonResponse(

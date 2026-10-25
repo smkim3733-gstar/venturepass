@@ -270,6 +270,17 @@ import {
 } from "./studio-agency-records";
 
 type StoredRow = { body: string; evidence_revision: number };
+/** One company document row, as persisted. Used to move a case between storage backends. */
+export type CaseRowSnapshot = {
+  id: string;
+  revision: number;
+  evidenceRevision: number;
+  body: string;
+};
+export type StudioStoreOptions = {
+  /** Keep the SQLite database in memory (server sessions); originals still use `directory`. */
+  memory?: boolean;
+};
 // Storage stays independent of the async ZIP/AI engine import graph.
 const preparedPackageSha = (value: Uint8Array | string) =>
   createHash("sha256").update(value).digest("hex");
@@ -529,10 +540,13 @@ function nextSourceTimestamp(previous?: string) {
 export class StudioStore {
   private db: DatabaseSync;
   private root: string;
-  constructor(directory = process.env.VENTURE_DATA_DIR || resolve(process.cwd(), ".venture-pass")) {
+  constructor(
+    directory = process.env.VENTURE_DATA_DIR || resolve(process.cwd(), ".venture-pass"),
+    options: StudioStoreOptions = {},
+  ) {
     this.root = resolve(directory);
     mkdirSync(this.root, { recursive: true });
-    this.db = new DatabaseSync(join(this.root, "studio.sqlite"));
+    this.db = new DatabaseSync(options.memory ? ":memory:" : join(this.root, "studio.sqlite"));
     this.db.exec(
       "PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON; CREATE TABLE IF NOT EXISTS studio_cases (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, evidence_revision INTEGER NOT NULL, body TEXT NOT NULL); CREATE TABLE IF NOT EXISTS venture_accounts (case_id TEXT PRIMARY KEY REFERENCES studio_cases(id) ON DELETE CASCADE, encrypted_payload BLOB, masked_login_id TEXT, revision INTEGER NOT NULL CHECK (revision > 0), updated_at TEXT NOT NULL, CHECK ((encrypted_payload IS NULL AND masked_login_id IS NULL) OR (encrypted_payload IS NOT NULL AND masked_login_id IS NOT NULL)));",
     );
@@ -723,6 +737,39 @@ export class StudioStore {
       .get(id) as StoredRow | undefined;
     if (!row) throw new StudioError("기업을 찾을 수 없습니다.", 404, "NOT_FOUND");
     return row;
+  }
+  /** Raw persisted row, without derived contexts; the body is the exact stored JSON. */
+  exportCaseRow(id: string): CaseRowSnapshot {
+    uuid.parse(id);
+    const row = this.db
+      .prepare("SELECT id, revision, evidence_revision, body FROM studio_cases WHERE id = ?")
+      .get(id) as
+      { id: string; revision: number; evidence_revision: number; body: string } | undefined;
+    if (!row) throw new StudioError("기업을 찾을 수 없습니다.", 404, "NOT_FOUND");
+    return {
+      id: row.id,
+      revision: row.revision,
+      evidenceRevision: row.evidence_revision,
+      body: row.body,
+    };
+  }
+  /** Loads a row read from another backend. The body must parse and agree with its columns. */
+  importCaseRow(snapshot: CaseRowSnapshot) {
+    uuid.parse(snapshot.id);
+    const record = caseSchema.parse(JSON.parse(snapshot.body));
+    if (
+      record.id !== snapshot.id ||
+      record.revision !== snapshot.revision ||
+      !Number.isSafeInteger(snapshot.evidenceRevision) ||
+      snapshot.evidenceRevision < 0 ||
+      snapshot.evidenceRevision > snapshot.revision
+    )
+      throw new StudioError("기업 기록의 버전 정보를 확인할 수 없습니다.", 409, "CASE_ROW_INVALID");
+    this.db
+      .prepare(
+        "INSERT INTO studio_cases (id, revision, evidence_revision, body) VALUES (?, ?, ?, ?)",
+      )
+      .run(snapshot.id, snapshot.revision, snapshot.evidenceRevision, snapshot.body);
   }
   get(id: string): StudioCase {
     const row = this.row(id);

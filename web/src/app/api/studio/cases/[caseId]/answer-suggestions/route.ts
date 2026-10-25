@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { getStudioStore } from "@/lib/studio-storage";
+import { withCaseStore } from "@/lib/studio-case-session";
 import { StudioError, jsonResponse, readBoundedBody, studioRoute } from "@/lib/studio-http";
 import {
   answerSuggestionCommandSchema,
@@ -25,6 +25,10 @@ export function POST(request: Request, context: Context) {
         ),
       ),
     );
-    return jsonResponse(await runAnswerSuggestionCommand(getStudioStore(), caseId, command));
+    return jsonResponse(
+      await withCaseStore(caseId, ({ store }) =>
+        runAnswerSuggestionCommand(store, caseId, command),
+      ),
+    );
   });
 }
