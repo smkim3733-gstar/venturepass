@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { PcOnlyNotice, useServerMode } from "./studio-mode";
+import { useServerMode } from "./studio-mode";
 import { Download } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -104,6 +104,28 @@ export async function readPackageDownload(
   }
 }
 
+const exportIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Web service: the server stores the ZIP and answers with its id only. The download goes
+ * through this site's own export route, so no URL from a JSON body is ever followed.
+ */
+export async function readPackageExport(response: Response, caseId: string): Promise<string> {
+  const raw: unknown = await response.json().catch(() => null);
+  const body = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+  if (!response.ok)
+    throw new Error(
+      typeof body.error === "string" ? body.error : "제출 준비 묶음을 만들지 못했습니다.",
+    );
+  if (
+    typeof body.exportId !== "string" ||
+    !exportIdPattern.test(body.exportId) ||
+    !exportIdPattern.test(caseId)
+  )
+    throw new Error("만든 ZIP의 내려받기 정보를 확인하지 못했습니다.");
+  return `/api/studio/cases/${caseId}/package/exports/${body.exportId}`;
+}
+
 type Props = {
   company: StudioCase;
   plan: BusinessPlan;
@@ -115,20 +137,18 @@ type Props = {
   statusVersion?: number;
 };
 
-export function PackagePanel(props: Props) {
-  if (useServerMode()) return <PcOnlyNotice feature="제출 준비 묶음 ZIP" />;
-  return <PackagePanelInner {...props} />;
-}
-
-function PackagePanelInner({
+export function PackagePanel({
   company,
   plan,
   dirty,
   onBusyChange,
-  onPreserve,
+  onPreserve: preserveOnPc,
   blockedReason,
   statusVersion = 0,
 }: Props) {
+  const serverMode = useServerMode();
+  // Preserved packages live in this PC app's database only.
+  const onPreserve = serverMode ? undefined : preserveOnPc;
   const [selected, setSelected] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -208,7 +228,9 @@ function PackagePanelInner({
     onBusyChange(
       mode === "preserve"
         ? "원고와 선택 원본을 이 PC의 준비본으로 보관하고 있습니다"
-        : "선택한 원고와 원본으로 이 PC에 보관할 ZIP을 만드는 중입니다",
+        : serverMode
+          ? "선택한 원고와 원본으로 ZIP을 만드는 중입니다"
+          : "선택한 원고와 원본으로 이 PC에 보관할 ZIP을 만드는 중입니다",
     );
     let objectUrl: string | null = null;
     try {
@@ -222,6 +244,22 @@ function PackagePanelInner({
         cache: "no-store",
         ...jsonBody(request.data),
       });
+      if (serverMode) {
+        const path = await readPackageExport(response, company.id);
+        if (!mounted.current || context.current !== startedBinding) return;
+        const anchor = document.createElement("a");
+        anchor.href = new URL(path, window.location.origin).toString();
+        document.body.append(anchor);
+        try {
+          anchor.click();
+        } finally {
+          anchor.remove();
+        }
+        setMessage(
+          `원고 v${plan.version}과 선택 원본 ${sourceIds.length}개의 ZIP을 만들고 다운로드를 요청했습니다. 브라우저 다운로드 목록을 확인해 주세요. 다운로드 링크는 1시간 동안만 쓸 수 있습니다.`,
+        );
+        return;
+      }
       const file = await readPackageDownload(response);
       if (!mounted.current || context.current !== startedBinding) return;
       objectUrl = URL.createObjectURL(file.blob);

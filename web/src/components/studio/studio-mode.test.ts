@@ -1,7 +1,6 @@
 import { createElement, type ComponentProps } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
-import { PackagePanel } from "./package-panel";
 import { PreparedPackagesPanel } from "./prepared-packages-panel";
 import { VisitPackagePanel } from "./visit-package-panel";
 import { StudioModeProvider } from "./studio-mode";
@@ -14,16 +13,33 @@ function render(serverMode: boolean, element: ReturnType<typeof createElement>) 
 }
 
 describe("PC-only features on the web service", () => {
-  it.each([
-    ["제출 준비 묶음 ZIP", PackagePanel],
-    ["원고·첨부 보관과 내려받기", PreparedPackagesPanel],
-    ["실사 준비 ZIP", VisitPackagePanel],
-  ] as const)("replaces %s with a PC-only notice in server mode", (feature, Panel) => {
+  it.each([["실사 준비 ZIP", VisitPackagePanel]] as const)(
+    "replaces %s with a PC-only notice in server mode",
+    (feature, Panel) => {
+      const html = render(
+        true,
+        createElement(Panel as never, {} as ComponentProps<typeof VisitPackagePanel>),
+      );
+      expect(html).toContain(feature);
+      expect(html).toContain(notice);
+    },
+  );
+
+  it("offers the package ZIP without the PC-only preserved versions on the web service", () => {
     const html = render(
       true,
-      createElement(Panel as never, {} as ComponentProps<typeof PackagePanel>),
+      createElement(PreparedPackagesPanel, {
+        company: { id: "case" } as never,
+        plan: undefined,
+        dirty: false,
+        blocked: false,
+        onBusyChange: () => {},
+        onUnsettledChange: () => {},
+        onClose: () => {},
+      }),
     );
-    expect(html).toContain(feature);
-    expect(html).toContain(notice);
+    expect(html).toContain("제출 준비 ZIP 내려받기");
+    expect(html).toContain("이 PC 앱에서만 제공합니다");
+    expect(html).not.toContain("이 PC의 준비본입니다");
   });
 });

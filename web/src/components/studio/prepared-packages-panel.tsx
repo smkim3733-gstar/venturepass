@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { PcOnlyNotice, useServerMode } from "./studio-mode";
+import { useServerMode } from "./studio-mode";
 import type { BusinessPlan, StudioCase } from "@/lib/studio-schema";
 import type { PackageRequest } from "@/lib/studio-package-types";
 import {
@@ -32,8 +32,41 @@ type Props = {
 };
 
 export function PreparedPackagesPanel(props: Props) {
-  if (useServerMode()) return <PcOnlyNotice feature="원고·첨부 보관과 내려받기" />;
+  if (useServerMode()) return <WebPackagePanel {...props} />;
   return <PreparedPackagesPanelInner {...props} />;
+}
+
+/** Web service: the ZIP download only. Preserved versions stay in the PC app's database. */
+function WebPackagePanel({ company, plan, dirty, blocked, onBusyChange, onClose }: Props) {
+  const [busy, setBusy] = useState(false);
+  return (
+    <div className="space-y-5">
+      <div className="flex flex-wrap justify-between gap-3">
+        <h2 className={styles.heading}>제출 준비 ZIP 내려받기</h2>
+        <button type="button" className={styles.link} disabled={busy} onClick={onClose}>
+          돌아가기
+        </button>
+      </div>
+      <div className={styles.notice}>
+        원고와 첨부를 버전으로 보관하는 기능은 이 PC 앱에서만 제공합니다. 웹 서비스에서는 ZIP을 바로
+        내려받습니다.
+      </div>
+      {plan ? (
+        <PackagePanel
+          key={`${company.id}:${plan.id}`}
+          company={company}
+          plan={plan}
+          dirty={dirty || blocked}
+          onBusyChange={(message) => {
+            setBusy(Boolean(message));
+            onBusyChange(message);
+          }}
+        />
+      ) : (
+        <p className={styles.helper}>내려받을 원고가 없습니다.</p>
+      )}
+    </div>
+  );
 }
 
 function PreparedPackagesPanelInner({

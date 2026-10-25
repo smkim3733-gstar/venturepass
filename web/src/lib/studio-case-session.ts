@@ -1,9 +1,13 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { StudioError } from "./studio-http";
 import { currentRequestScope, serverModeRequested } from "./studio-request-scope";
-import { originalObjectKey, type OriginalObjectStore } from "./studio-original-store";
+import {
+  originalObjectKey,
+  removeOldExports,
+  type OriginalObjectStore,
+} from "./studio-original-store";
 import type { CaseSummary, CompanyProfile } from "./studio-schema";
 import { getStudioStore, StudioStore, type CaseRowSnapshot } from "./studio-storage";
 
@@ -27,6 +31,11 @@ export type CaseSession = {
    * same checkpoints the local SQLite store would. A no-op in local mode.
    */
   checkpoint(): Promise<void>;
+  /**
+   * Server mode: copies these sources' originals from object storage into the session so
+   * StudioStore code that reads originals (ZIP packages) works unchanged. Local: a no-op.
+   */
+  stageOriginals(sourceIds: string[]): Promise<void>;
 };
 
 const staleMessage = "다른 작업에서 기업정보가 변경되었습니다. 새로고침 후 다시 시도해 주세요.";
@@ -103,6 +112,10 @@ export async function runCaseSession<T>(
         if (!(await repository.remove(caseId, persisted.revision)))
           throw new StudioError(staleMessage, 409, "STALE_REVISION");
         await removeOriginals(sourcesWithOriginals(persisted.body).map((source) => source.id));
+        if (originals)
+          await removeOldExports(originals.store, originals.organizationId, caseId, 0).catch(
+            () => {},
+          );
         return;
       }
       if (current.revision === persisted.revision && current.body === persisted.body) return;
@@ -119,7 +132,26 @@ export async function runCaseSession<T>(
       );
       persisted = current;
     };
-    const result = await run({ store: session.store, checkpoint });
+    const stageOriginals = async (sourceIds: string[]) => {
+      if (!originals) return;
+      const stored = new Map(
+        sourcesWithOriginals(session.store.exportCaseRow(caseId).body).map((source) => [
+          source.id,
+          source,
+        ]),
+      );
+      for (const sourceId of sourceIds) {
+        if (!stored.has(sourceId) || uploaded.has(sourceId)) continue;
+        const bytes = await originals.store.get(key(sourceId));
+        if (!bytes) continue;
+        const directory = join(session.root, "originals", caseId);
+        mkdirSync(directory, { recursive: true });
+        writeFileSync(join(directory, `${sourceId}.bin`), bytes, { flag: "wx" });
+        // Already in object storage: the checkpoint must not upload it again.
+        uploaded.add(sourceId);
+      }
+    };
+    const result = await run({ store: session.store, checkpoint, stageOriginals });
     await checkpoint();
     return result;
   } finally {
@@ -195,7 +227,11 @@ export function withCaseStore<T>(
     const repository = scopedRepository();
     return repository
       ? runCaseSession(repository, caseId, run, scopedOriginals())
-      : run({ store: getStudioStore(), checkpoint: async () => {} });
+      : run({
+          store: getStudioStore(),
+          checkpoint: async () => {},
+          stageOriginals: async () => {},
+        });
   });
 }
 

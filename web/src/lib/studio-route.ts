@@ -32,6 +32,11 @@ const serverRoutes: { pattern: RegExp; methods: string[] }[] = [
     methods: ["GET", "POST"],
   },
   { pattern: new RegExp(`^/api/studio/cases/${caseId}/export$`, "i"), methods: ["GET"] },
+  { pattern: new RegExp(`^/api/studio/cases/${caseId}/package$`, "i"), methods: ["POST"] },
+  {
+    pattern: new RegExp(`^/api/studio/cases/${caseId}/package/exports/${caseId}$`, "i"),
+    methods: ["GET"],
+  },
   { pattern: new RegExp(`^/api/studio/cases/${caseId}/sources$`, "i"), methods: ["POST"] },
   {
     pattern: new RegExp(`^/api/studio/cases/${caseId}/sources/direct-upload(/complete)?$`, "i"),

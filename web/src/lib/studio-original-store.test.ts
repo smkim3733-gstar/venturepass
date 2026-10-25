@@ -9,6 +9,9 @@ import {
   MemoryOriginalStore,
   originalObjectKey,
   SupabaseOriginalStore,
+  exportObjectKey,
+  exportPrefix,
+  removeOldExports,
 } from "./studio-original-store";
 import { emptyProfile, type SourceDocument } from "./studio-schema";
 
@@ -150,5 +153,62 @@ describe("Supabase Storage adapter", () => {
       () =>
         new SupabaseOriginalStore({ url: "http://x.test", serviceRoleKey: "s", bucket: "bucket" }),
     ).toThrow();
+  });
+});
+
+describe("generated ZIP objects", () => {
+  const config = {
+    url: "https://project.supabase.test",
+    serviceRoleKey: "service",
+    bucket: "venturepass-originals",
+  };
+
+  it("signs an attachment download and lists exports through the Supabase API", async () => {
+    const calls: [string, RequestInit][] = [];
+    const fetchImpl = vi.fn(async (url: string, init: RequestInit) => {
+      calls.push([url, init]);
+      if (url.includes("/object/sign/") && url.endsWith("/missing.zip"))
+        return new Response("{}", { status: 400 });
+      if (url.includes("/object/sign/"))
+        return Response.json({ signedURL: "/object/sign/venturepass-originals/a/b.zip?token=t" });
+      return Response.json([
+        { name: "x.zip", created_at: "2026-10-26T00:00:00.000Z" },
+        { name: "folder", created_at: null },
+      ]);
+    }) as unknown as typeof fetch;
+    const storage = new SupabaseOriginalStore(config, fetchImpl);
+    const signed = new URL((await storage.createSignedDownload("a/b.zip", 300, "pack.zip"))!);
+    expect(signed.origin + signed.pathname).toBe(
+      "https://project.supabase.test/storage/v1/object/sign/venturepass-originals/a/b.zip",
+    );
+    expect(signed.searchParams.get("token")).toBe("t");
+    expect(signed.searchParams.get("download")).toBe("pack.zip");
+    expect(JSON.parse(String(calls[0][1].body))).toEqual({ expiresIn: 300 });
+    expect(await storage.createSignedDownload("a/missing.zip", 300, "pack.zip")).toBeNull();
+    expect(await storage.list("org/case/exports")).toEqual([
+      { key: "org/case/exports/x.zip", createdAt: new Date("2026-10-26T00:00:00.000Z") },
+    ]);
+    expect(calls.at(-1)![0]).toBe(
+      "https://project.supabase.test/storage/v1/object/list/venturepass-originals",
+    );
+    expect(JSON.parse(String(calls.at(-1)![1].body))).toMatchObject({ prefix: "org/case/exports" });
+  });
+
+  it("removes only expired ZIPs of one company and never its originals", async () => {
+    const store = new MemoryOriginalStore();
+    const caseId = randomUUID();
+    const old = exportObjectKey(organizationId, caseId, randomUUID());
+    const fresh = exportObjectKey(organizationId, caseId, randomUUID());
+    const original = originalObjectKey(organizationId, caseId, randomUUID());
+    const other = exportObjectKey(organizationId, randomUUID(), randomUUID());
+    for (const key of [old, fresh, original, other]) await store.put(key, new Uint8Array([1]));
+    store.createdAt.set(old, new Date(Date.now() - 2 * 3600_000));
+    store.createdAt.set(other, new Date(Date.now() - 2 * 3600_000));
+    await removeOldExports(store, organizationId, caseId);
+    expect([...store.objects.keys()].sort()).toEqual([fresh, original, other].sort());
+    await removeOldExports(store, organizationId, caseId, 0);
+    expect(store.objects.has(fresh)).toBe(false);
+    expect(store.objects.has(original)).toBe(true);
+    expect(exportPrefix(organizationId, caseId)).toBe(`${organizationId}/${caseId}/exports`);
   });
 });

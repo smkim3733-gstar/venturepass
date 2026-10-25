@@ -1294,16 +1294,14 @@ export function GuidedWorkspace({
                       현재 자료로 AI 다시 작성
                     </button>
                   )}
-                  {!serverMode && (
-                    <button
-                      type="button"
-                      className={styles.link}
-                      disabled={locked}
-                      onClick={() => setPackagePlanId(latestPlan.id)}
-                    >
-                      원고·첨부 보관 및 내려받기
-                    </button>
-                  )}
+                  <button
+                    type="button"
+                    className={styles.link}
+                    disabled={locked}
+                    onClick={() => setPackagePlanId(latestPlan.id)}
+                  >
+                    {serverMode ? "제출 준비 ZIP 내려받기" : "원고·첨부 보관 및 내려받기"}
+                  </button>
                 </div>
               </details>
             </>

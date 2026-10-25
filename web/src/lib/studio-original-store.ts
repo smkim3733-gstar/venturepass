@@ -8,6 +8,44 @@ export interface OriginalObjectStore {
   remove(key: string): Promise<void>;
   /** A short-lived URL the browser can PUT one object to, bypassing the function body limit. */
   createSignedUpload?(key: string): Promise<string>;
+  /**
+   * A short-lived URL that downloads one object as an attachment named `fileName`, bypassing
+   * the function response limit. Null when the object does not exist.
+   */
+  createSignedDownload?(key: string, seconds: number, fileName: string): Promise<string | null>;
+  /** Objects directly under `prefix/` with their creation time. */
+  list?(prefix: string): Promise<{ key: string; createdAt: Date }[]>;
+}
+
+/** A generated ZIP waiting to be downloaded; derived data, removed after `exportMaxAgeMs`. */
+export function exportObjectKey(organizationId: string, caseId: string, exportId: string) {
+  return `${exportPrefix(organizationId, caseId)}/${uuid.parse(exportId)}.zip`;
+}
+export function exportPrefix(organizationId: string, caseId: string) {
+  return `${uuid.parse(organizationId)}/${uuid.parse(caseId)}/exports`;
+}
+export const exportMaxAgeMs = 60 * 60 * 1000;
+const exportName = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.zip$/i;
+
+/**
+ * Best effort: removes a case's generated ZIPs older than `maxAgeMs` (0 removes all of them).
+ * Never touches originals, which live outside the exports prefix.
+ */
+export async function removeOldExports(
+  store: OriginalObjectStore,
+  organizationId: string,
+  caseId: string,
+  maxAgeMs = exportMaxAgeMs,
+  now = Date.now(),
+) {
+  if (!store.list) return;
+  const prefix = exportPrefix(organizationId, caseId);
+  const items = await store.list(prefix).catch(() => []);
+  for (const item of items) {
+    const name = item.key.slice(prefix.length + 1);
+    if (!item.key.startsWith(`${prefix}/`) || !exportName.test(name)) continue;
+    if (now - item.createdAt.getTime() >= maxAgeMs) await store.remove(item.key).catch(() => {});
+  }
 }
 
 /** Where a browser upload waits until the server has checked and registered it. */
@@ -23,9 +61,11 @@ export function originalObjectKey(organizationId: string, caseId: string, source
 
 export class MemoryOriginalStore implements OriginalObjectStore {
   objects = new Map<string, Uint8Array>();
+  createdAt = new Map<string, Date>();
   async put(key: string, bytes: Uint8Array) {
     if (this.objects.has(key)) throw new Error("Original already exists");
     this.objects.set(key, new Uint8Array(bytes));
+    this.createdAt.set(key, new Date());
   }
   async get(key: string) {
     const value = this.objects.get(key);
@@ -33,9 +73,20 @@ export class MemoryOriginalStore implements OriginalObjectStore {
   }
   async remove(key: string) {
     this.objects.delete(key);
+    this.createdAt.delete(key);
   }
   async createSignedUpload(key: string) {
     return `memory://${key}`;
+  }
+  async createSignedDownload(key: string, seconds: number, fileName: string) {
+    return this.objects.has(key)
+      ? `https://storage.memory.test/${key}?expires=${seconds}&download=${encodeURIComponent(fileName)}`
+      : null;
+  }
+  async list(prefix: string) {
+    return [...this.objects.keys()]
+      .filter((key) => key.startsWith(`${prefix}/`) && !key.slice(prefix.length + 1).includes("/"))
+      .map((key) => ({ key, createdAt: this.createdAt.get(key) ?? new Date(0) }));
   }
 }
 
@@ -92,6 +143,48 @@ export class SupabaseOriginalStore implements OriginalObjectStore {
       .object({ url: z.string().startsWith("/object/upload/sign/") })
       .parse(await response.json());
     return new URL(`/storage/v1${body.url}`, this.config.url).toString();
+  }
+  async createSignedDownload(key: string, seconds: number, fileName: string) {
+    const response = await this.fetchImpl(
+      new URL(`/storage/v1/object/sign/${this.config.bucket}/${key}`, this.config.url).toString(),
+      {
+        method: "POST",
+        headers: this.headers({ "content-type": "application/json" }),
+        body: JSON.stringify({ expiresIn: seconds }),
+        cache: "no-store",
+      },
+    );
+    if (response.status === 400 || response.status === 404) return null;
+    if (!response.ok) throw new Error(`Signed download failed (${response.status})`);
+    const body = z
+      .object({ signedURL: z.string().startsWith("/object/sign/") })
+      .parse(await response.json());
+    const url = new URL(`/storage/v1${body.signedURL}`, this.config.url);
+    url.searchParams.set("download", fileName);
+    return url.toString();
+  }
+  async list(prefix: string) {
+    const response = await this.fetchImpl(
+      new URL(`/storage/v1/object/list/${this.config.bucket}`, this.config.url).toString(),
+      {
+        method: "POST",
+        headers: this.headers({ "content-type": "application/json" }),
+        body: JSON.stringify({
+          prefix,
+          limit: 100,
+          offset: 0,
+          sortBy: { column: "created_at", order: "asc" },
+        }),
+        cache: "no-store",
+      },
+    );
+    if (!response.ok) throw new Error(`Object listing failed (${response.status})`);
+    const items = z
+      .array(z.object({ name: z.string(), created_at: z.string().nullable().optional() }))
+      .parse(await response.json());
+    return items
+      .filter((item) => item.created_at && !item.name.includes("/"))
+      .map((item) => ({ key: `${prefix}/${item.name}`, createdAt: new Date(item.created_at!) }));
   }
   async remove(key: string) {
     const response = await this.fetchImpl(
