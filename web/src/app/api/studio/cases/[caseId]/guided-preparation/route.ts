@@ -10,7 +10,8 @@ import {
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-export const maxDuration = 600;
+// Vercel Hobby allows at most 300 seconds per function.
+export const maxDuration = 300;
 type Context = { params: Promise<{ caseId: string }> };
 function noQuery(request: Request) {
   if (new URL(request.url).search)

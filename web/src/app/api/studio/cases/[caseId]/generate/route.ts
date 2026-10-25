@@ -7,7 +7,8 @@ import { studioGenerationJobs as running } from "@/lib/studio-generation-lock";
 import { unresolvedGuidedPreparationRuns } from "@/lib/studio-guided-preparation-types";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-export const maxDuration = 600;
+// Vercel Hobby allows at most 300 seconds per function.
+export const maxDuration = 300;
 export function POST(request: Request, context: { params: Promise<{ caseId: string }> }) {
   return studioRoute(request, async () => {
     const input = generationSchema.parse(await readJson(request));
