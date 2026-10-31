@@ -16,8 +16,6 @@ import { withCaseStore } from "@/lib/studio-case-session";
 import { currentRequestScope } from "@/lib/studio-request-scope";
 import { jsonResponse, readBoundedBody, readJson, studioRoute } from "@/lib/studio-route";
 import { StudioError } from "@/lib/studio-route";
-import { withVentureLock } from "@/lib/venturein-service";
-import { stopVentureSession } from "@/lib/venturein-runner";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 type Context = { params: Promise<{ caseId: string }> };
@@ -158,6 +156,12 @@ export function DELETE(request: Request, context: Context) {
       await withCaseStore(caseId, ({ store }) => store.delete(caseId, revision));
       return jsonResponse({ ok: true });
     }
+    // PC app only. Load the 벤처인 runner lazily: on the web service playwright-core is not
+    // deployable, and a static import made every company request fail with 500.
+    const [{ withVentureLock }, { stopVentureSession }] = await Promise.all([
+      import("@/lib/venturein-service"),
+      import("@/lib/venturein-runner"),
+    ]);
     return withVentureLock(caseId, async () => {
       const store = getStudioStore();
       if (store.get(caseId).revision !== revision)
