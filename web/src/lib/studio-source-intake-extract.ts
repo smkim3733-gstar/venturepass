@@ -1,3 +1,4 @@
+import { loadPdfParse } from "./studio-pdf-parse";
 import "server-only";
 import { extractSource, MAX_SOURCE_TEXT, MAX_UPLOAD_BYTES } from "./studio-extract";
 import { StudioError } from "./studio-http";
@@ -107,8 +108,12 @@ export async function extractLocalIntake(
       throw new LocalIntakeExtractionError("INTAKE_METHOD_UNSUPPORTED", "awaiting_method");
     if (extension === "pdf") {
       localOcrOriginalMime(name, mimeType, buffer);
-      const { PDFParse } = await import("pdf-parse");
-      const parser = new PDFParse({ data: new Uint8Array(buffer), isEvalSupported: false });
+      const { PDFParse, CanvasFactory } = await loadPdfParse();
+      const parser = new PDFParse({
+        data: new Uint8Array(buffer),
+        isEvalSupported: false,
+        CanvasFactory,
+      });
       try {
         const info = await parser.getInfo();
         if (!Number.isInteger(info.total) || info.total < 1 || info.total > 120)

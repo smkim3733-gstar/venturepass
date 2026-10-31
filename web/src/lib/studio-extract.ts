@@ -1,3 +1,4 @@
+import { loadPdfParse } from "./studio-pdf-parse";
 import OpenAI, { toFile } from "openai";
 import { getAiStatus } from "@/lib/studio-engine";
 import {
@@ -213,8 +214,12 @@ export async function extractSource(
     if (extension === ".pdf") {
       if (!buffer.subarray(0, 1024).includes(Buffer.from("%PDF-")))
         fail("PDF 파일 형식을 확인할 수 없습니다.");
-      const { PDFParse } = await import("pdf-parse");
-      const parser = new PDFParse({ data: new Uint8Array(buffer), isEvalSupported: false });
+      const { PDFParse, CanvasFactory } = await loadPdfParse();
+      const parser = new PDFParse({
+        data: new Uint8Array(buffer),
+        isEvalSupported: false,
+        CanvasFactory,
+      });
       try {
         const info = await parser.getInfo();
         if (info.total > 120) fail("PDF는 120페이지 이하로 나눠 올려 주세요.");
